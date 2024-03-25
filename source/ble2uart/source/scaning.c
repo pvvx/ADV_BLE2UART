@@ -7,6 +7,7 @@
 #include "tl_common.h"
 #include "ble.h"
 #include "stack/ble/ble.h"
+#include "app_config.h"
 //#include "app.h"
 #include "drv_uart.h"
 #include "crc.h"

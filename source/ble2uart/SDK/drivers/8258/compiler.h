@@ -45,7 +45,7 @@
  *******************************************************************************************************/
 #pragma once
 
-#include "default_config.h"
+#include "common/config/user_config.h"
 
 #define _attribute_packed_				__attribute__((packed))
 #define _attribute_aligned_(s)			__attribute__((aligned(s)))

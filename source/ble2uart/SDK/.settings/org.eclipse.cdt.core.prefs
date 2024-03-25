@@ -1,0 +1,16 @@
+#Wed Jul 14 23:58:31 CST 2021
+eclipse.preferences.version=1
+indexer/filesToParseUpFront=
+indexer/indexAllFiles=true
+indexer/indexAllHeaderVersions=false
+indexer/indexAllVersionsSpecificHeaders=
+indexer/indexOnOpen=false
+indexer/indexUnusedHeadersWithDefaultLang=true
+indexer/indexerId=org.eclipse.cdt.core.fastIndexer
+indexer/skipFilesLargerThanMB=8
+indexer/skipImplicitReferences=false
+indexer/skipIncludedFilesLargerThanMB=16
+indexer/skipMacroReferences=false
+indexer/skipReferences=false
+indexer/skipTypeReferences=false
+indexer/useHeuristicIncludeResolution=true

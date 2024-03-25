@@ -47,10 +47,23 @@
 
 #include "config.h"
 
+
+#if  (__TL_LIB_8258__ || (MCU_CORE_TYPE == MCU_CORE_825x))
 	#include "drivers/8258/driver_8258.h"
 	#include "drivers/8258/driver_ext/ext_rf.h"
 	#include "drivers/8258/driver_ext/ext_pm.h"
 	#include "drivers/8258/driver_ext/ext_misc.h"
+#elif(__TL_LIB_8278__ || (MCU_CORE_TYPE == MCU_CORE_827x))
+	#include "drivers/8278/driver_8278.h"
+	#include "drivers/8278/driver_ext/ext_rf.h"
+	#include "drivers/8278/driver_ext/ext_pm.h"
+	#include "drivers/8278/driver_ext/ext_misc.h"
+#else
+	#include "drivers/8258/driver_8258.h"
+	#include "drivers/8258/driver_ext/ext_rf.h"
+	#include "drivers/8258/driver_ext/ext_pm.h"
+	#include "drivers/8258/driver_ext/ext_misc.h"
+#endif
 
 
 #define write_log32(err_code)   write_reg32(0x40000, err_code) //write_sram32

@@ -2,6 +2,7 @@
 #include "tl_common.h"
 //#include "drivers.h"
 #include "stack/ble/ble.h"
+#include "app_config.h"
 //#include "vendor/common/blt_common.h"
 //#include "cmd_parser.h"
 #include "ble.h"

@@ -51,16 +51,22 @@
 #include "common/bit.h"
 #include "common/utility.h"
 
-#include "default_config.h"
+#include "vendor/common/user_config.h"
+#include "config.h"
 
 #include "common/string.h"
 
 #include "common/usb_dbg/myudb.h"
 
-#include "blt_common.h"
-#include "stack/ble/ble_common.h"
-#include "stack/ble/hci/hci_event.h"
-
 #include "application/print/u_printf.h"
 
+#include "vendor/common/blt_common.h"
+#include "vendor/common/blt_fw_sign.h"
+#include "vendor/common/blt_led.h"
+#include "vendor/common/blt_soft_timer.h"
+#include "vendor/common/custom_pair.h"
+#include "vendor/common/device_manage.h"
+#include "vendor/common/simple_sdp.h"
+#include "vendor/common/flash_fw_check.h"
+#include "vendor/common/common_dbg.h"
 #endif /* TL_COMMON_H_ */

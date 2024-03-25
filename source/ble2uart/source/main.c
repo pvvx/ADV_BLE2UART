@@ -2,7 +2,7 @@
 #include "tl_common.h"
 #include "drivers.h"
 #include "stack/ble/ble.h"
-#include "default_config.h"
+#include "app_config.h"
 #include "app.h"
 
 /**

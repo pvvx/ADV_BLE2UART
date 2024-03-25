@@ -45,7 +45,7 @@
  *******************************************************************************************************/
 #pragma once
 
-#include "default_config.h"
+#include "common/config/user_config.h"
 
 
 #ifndef PA0_INPUT_ENABLE

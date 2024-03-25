@@ -50,7 +50,7 @@
 #include <application/usbstd/HIDClassCommon.h>
 #include <application/usbstd/PrinterClassCommon.h>
 #include <application/usbstd/USBController.h>
-#include "default_config.h"
+#include "vendor/common/default_config.h"
 
 /* Enable C linkage for C++ Compilers: */
 #if defined(__cplusplus)
