@@ -58,8 +58,17 @@ Configuring the controller to transmit at 921600 baud (default bitrate) is sugge
 
 ## Installation
 
+Python is required for *adv2uart.py*.
+
 ```
 git clone https://github.com/pvvx/TLSR825x_ADV_BLE2UART
+```
+
+Required Python modules:
+
+```cmd
+pip3 install pyserial
+pip3 install construct
 ```
 
 Compiling the firmware (including `make clean`):
