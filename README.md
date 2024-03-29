@@ -168,18 +168,17 @@ BLE TLSR825x_ADV_BLE2UART scanner
 
 ## API
 
-Example of usage of the API:
+### black_white_list()
 
 ```python
-from adv2uart import Ble2Uart
-
-dv = Ble2Uart(port="...", baud=..., timeout=0.1)  # example: dv = Ble2Uart(port="/dev/ttyUSB0", baud=115200, timeout=0.1)
-dv.read(64)  # flush
-dv.black_white_list(white_list=[...], black_list=[...])  # load black and white lists; example: dv.black_white_list(white_list=[], black_list=["aabbccddeef0", "aabbccddeef1"])
-while True:
-    rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
-    print(mac, payload)
+black_white_list(white_list=[ ... ], black_list=[ ... ], info=True, clear=True, start=True)
 ```
+
+- Info=False: do not sen the info command
+- clear=False: do not send the list clear command
+- start=False: do not start advertising.
+
+### read_adv()
 
 `read_adv()`: *read serial input, detect advertisements and decode commands*.
 
@@ -258,22 +257,39 @@ Format of the input packet (commands and advertisements have different content):
 header (5 bytes) + mac (6 bytes) + crc (2 bytes) = 13 bytes
 total packet length: l + 13
 
-Examples of the structure of some commands:
+### command()
+
+Argument:
+
+- Command.CMD_ID_INFO
+- Command.CMD_ID_CLRM
+- Command.CMD_ID_WMAC + mac_reverse
+- Command.CMD_ID_BMAC + mac_reverse
+- Command.START_SCAN
+- Command.STOP_SCAN
+- Command.CMD_ID_SCAN + adv_scanning.build(adv_scan_params)
+
+Examples of the structure of some commands, as produced by `command()`:
 
 - Command CMD_ID_INFO: `00 00 01 06 ff a4c138bfff34`
 - Command CMD_ID_CLRM: `00 04 40 00 ff 000000000000`
 - Command CMD_ID_BMAC: `00 03 01 06 ff aabbccddeeff`
 - Command CMD_ID_SCAN: `00 01 10 03 ff 000000003033`
 
+### Example of usage of the API
+
 ```python
-black_white_list(white_list=[ ... ], black_list=[ ... ], info=True, clear=True, start=True)
+from adv2uart import Ble2Uart
+
+dv = Ble2Uart(port="...", baud=..., timeout=0.1)  # example: dv = Ble2Uart(port="/dev/ttyUSB0", baud=115200, timeout=0.1)
+dv.read(64)  # flush
+dv.black_white_list(white_list=[...], black_list=[...])  # load black and white lists; example: dv.black_white_list(white_list=[], black_list=["aabbccddeef0", "aabbccddeef1"])
+while True:
+    rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
+    print(mac, payload)
 ```
 
-- Info=False: do not sen the info command
-- clear=False: do not send the list clear command
-- start=False: do not start advertising.
-
-Usage of custom commands:
+### Example of usage of custom commands
 
 ```python
 from adv2uart import Ble2Uart, Command, adv_scanning
@@ -316,15 +332,17 @@ This parameter can be set as “passive scan” (False) or “active scan” (Tr
 
 ### window_ms
 
-window_ms = scan_interval * 0.625
+*scan_interval* and *scan_window* are internal parameters used within the Telink *blc_ll_setExtScanParam()* SDK system call (invoked by `Command.START_SCAN`).
 
-The scan_interval is set with the same value as the scan_window
+*scan_interval* is the time interval from when the Controller started its last scan until it begins the subsequent scan on the primary advertising physical channel
 
-scan_interval is the time interval from when the Controller started its last scan until it begins the subsequent scan on the primary advertising physical channel
+*scan_window* is the duration of the scan on the primary advertising physical channel.
 
-scan_window is the duration of the scan on the primary advertising physical channel.
+`window_ms` = *scan_intervalé * 0.625; unit is in milliseconds.
 
-## Documentation of the Firmware Source Code
+*scan_interval* is set by the firmware with the same value as the *scan_window*.
+
+## Documentation of the source code of the firmware 
 
 ```mermaid
 %% a class diagram is used simply for rendering, but the code is just standard C, with no OO paradigm
