@@ -305,3 +305,142 @@ for i in range(20):
 
 dv.command(Command.STOP_SCAN)
 ```
+
+### SCAN_TYPE_ACTIVE
+
+This parameter can be set as “passive scan” or “active scan”. For active scan, when an advertising packet is received, a "scan_req" will be sent to the remote device to obtain more information. For passive scan, the "scan req" won’t be sent. 
+
+### scan_interval/scan window
+“scan_interval” serves to set channel switch time in Scanning state (unit: 0.625ms).
+“scan_window” is not processed in current Telink BLE SDK. Actual scan window is
+set as scan_interval. 
+
+## Documentation of the Firmware Source Code
+
+```mermaid
+%% a class diagram is used simply for rendering, but the code is just standard C, with no OO paradigm
+classDiagram
+    main --|> app
+    app --|> ble
+    ble --|> app_buffer
+    ble --|> blt_common
+    app --|> scanning
+    scanning --|> ble
+    scanning --|> drv_uart
+    scanning --|> utils
+    scanning --|> crc
+
+    class main["main.c"]{
+        %% Invoked functions:
+        rf_drv_init(RF_MODE_BLE_1M) also available RF_MODE_LR_S8_125K
+        on_application_close()
+        adc_power_on_sar_adc(0)
+        lpc_power_down()
+        user_init_normal() [in app.c]
+        main_loop() loops forever [in app.c]
+    }
+
+    class app["app.c"]{
+        %% Functions:
+        user_init_normal --> init_ble()
+        main_loop
+        
+        %% Invoked functions:
+        blc_sdk_main_loop()
+        scan_task() [in scanning.c]
+    }
+
+    class ble["ble.c"]{
+        %% Functions:
+        init_ble [BLE configuration]
+        start_adv_scanning
+
+        %% Invoked functions:
+        blc_initMacAddress() [in blt_common.c]
+        blc_ll_initBasicMCU();
+        init_uart(921600);
+        crcInit();
+        blc_ll_initStandby_module(mac_public)
+
+        blc_ll_initExtendedScanning_module()
+        blc_ll_initExtendedInitiating_module();
+
+        blc_ll_initPeriodicAdvertisingSynchronization_module();
+        blc_ll_initAclConnection_module();
+        blc_ll_setMaxConnectionNumber(MASTER_MAX_NUM, SLAVE_MAX_NUM);
+        blc_ll_setAclConnMaxOctetsNumber(...);
+        blc_ll_initAclConnRxFifo(...);
+        blc_ll_initAclConnMasterTxFifo(...);
+        blc_ll_setAclMasterConnectionInterval(CONN_INTERVAL_31P25MS);
+        blc_hci_registerControllerEventHandler(app_controller_event_callback);
+        blc_hci_le_setEventMask_cmd(...);
+        blc_controller_check_appBufferInitialization();
+        blc_hci_registerControllerDataHandler (blc_l2cap_pktHandler);
+        blc_l2cap_initAclConnMasterMtuBuffer(mtu_m_rx_fifo, MTU_M_BUFF_SIZE_MAX, 0, 0);
+        blc_att_setMasterRxMTUSize(ATT_MTU_MASTER_RX_MAX_SIZE);
+        rf_set_power_level_index(MY_RF_POWER);
+
+        blc_ll_setExtScanParam() [in start_adv_scanning]
+        blc_ll_setExtScanEnable() [in start_adv_scanning]   
+    }
+
+    class app_buffer["app_buffer.c"]{
+        %% Functions:
+        app_acl_rxfifo
+        app_acl_mstTxfifo
+        mtu_m_rx_fifo
+    }
+
+    class scanning["scaning.c"]{
+        %% Functions:
+        scan_task [read adv from FIFO, send to UART, control LEDs, read and process input commands from UART]
+
+        send_resp
+
+        ble_adv_callback
+        ble_ext_adv_callback
+        ble_le_periodic_adv_callback
+
+        %% Invoked functions:
+        my_fifo_get() [ in utils.c]
+        uart_send() [in drv_uart.c]
+        uart_read() [in drv_uart.c]
+        gpio_write()
+        start_adv_scanning() [in ble.c]
+        send_resp()
+    }
+
+    class drv_uart["drv_uart.c"]{
+        %% Functions:
+        init_uart
+        uart_send
+        uart_read
+    }
+
+    class utils["utils.c"]{
+        %% Functions:
+        memset
+        memcpy
+        memcmp
+        my_fifo_init
+        my_fifo_wptr
+        my_fifo_push
+        my_fifo_get
+    }
+
+    class blt_common["blt_common.c"]{
+        %% Functions:
+        blc_initMacAddress
+    }
+
+    class crc["crc.c"]{
+        %% Functions:
+        crcInit
+        crcFast
+    }
+```
+
+Notes:
+
+- [rf_drv_init()](http://wiki.telink-semi.cn/tools_and_sdk/Driver/doc/kite/html/rf__drv_8h.html#a22715be7838f01751b91706885914790)
+- [RF_MODE_BLE_1M](http://wiki.telink-semi.cn/tools_and_sdk/Driver/doc/kite/html/rf__drv_8h.html#aefccab4a2d5d5fcda5b92f00c7e120d3)
