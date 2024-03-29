@@ -306,14 +306,23 @@ for i in range(20):
 dv.command(Command.STOP_SCAN)
 ```
 
+### DUP_FILTER_ENABLE
+
+Set to True to filter duplicates (duplicate advertisings)
+
 ### SCAN_TYPE_ACTIVE
 
-This parameter can be set as “passive scan” or “active scan”. For active scan, when an advertising packet is received, a "scan_req" will be sent to the remote device to obtain more information. For passive scan, the "scan req" won’t be sent. 
+This parameter can be set as “passive scan” (False) or “active scan” (True). For active scan, when an advertising packet is received, a "scan_req" will be sent to the remote device to obtain more information. For passive scan, the "scan req" won’t be sent. 
 
-### scan_interval/scan window
-“scan_interval” serves to set channel switch time in Scanning state (unit: 0.625ms).
-“scan_window” is not processed in current Telink BLE SDK. Actual scan window is
-set as scan_interval. 
+### window_ms
+
+window_ms = scan_interval * 0.625
+
+The scan_interval is set with the same value as the scan_window
+
+scan_interval is the time interval from when the Controller started its last scan until it begins the subsequent scan on the primary advertising physical channel
+
+scan_window is the duration of the scan on the primary advertising physical channel.
 
 ## Documentation of the Firmware Source Code
 
