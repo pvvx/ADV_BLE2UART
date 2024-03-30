@@ -56,19 +56,23 @@ If a FIFO overflow is detected, it is suggested to add filters in the black and 
 
 Configuring the controller to transmit at 921600 baud (default bitrate) is suggested if also the host device driver allows this; otherwise the firmware can be recompiled to transmit data at 115200 baud. Reducing the bitrate increases the risk of FIFO overflow.
 
-## Installation
-
-Python is required for *adv2uart.py*.
+## Installation and compilation
 
 ```
 git clone https://github.com/pvvx/TLSR825x_ADV_BLE2UART
 ```
 
-Required Python modules:
+Python is required for *adv2uart.py*. Prerequisite modules:
 
 ```cmd
 pip3 install pyserial
 pip3 install construct
+```
+
+Needed components for the firmware compilation:
+
+```cmd
+sudo apt-get install make bzip2
 ```
 
 Compiling the firmware (including `make clean`):
@@ -367,6 +371,8 @@ classDiagram
     scanning --|> crc
 
     class main["main.c"]{
+        Set up environment and run the main_loop function in infinite loop
+
         %% Invoked functions:
         rf_drv_init(RF_MODE_BLE_1M) also available RF_MODE_LR_S8_125K
         on_application_close()
@@ -378,7 +384,7 @@ classDiagram
 
     class app["app.c"]{
         %% Functions:
-        user_init_normal --> init_ble()
+        user_init_normal --> init_ble() [in ble.c]
         main_loop
         
         %% Invoked functions:
