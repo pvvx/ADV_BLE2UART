@@ -151,14 +151,36 @@ void start_adv_scanning(u8 flg, u16 tdw) {
 		mac_list.filtr = (flg >> 4) & 3;
 		//set scan parameter and scan enable
 		//blc_ll_setExtScanParam( OWN_ADDRESS_PUBLIC, SCAN_FP_ALLOW_ADV_ANY, SCAN_PHY_1M_CODED,
-		blc_ll_setExtScanParam( (flg >> 6) & 3, SCAN_FP_ALLOW_ADV_ANY, mode,
-				(flg >> 2) & 1,  t1, t1,
-				(flg >> 2) & 1,  t2, t2);
-		blc_ll_setExtScanEnable( BLC_SCAN_ENABLE, (flg >> 3) & 1,
-				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS);
+		if (blc_ll_setExtScanParam(
+            (flg >> 6) & 3, // ownAddrType - Own_Address_Type
+            SCAN_FP_ALLOW_ADV_ANY, // scan_fp - Scanning_Filter_Policy
+            mode, // scan_phys - Scanning_PHYs, "SCAN_PHY_1M" or "SCAN_PHY_CODED"
+            (flg >> 2) & 1, // Scan_Type for 1M PHY, Passive Scanning or Active Scanning.
+            t1, t1, // Scan_Interval and Duration of the scan on the primary advertising physical channel for 1M PHY
+            (flg >> 2) & 1, // Scan_Type for Coded PHY, Passive Scanning or Active Scanning.
+            t2, t2 // Scan_Interval and Duration of the scan on the on the primary advertising physical channel for Coded PHY
+        )) {
+#if defined(GPIO_LED_R)
+            gpio_write(GPIO_LED_R, 1);  // Show error...
+            sleep_us(5000000); // ...for 5 seconds
+#endif
+        }
+		if (blc_ll_setExtScanEnable( BLC_SCAN_ENABLE, (flg >> 3) & 1,
+				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS)
+        ) {
+#if defined(GPIO_LED_R)
+            gpio_write(GPIO_LED_R, 1);  // Show error...
+            sleep_us(2000000); // ...for 2 seconds
+#endif
+        };
 	} else {
-		blc_ll_setExtScanEnable(BLC_SCAN_DISABLE, DUP_FILTER_DISABLE,
-				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS);
+		if (blc_ll_setExtScanEnable(BLC_SCAN_DISABLE, DUP_FILTER_DISABLE,
+				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS)
+        ) {
+#if defined(GPIO_LED_R)
+            gpio_write(GPIO_LED_R, 1);  // Show error...
+            sleep_us(2000000); // ...for 2 seconds
+#endif
+        };
 	}
 }
-
