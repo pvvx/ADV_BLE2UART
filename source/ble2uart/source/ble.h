@@ -10,3 +10,5 @@ extern u8 mac_public[6];
 void init_ble(void);
 void start_adv_scanning(u8 flg, u16 tdw);
 
+u8 read_baud_rate(void);
+void change_baud_rate(void);

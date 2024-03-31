@@ -313,5 +313,7 @@ void scan_task(void) {
 			}
 		}
 	}
+    if (!gpio_read(KEY_USER)) {
+        change_baud_rate();
+    }
 }
-
