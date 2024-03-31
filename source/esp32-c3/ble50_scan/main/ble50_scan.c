@@ -790,14 +790,26 @@ static void io_task(void *arg) {
 				if(read_buf[0] == CMD_ID_WMAC) {
 					mac_list.mode = WHITE_LIST;
 					if(mac_list.count < MAC_MAX_SCAN_LIST) {
-						memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+						//memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+						mac_list.mac[mac_list.count][0] = read_buf[6];
+						mac_list.mac[mac_list.count][1] = read_buf[5];
+						mac_list.mac[mac_list.count][2] = read_buf[4];
+						mac_list.mac[mac_list.count][3] = read_buf[3];
+						mac_list.mac[mac_list.count][4] = read_buf[2];
+						mac_list.mac[mac_list.count][5] = read_buf[1];
 						mac_list.count++;
 					}
 					send_resp(cmd, mac_list.count, &read_buf[1], 6);
 				} else if(read_buf[0] == CMD_ID_BMAC) {
 					mac_list.mode = BALCK_LIST;
 					if(mac_list.count < MAC_MAX_SCAN_LIST) {
-						memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+						//memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+						mac_list.mac[mac_list.count][0] = read_buf[6];
+						mac_list.mac[mac_list.count][1] = read_buf[5];
+						mac_list.mac[mac_list.count][2] = read_buf[4];
+						mac_list.mac[mac_list.count][3] = read_buf[3];
+						mac_list.mac[mac_list.count][4] = read_buf[2];
+						mac_list.mac[mac_list.count][5] = read_buf[1];
 						mac_list.count++;
 					}
 					send_resp(cmd, mac_list.count, &read_buf[1], 6);

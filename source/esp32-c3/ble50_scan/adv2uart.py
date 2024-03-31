@@ -159,7 +159,7 @@ def main():
 	dv.add_mac_list(binascii.unhexlify('1c90ffdc0cc6'), 3)
 	dv.add_mac_list(binascii.unhexlify('1c90ffd8ba69'), 3)
 	
-	dv.command(b'\x01\x32\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
+	dv.command(b'\x01\x33\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
 	with keyboard.Listener(on_press=on_press) as listener:
 		while listener.running:
 			blk = dv.read(64)
