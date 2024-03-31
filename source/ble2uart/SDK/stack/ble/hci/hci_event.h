@@ -180,7 +180,7 @@ typedef enum {
 typedef struct {
 	u8	subcode;
 	u8	nreport;
-	u8	event_type; // advReportEventType_t
+	u8	event_type;
 	u8	adr_type;
 	u8	mac[6];
 	u8	len;

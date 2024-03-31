@@ -104,7 +104,7 @@ main-build: $(ELF_FILE) secondary-outputs
 # Tool invocations
 $(ELF_FILE): $(OBJS) $(USER_OBJS)
 	@echo 'Building Standard target: $@'
-	$(TC32_PATH)tc32-elf-ld --gc-sections -Ttext 0x10000 -L $(TEL_PATH)/proj_lib -L $(OUT_PATH) -T $(LS_FLAGS) -o $(ELF_FILE) $(OBJS) $(USER_OBJS) $(LIBS)
+	@$(TC32_PATH)tc32-elf-ld --gc-sections -Ttext 0x10000 -L $(TEL_PATH)/proj_lib -L $(OUT_PATH) -T $(LS_FLAGS) -o $(ELF_FILE) $(OBJS) $(USER_OBJS) $(LIBS)
 	@echo 'Building Reduced target: $@'
 	@$(TC32_PATH)tc32-elf-ld --gc-sections -Map=$(OUT_PATH)/$(PROJECT_NAME).map -Ttext `python3 $(PROJECT_PATH)/TlsrRetMemAddr.py -e $(ELF_FILE) -t $(TC32_PATH)tc32-elf-nm` -L $(TEL_PATH)/proj_lib -L $(OUT_PATH) -T $(LS_FLAGS) -o $(ELF_FILE) $(OBJS) $(USER_OBJS) $(LIBS)
 	@echo 'Finished building target: $@'

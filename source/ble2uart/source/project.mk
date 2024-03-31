@@ -23,11 +23,11 @@ $(OUT_PATH)/source/main.o
 
 # Each subdirectory must supply rules for building sources it contributes
 $(OUT_PATH)/source/%.o: $(PROJECT_PATH)/%.c
-	@echo 'Building file: $<'
+	@echo 'Building application file from C: $<'
 	@$(TC32_PATH)tc32-elf-gcc $(GCC_FLAGS) $(INCLUDE_PATHS) -c -o"$@" "$<"
 
 
 # Each subdirectory must supply rules for building sources it contributes
 $(OUT_PATH)/source/%.o: $(PROJECT_PATH)/%.S
-	@echo 'Building file: $<'
+	@echo 'Building application file from assembly: $<'
 	@$(TC32_PATH)tc32-elf-gcc $(BOOT_FLAG) -c -o"$@" "$<"

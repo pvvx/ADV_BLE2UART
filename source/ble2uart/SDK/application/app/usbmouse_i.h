@@ -49,7 +49,7 @@
 #include "application/usbstd/usbhw.h"
 #include "application/usbstd/usbhw_i.h"
 #include "application/usbstd/usb.h"
-#include "default_config.h"
+#include "vendor/common/default_config.h"
 
 
 /** HID class report descriptor. This is a special descriptor constructed with values from the
