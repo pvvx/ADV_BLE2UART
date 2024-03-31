@@ -27,12 +27,12 @@ Firmware --- CH340 --- USBD --- USBH --- UART --- adv2uart
 
 Characteristics of this BLE receiver firmware:
 
-- tested on a Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 921600 or 115200 Baud
-- the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 or 115200 at the moment, but other bitrates can be added); the default bitrate is 921600 baud; any change in the bitrate performed with the key is permanently stored;
+- compatible with [Telink TLSR825x SoC](http://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/);
+- tested on Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
+- output to UART, 921600 (default) or 115200 Baud; the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 or 115200 at the moment, but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
 - robust datalink with CRC16 for error detection while transitting data to the host via UART;
 - software FIFO sized for 4 packets of 240 bytes;
-- the firmware accepts BLE PHY 1M and Coded PHY S8 (BLE Long Range) concurrently;
+- the firmware accepts BLE PHY 1M and Coded PHY S8 (125kbps BLE Long Range mode) concurrently;
 - white-list and black-list for 64 MAC addresses;
 - LEDs to monitor the advertising processing;
 - the software exploits the latest version of the [Telink SDK](https://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/#software-development-kit) for [Bluetooth LE Multi Connection](https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip);
