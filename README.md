@@ -28,7 +28,8 @@ Firmware --- CH340 --- USBD --- USBH --- UART --- adv2uart
 Characteristics of this BLE receiver firmware:
 
 - tested on a Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 921600 Baud (the bitrate can be modified, e.g. to 115200, by recompiling the firmware);
+- output to UART, 921600 or 115200 Baud
+- the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 or 115200 at the moment, but other bitrates can be added); the default bitrate is 921600 baud; any change in the bitrate performed with the key is permanently stored;
 - robust datalink with CRC16 for error detection while transitting data to the host via UART;
 - software FIFO sized for 4 packets of 240 bytes;
 - the firmware accepts BLE PHY 1M and Coded PHY S8 (BLE Long Range) concurrently;

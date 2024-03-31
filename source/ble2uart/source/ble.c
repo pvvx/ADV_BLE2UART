@@ -10,9 +10,60 @@
 #include "scaning.h"
 #include "drv_uart.h"
 #include "crc.h"
+#include "tinyFlash.h"
 
 RAM u8 mac_public[6];
 // u8 mac_random_static[6];
+
+unsigned int baudrate_list[] = { 921600, 115200 };
+
+enum
+{
+    STORAGE_BAUD = 1,
+};
+
+u8 read_baud_rate(void) {
+    u8 baudrate_index;
+    u8 baud_buf[1];
+    u8 size_baud_list = sizeof(baudrate_list) / sizeof(baudrate_list[0]);
+    u8 len = 1;
+
+    tinyFlash_Read(STORAGE_BAUD, baud_buf, &len);
+    baudrate_index = baud_buf[0];
+    if (baudrate_index == 0xff)
+        baudrate_index = 0;
+    if (baudrate_index >= size_baud_list) {
+        gpio_write(GPIO_LED_W, 1);
+        sleep_us(2000000);
+        gpio_write(GPIO_LED_W, 0);
+        return 0;
+    }
+    return baudrate_index;
+}
+
+void change_baud_rate(void) {
+    u8 baudrate_index = read_baud_rate();
+    u8 size_baud_list = sizeof(baudrate_list) / sizeof(baudrate_list[0]);
+    u8 baud_buf[1];
+
+    do {
+        sleep_us(50000);
+        gpio_write(GPIO_LED_R, 1);
+        gpio_write(GPIO_LED_G, 1);
+        gpio_write(GPIO_LED_B, 1);
+        sleep_us(50000);
+        gpio_write(GPIO_LED_R, 0);
+        gpio_write(GPIO_LED_G, 0);
+        gpio_write(GPIO_LED_B, 0);
+    } while (!gpio_read(KEY_USER));
+    if (++baudrate_index == size_baud_list )
+        baudrate_index = 0;
+
+    baud_buf[0] = baudrate_index;
+    tinyFlash_Write(STORAGE_BAUD, (unsigned char*)baud_buf, (u8) 1);
+
+    init_uart(baudrate_list[baudrate_index]);
+}
 
 __attribute__((optimize("-Os")))
 int app_controller_event_callback(u32 h, u8 *p, int n) {
@@ -77,7 +128,8 @@ void init_ble(void) {
 
 	blc_ll_initBasicMCU(); //must
 
-	init_uart(921600);
+	tinyFlash_Init(0x70000, 0x4000);
+    init_uart(baudrate_list[read_baud_rate()]);
 	crcInit();
 
 	blc_ll_initStandby_module(mac_public); //must
