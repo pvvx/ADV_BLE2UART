@@ -453,7 +453,7 @@ def main():
         '--baudrate',
         dest='baudrate',
         type=int,
-        help='serial connection baudrate (default: 115200)',
+        help='serial connection baudrate (default: 921600)',
         default=921600
     )
     parser.add_argument(
