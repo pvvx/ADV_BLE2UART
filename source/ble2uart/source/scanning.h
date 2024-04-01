@@ -1,12 +1,12 @@
 /*
- * scaning.h
+ * scanning.h
  *
  *  Created on: 20.11.2021
  *      Author: pvvx
  */
 
-#ifndef SCANING_H_
-#define SCANING_H_
+#ifndef SCANNING_H_
+#define SCANNING_H_
 
 enum {
 	CMD_ID_INFO		= 0x00,
@@ -42,4 +42,4 @@ void ble_le_periodic_adv_callback(u8 *p);
 void ble_le_periodic_adv_sync_established_callback(u8 *p);
 void ble_le_periodic_adv_sync_lost_callback(u8 *p);
 
-#endif /* SCANING_H_ */
+#endif /* SCANNING_H_ */

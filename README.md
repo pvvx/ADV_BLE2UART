@@ -29,7 +29,7 @@ Characteristics of this BLE receiver firmware:
 
 - compatible with [Telink TLSR825x SoC](http://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/);
 - tested on Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 921600 (default) or 115200 Baud; the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 or 115200 at the moment, but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
+- output to UART, 921600 (default) or 115200 Baud; the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 [one blink] or 115200 [two blinks] at the moment, but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
 - robust datalink with CRC16 for error detection while transitting data to the host via UART;
 - software FIFO sized for 4 packets of 240 bytes;
 - the firmware accepts BLE PHY 1M and Coded PHY S8 (125kbps BLE Long Range mode) concurrently;
@@ -40,6 +40,8 @@ Characteristics of this BLE receiver firmware:
 - Compared to implementations based on variants of the Hayes/AT command set, this software employs a very compact bidirectional protocol to optimize UART traffic;
 - the BLE device can be fully controlled by the hosts via commands;
 - Available commands can be extended.
+
+If the RGB LED switches on when powering on the device, the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
 
 When using modules like the TB-03F-KIT, this software allows experimenting BLE Long Range with a Windows PC or through a wide set of hosts supporting the CH340 USB-to-UART interface.
 
@@ -76,17 +78,29 @@ Needed components for the firmware compilation:
 sudo apt-get install make bzip2
 ```
 
-Compiling the firmware (including `make clean`):
+Compiling the firmware (including `make clean`) and copying the created TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
 
 ```
 cd TLSR825x_ADV_BLE2UART/source/ble2uart
 make
 ```
 
-Recompiling the firmware without `make clean`:
+Recompiling the firmware without `make clean` and copy the created TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
 
 ```
 make main-build
+```
+
+Make all files, run TlsrMemInfo.py, do copy the TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
+
+```
+make sizedummy
+```
+
+Cleaning files (but not the SDK, which also needs `rm -r SDK`):
+
+```
+make clean
 ```
 
 The compiled firmware is in the directory TLSR825x_ADV_BLE2UART/source/ble2uart/TLSR825xScaner.bin

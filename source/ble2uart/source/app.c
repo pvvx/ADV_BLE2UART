@@ -7,7 +7,7 @@
 //#include "cmd_parser.h"
 #include "ble.h"
 #include "app.h"
-#include "scaning.h"
+#include "scanning.h"
 
 
 RAM u32 utc_time_sec;	// clock in sec (= 0 -> 1970-01-01 00:00:00)

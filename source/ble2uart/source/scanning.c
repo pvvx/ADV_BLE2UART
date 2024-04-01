@@ -1,5 +1,5 @@
 /*
- * scaning.c
+ * scanning.c
  *
  *  Created on: 20.11.2021
  *      Author: pvvx
@@ -12,7 +12,7 @@
 #include "drv_uart.h"
 #include "crc.h"
 #include "utils.h"
-#include "scaning.h"
+#include "scanning.h"
 
 typedef struct {
 #if defined(GPIO_LED_R)
