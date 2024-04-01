@@ -3,24 +3,24 @@
 
 #include "tinyFlash.h"
 
-#define TINY_SECTOR_SIZE 4096 //flash扇区大小
-#define TINY_BUFFER_SIZE 256  //tiny缓冲区大小
+#define TINY_SECTOR_SIZE 4096  // flash sector size
+#define TINY_BUFFER_SIZE 256  // tiny buffer size
 
-#define TINY_SECHAD_SIZE 32   //记录扇区使用情况的扇区头大小
+#define TINY_SECHAD_SIZE 32  // Sector header size to record sector usage
 
 static unsigned char _buf[TINY_BUFFER_SIZE] = { 0 };
 
 static unsigned long tinyFlash_Start_Addr = 0;
 static unsigned long tinyFlash_End_Addr   = 0;
 
-static unsigned long tinyFlash_Used_Addr = 0; //当前使用的扇区地址
-static unsigned long tinyFlash_Swap_Addr = 0; //当前未使用的扇区地址
+static unsigned long tinyFlash_Used_Addr = 0;  // Currently used sector address
+static unsigned long tinyFlash_Swap_Addr = 0;  // Currently unused sector address
 
 void flash_write_org(unsigned long addr, unsigned long len, unsigned char *buf)
 {
     unsigned long tmp = addr & 0xff;
 
-    if(tmp + len > 0x100) //跨扇区写入
+    if(tmp + len > 0x100)  // Write across sectors
     {
         flash_write_page(addr, 0x100 - tmp, buf);
 
@@ -52,14 +52,12 @@ bool tinyFlash_Init(unsigned long start_addr, unsigned long len)
 
     flash_read_page(tinyFlash_Start_Addr, TINY_BUFFER_SIZE, _buf);
 
-    //at_print_hexstr(_buf, TINY_BUFFER_SIZE);
-
-    if(_buf[0] != 0XFF)  //第一个扇区在使用
+    if(_buf[0] != 0XFF)  // The first sector is in use
     {
         tinyFlash_Used_Addr = tinyFlash_Start_Addr;
         tinyFlash_Swap_Addr = tinyFlash_Start_Addr + TINY_SECTOR_SIZE;
     }
-    else //第二个扇区在使用
+    else  // The second sector is in use
     {
         tinyFlash_Used_Addr = tinyFlash_Start_Addr + TINY_SECTOR_SIZE;
         tinyFlash_Swap_Addr = tinyFlash_Start_Addr;
@@ -75,27 +73,27 @@ int tinyFlash_Read(unsigned char KEY, unsigned char * outbuf, unsigned char * le
     
     while(1)
     {
-        if(_addr_start > _addr_end -3) //该扇区查找完毕
+        if(_addr_start > _addr_end -3)  // The sector search is completed
         {
             break;
         }
         
         flash_read_page(_addr_start, TINY_BUFFER_SIZE, _buf);
 
-        if(_buf[0] == KEY) //目标KEY
+        if(_buf[0] == KEY)  // Target KEY
         {
-            if(_buf[1] == (KEY ^ 0xFF)) //该KEY正在使用中
+            if(_buf[1] == (KEY ^ 0xFF))  // The KEY is in use
             {
-                if(len == NULL)  //删除操作
+                if(len == NULL)  // Delete operation
                 {
                     _buf[0] = 0;
                     flash_write_page(_addr_start + 1 , 1 , _buf);
                 }
-                else if(outbuf == NULL) //读取长度
+                else if(outbuf == NULL)  // Read length
                 {
                     *len = _buf[2];
                 }
-                else //读取数据
+                else  // Read data
                 {
                     memcpy(outbuf, _buf + 3, _buf[2]);
                     *len = _buf[2];
@@ -103,20 +101,18 @@ int tinyFlash_Read(unsigned char KEY, unsigned char * outbuf, unsigned char * le
 
                 return 0;
             }
-            else //该KEY已被删除
+            else  // The KEY has been deleted
             {
-                //at_print_hexstr(_buf, 5);
-                //at_print("delect\r\n");
                 _addr_start += (_buf[2] + 3);
                 continue;
             }
         }
-        else if((_buf[0] != 0) && (_buf[0] != 0xff)) //其他KEY
+        else if((_buf[0] != 0) && (_buf[0] != 0xff))  // Other KEY
         {
             _addr_start += (_buf[2] + 3);
             continue;
         }
-        else //读取到扇区尾部未使用的区域
+        else  // Read the unused area at the end of the sector
         {
             break;
         }
@@ -138,31 +134,27 @@ int tinyFlash_Write(unsigned char KEY, unsigned char * buf, unsigned char len)
         
     while(1)
     {
-        if(_addr_start > _addr_end -3 - len) //该扇区已查找完毕，无可用空间
+        if(_addr_start > _addr_end -3 - len)  // The sector has been searched and there is no free space
         {
-            if(dirty_data_len > 0) //当前扇区中存在脏数据
+            if(dirty_data_len > 0)  // Dirty data exists in the current sector
             {
-                tinyFlash_Swap(); //交换新旧扇区，清理脏数据
+                tinyFlash_Swap();  // Swap old and new sectors and clean dirty data
 
                 _addr_start = tinyFlash_Used_Addr + TINY_SECHAD_SIZE;;
                 _addr_end   = tinyFlash_Used_Addr + TINY_SECTOR_SIZE;
             }
-            else //无可用空间
+            else  // No space available
             {
                 return -1;
             }
-            
-            //at_print("Swap\r\n");
         }
 
         g_addr = _addr_start;
         
         flash_read_page(_addr_start, TINY_BUFFER_SIZE, _buf);
 
-        if(_buf[0] == 0xFF) //该区域可使用
+        if(_buf[0] == 0xFF)  // This area is available
         {
-            //at_print_hexstr(&_addr_start, 2);
-
             _buf[0] = KEY;
             _buf[1] = (KEY ^ 0xFF);
             _buf[2] = len;
@@ -172,7 +164,7 @@ int tinyFlash_Write(unsigned char KEY, unsigned char * buf, unsigned char len)
             
             return 0;
         }
-        else if(_buf[0] != 0) //已存储其他KEY
+        else if(_buf[0] != 0)  // Other KEYs have been stored
         {
             _addr_start += (_buf[2] + 3);
             
@@ -182,10 +174,8 @@ int tinyFlash_Write(unsigned char KEY, unsigned char * buf, unsigned char len)
             }
             continue;
         }
-        else //读取到错误的数据
+        else  // Wrong data read
         {
-            // at_print_hexstr(_buf, 5);
-            // at_print("Er\r\n");
             break;
         }
     }
@@ -193,38 +183,38 @@ int tinyFlash_Write(unsigned char KEY, unsigned char * buf, unsigned char len)
     return 0;
 }
 
-void tinyFlash_Swap() //扇区使用完了，需要清理数据，才能存储别的数据
+void tinyFlash_Swap()  // The sector is used up and the data needs to be cleared before other data can be stored.
 {
-    unsigned long _addr_start = tinyFlash_Used_Addr + TINY_SECHAD_SIZE; //当前使用的扇区的起始地址
-    unsigned long _addr_end   = tinyFlash_Used_Addr + TINY_SECTOR_SIZE; //当前使用的扇区的结束地址
+    unsigned long _addr_start = tinyFlash_Used_Addr + TINY_SECHAD_SIZE;  // Starting address of the currently used sector
+    unsigned long _addr_end   = tinyFlash_Used_Addr + TINY_SECTOR_SIZE;  // The end address of the currently used sector
 
-    unsigned long _new_addr_start = tinyFlash_Swap_Addr + TINY_SECHAD_SIZE; //将要使用的扇区的起始地址
-    //unsigned long _new_addr_end   = tinyFlash_Swap_Addr + TINY_SECTOR_SIZE; //将要使用的扇区的结束地址
-        
+    unsigned long _new_addr_start = tinyFlash_Swap_Addr + TINY_SECHAD_SIZE;  // The starting address of the sector to be used
+    // unsigned long _new_addr_end = tinyFlash_Swap_Addr + TINY_SECTOR_SIZE;  // The end address of the sector to be used
+
     unsigned long tmp = 0;
 
     while(1)
     {
-        if(_addr_start > _addr_end -3) //该扇区已查找完毕，无可用空间
+        if(_addr_start > _addr_end -3)  // The sector has been searched and there is no free space
         {
             break;
         }
         
         flash_read_page(_addr_start, TINY_BUFFER_SIZE, _buf);
 
-        if(_buf[0] == 0xFF) //数据转移完毕
+        if(_buf[0] == 0xFF)  // Data transfer completed
         {
             break;
         }
-        else if(_buf[0] == 0) //读取到了错误的数据
+        else if(_buf[0] == 0)  // Wrong data was read
         {
             break;
         }
-        else //读取到正确的Key数据
+        else  // Read the correct Key data
         {
             _addr_start += (_buf[2] + 3);
 
-            if(_buf[1] == (_buf[0] ^ 0xFF)) //数据仍有效(未删除)
+            if(_buf[1] == (_buf[0] ^ 0xFF))  // The data is still valid (not deleted)
             {
                 tmp = _new_addr_start & 0xff;
 
@@ -236,8 +226,8 @@ void tinyFlash_Swap() //扇区使用完了，需要清理数据，才能存储�
     }
 
     _buf[0] = 0xaa;
-    flash_write_page(tinyFlash_Swap_Addr, 1, _buf); //将新扇区标记为在使用
-    flash_erase_sector(tinyFlash_Used_Addr);        //擦除旧扇区
+    flash_write_page(tinyFlash_Swap_Addr, 1, _buf);  // Mark new sectors as in use
+    flash_erase_sector(tinyFlash_Used_Addr);  // Erase old sectors
 
     _new_addr_start = tinyFlash_Swap_Addr;
 
@@ -245,14 +235,14 @@ void tinyFlash_Swap() //扇区使用完了，需要清理数据，才能存储�
     tinyFlash_Used_Addr = _new_addr_start;
 }
 
-/*擦除所有扇区*/
+/* Erase all sectors */
 void tinyFlash_Format(void)
 {
-    flash_erase_sector(tinyFlash_Used_Addr);//擦除旧扇区
-    flash_erase_sector(tinyFlash_Swap_Addr);//擦除旧扇区
+    flash_erase_sector(tinyFlash_Used_Addr);  // Erase old sectors
+    flash_erase_sector(tinyFlash_Swap_Addr);  // Erase old sectors
 } 
 
-/*读取某片区域的数据，存放到全局变量，主要用于Debug*/
+/* Read data from a certain area and store it in global variables, mainly used for debugging */
 void tinyFlash_Debug(unsigned long addr)
 {
     flash_read_page(addr, TINY_BUFFER_SIZE, _buf);

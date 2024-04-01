@@ -41,10 +41,10 @@ u8 read_baud_rate(void) {
     u8 size_baud_list = sizeof(baudrate_list) / sizeof(baudrate_list[0]);
     u8 len = 1;
 
-    tinyFlash_Read(STORAGE_BAUD, baud_buf, &len);
-    baudrate_index = baud_buf[0];
-    if (baudrate_index == 0xff)
+    if ( tinyFlash_Read(STORAGE_BAUD, baud_buf, &len) )
         baudrate_index = 0;
+    else
+        baudrate_index = baud_buf[0];
     if (baudrate_index >= size_baud_list) {
         rgb_blink(50000);
         return 0;
