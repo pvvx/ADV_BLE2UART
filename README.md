@@ -41,7 +41,7 @@ Characteristics of this BLE receiver firmware:
 - the BLE device can be fully controlled by the hosts via commands;
 - Available commands can be extended.
 
-If the RGB LED switches on when powering on the device, the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
+If the RGB LED switches on when powering on the device (e.g., new device), the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
 
 When using modules like the TB-03F-KIT, this software allows experimenting BLE Long Range with a Windows PC or through a wide set of hosts supporting the CH340 USB-to-UART interface.
 
@@ -109,7 +109,7 @@ The compiled firmware is in the directory TLSR825x_ADV_BLE2UART/source/ble2uart/
 
 TlsrPgm.py needs a patch applied to the device: [How to write TLSRPGM program to TB-03F-KIT or TB-04-KIT](https://github.com/pvvx/TLSRPGM/tree/main/sources/UART2SWire/tb-0x-pgm).
 
-Flash the firmware via the following command (`we` = write file to flash erasing related sectors):
+Flash the firmware via the following command (`we` = write file to flash erasing related buffers):
 
 ```
 PGM_PORT=COM10 make flash
@@ -141,6 +141,38 @@ Example to burn the firmware with the Ai-Thinker device connected via USB to the
 
 ```
 python3 Telink_Tools.py --port com8 burn TLSR825xScaner.bin
+```
+
+## Persistent user data storage
+
+Flash user data storage starts from 0x70020 (458784) if the first byte 0x70000 (458752) is not FF, or 0x71020 (462880). Each update of a value (e.g., "bitrate" value) takes 4 sequential bytes. One buffer is 256 bytes.
+
+After erasing a buffer, data can be written only once (not twice). A rewrite needs erasing data first. To avoid too many rewrites (that wears the storage), data are organized in an array where each segment is progressively updated in sequence so that the last value is the actual one.
+
+See "tinyFlash.c".
+
+### Erasing the user data flash
+
+```bash
+Telink_Tools.py --port com10 erase_flash 0x70000 1
+Telink_Tools.py --port com10 erase_flash 0x71000 1
+Telink_Tools.py --port com10 write_flash_fill 0x70000 "00"
+```
+
+The first two commands erase one buffer starting from the indicated address (0x70000 or 0x71000). The resulting data are initialized to 0xff.
+
+The third command writes 00 in the first byte. Notice that a *write_flash_fill* fills remaining data with 0xff until the end of the buffer; as they are already 0xff, the filled data are not written and can be used by the application.
+
+### Reaading the first buffer
+
+```bash
+Telink_Tools.py --port com10 read_flash 0x70000 255
+```
+
+### Reaading the second buffer
+
+```bash
+Telink_Tools.py --port com10 read_flash 0x71000 255
 ```
 
 ## SDK Update
