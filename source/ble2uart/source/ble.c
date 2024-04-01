@@ -7,7 +7,7 @@
 #include "app.h"
 #include "stack/ble/ble.h"
 #include "app.h"
-#include "scaning.h"
+#include "scanning.h"
 #include "drv_uart.h"
 #include "crc.h"
 #include "tinyFlash.h"
@@ -22,6 +22,19 @@ enum
     STORAGE_BAUD = 1,
 };
 
+void rgb_blink(int sleep) {
+#if defined(GPIO_LED_R) && defined(GPIO_LED_G) && defined(GPIO_LED_G)
+    sleep_us(sleep);
+    gpio_write(GPIO_LED_R, 1);
+    gpio_write(GPIO_LED_G, 1);
+    gpio_write(GPIO_LED_B, 1);
+    sleep_us(sleep);
+    gpio_write(GPIO_LED_R, 0);
+    gpio_write(GPIO_LED_G, 0);
+    gpio_write(GPIO_LED_B, 0);
+#endif
+}
+
 u8 read_baud_rate(void) {
     u8 baudrate_index;
     u8 baud_buf[1];
@@ -33,9 +46,7 @@ u8 read_baud_rate(void) {
     if (baudrate_index == 0xff)
         baudrate_index = 0;
     if (baudrate_index >= size_baud_list) {
-        gpio_write(GPIO_LED_W, 1);
-        sleep_us(2000000);
-        gpio_write(GPIO_LED_W, 0);
+        rgb_blink(50000);
         return 0;
     }
     return baudrate_index;
@@ -47,20 +58,22 @@ void change_baud_rate(void) {
     u8 baud_buf[1];
 
     do {
-        sleep_us(50000);
-        gpio_write(GPIO_LED_R, 1);
-        gpio_write(GPIO_LED_G, 1);
-        gpio_write(GPIO_LED_B, 1);
-        sleep_us(50000);
-        gpio_write(GPIO_LED_R, 0);
-        gpio_write(GPIO_LED_G, 0);
-        gpio_write(GPIO_LED_B, 0);
+        rgb_blink(50000);
     } while (!gpio_read(KEY_USER));
-    if (++baudrate_index == size_baud_list )
+    if (++baudrate_index == size_baud_list)
         baudrate_index = 0;
 
     baud_buf[0] = baudrate_index;
     tinyFlash_Write(STORAGE_BAUD, (unsigned char*)baud_buf, (u8) 1);
+
+#if defined(GPIO_LED_W)
+    gpio_write(GPIO_LED_W, 1);
+    sleep_us(1000000);
+    for (size_t i=0; i<baudrate_index + 1; i++)
+        rgb_blink(500000);
+    sleep_us(1000000);
+    gpio_write(GPIO_LED_W, 0);
+#endif
 
     init_uart(baudrate_list[baudrate_index]);
 }

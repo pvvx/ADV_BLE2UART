@@ -44,6 +44,7 @@ SIZEDUMMY :=
 OUT_DIR :=
 
 GCC_FLAGS := \
+-Werror \
 -ffunction-sections \
 -fdata-sections \
 -Wall \
@@ -67,11 +68,11 @@ GCC_FLAGS += $(TEL_CHIP)
 #-include $(TEL_PATH)/make/vendor_common.mk
 -include $(PROJECT_PATH)/uprintf.mk
 -include $(PROJECT_PATH)/drivers_8258.mk
-#-include $(PROJECT_PATH)/div_mod.mk
+-include $(PROJECT_PATH)/div_mod.mk
 
 #include Project makefile
 -include $(PROJECT_PATH)/project.mk
-#-include $(PROJECT_PATH)/boot.mk
+-include $(PROJECT_PATH)/boot.mk
 
 # Add inputs and outputs from these tool invocations to the build variables 
 LST_FILE := $(OUT_PATH)/$(PROJECT_NAME).lst
@@ -130,7 +131,6 @@ clean:
 	-$(RM) $(FLASH_IMAGE) $(ELFS) $(OBJS) $(LST) $(SIZEDUMMY) $(ELF_FILE) $(BIN_FILE) $(LST_FILE)
 	-@echo ' '
 
-
 pre-build:
 	mkdir -p $(foreach s,$(OUT_DIR),$(OUT_PATH)$(s))
 	-@echo ' '
@@ -141,7 +141,7 @@ ifneq ($(TC32_PATH)tc32-elf-gcc, $(wildcard $(TC32_PATH)tc32-elf-gcc))
 endif
 endif
 
-secondary-outputs: $(BIN_FILE) $(LST_FILE) $(SIZEDUMMY)
+secondary-outputs: $(BIN_FILE) $(LST_FILE) # $(SIZEDUMMY)
 
 .PHONY: all clean
 .SECONDARY: main-build
