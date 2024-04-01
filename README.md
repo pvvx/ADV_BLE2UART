@@ -91,7 +91,7 @@ Recompiling the firmware without `make clean` and copy the created TLSR825xScane
 make main-build
 ```
 
-Make all files, run TlsrMemInfo.py, do copy the TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
+Make all files, run TlsrMemInfo.py, do not copy the TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
 
 ```
 make sizedummy
@@ -202,7 +202,7 @@ BLE TLSR825x_ADV_BLE2UART scanner
 black_white_list(white_list=[ ... ], black_list=[ ... ], info=True, clear=True, start=True)
 ```
 
-- Info=False: do not sen the info command
+- Info=False: do not send the info command
 - clear=False: do not send the list clear command
 - start=False: do not start advertising.
 
