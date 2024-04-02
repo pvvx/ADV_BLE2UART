@@ -13,7 +13,8 @@ enum {
 	CMD_ID_SCAN 	= 0x01, //  Scan on/off, parameters
 	CMD_ID_WMAC		= 0x02, // add white mac
 	CMD_ID_BMAC 	= 0x03, // add black mac
-	CMD_ID_CLRM		= 0x04  // clear mac list
+	CMD_ID_CLRM		= 0x04, // clear mac list
+	CMD_ID_PRNT		= 0x05  // print debug message
 } CMD_ID_KEYS;
 
 #define MAC_MAX_SCAN_LIST	64

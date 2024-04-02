@@ -17,7 +17,8 @@ wget -P "${TEMPD}" https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zi
 unzip "${TEMPD}/B85M_BLE_SDK.zip" -d "${TEMPD}"
 
 # Updating the SDK with patch "patch_0001_20231201"
-mv "${TEMPD}/telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/proj_lib" "${TEMPD}/b85m_ble_sdk/proj_lib"
+mv "${TEMPD}/telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/proj_lib/"* "${TEMPD}/b85m_ble_sdk/proj_lib"
+rmdir "${TEMPD}/telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/proj_lib/"
 mv "${TEMPD}/telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/sdk_version.txt" "${TEMPD}/b85m_ble_sdk/sdk_version.txt"
 
 # Install updated SDK to the target directory

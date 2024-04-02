@@ -98,6 +98,8 @@ class Command:
     CMD_ID_WMAC = b'\x02'  # add white mac (len_cmd = 6: mac)
     CMD_ID_BMAC = b'\x03'  # add black mac (len_cmd = 6: mac)
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
+    # CMD_ID_PRNT = b'\x05'  # debug print
+    DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
     START_SCAN  = CMD_ID_SCAN + adv_scanning.build(
         {
             "flag": {
@@ -324,7 +326,12 @@ class Ble2Uart:
                             )
                             cmd = self.data[1:2]
                             len_cmd = self.data[3]  # evtp = length of the command data included in mac (max=6)
-                            if cmd == Command.CMD_ID_INFO:
+                            if self.data[1:11] == Command.DEBUG_PRINT:
+                                payload = (
+                                    self.data[11: len_payload + 11]
+                                ).decode()
+                                logging.warning("Debug message: %s", payload)
+                            elif cmd == Command.CMD_ID_INFO:
                                 logging.warning(
                                     'resp: %s=CmdInfo, version: %s; '
                                     'local MAC: %s', rssi, adtp, mac.decode()

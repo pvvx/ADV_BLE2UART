@@ -1,9 +1,3 @@
-################################################################################
-# Automatically-generated file. Do not edit!
-################################################################################
-
-# Add inputs and outputs from these tool invocations to the build variables 
-
 OUT_DIR += /drivers/8258 /drivers/8258/driver_ext
 
 OBJS += \

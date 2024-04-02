@@ -66,7 +66,7 @@ GCC_FLAGS += $(TEL_CHIP)
 #include SDK makefile
 #-include $(TEL_PATH)/make/common.mk
 #-include $(TEL_PATH)/make/vendor_common.mk
--include $(PROJECT_PATH)/uprintf.mk
+#-include $(PROJECT_PATH)/uprintf.mk
 -include $(PROJECT_PATH)/drivers_8258.mk
 -include $(PROJECT_PATH)/div_mod.mk
 

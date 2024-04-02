@@ -13,6 +13,7 @@
 #include "crc.h"
 #include "utils.h"
 #include "scanning.h"
+#include "u_printf.h"
 
 typedef struct {
 #if defined(GPIO_LED_R)
@@ -52,7 +53,7 @@ void send_resp(u8 cmd, u8 id, u8 *pmac, u8 len) {
 	if(s) {
 		memset(s, 0, HEAD_CRC_ADD_LEN);
 		//s[0] = 0;
-		s[1] = cmd; // rssi
+		s[1] = cmd; // command number (position of the rssi)
 		s[2] = id; // ev type
 		s[3] = len; // addr type
 		s[4] = 0xff; // phy = 0xff -> cmd response
@@ -78,6 +79,7 @@ int chk_mac(u8 *pmac) {
 		ret = 1;
 	return ret;
 }
+
 
 //////////////////////////////////////////////////////////
 // scan event call back
