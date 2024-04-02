@@ -17,6 +17,7 @@ RAM u8 mac_public[6];
 
 unsigned int baudrate_list[] = { 921600, 115200 };
 
+// Define the Index list used by tinyFlash
 enum
 {
     STORAGE_BAUD = 1,
