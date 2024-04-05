@@ -1,7 +1,7 @@
+#include "app_config.h"
 #include "tl_common.h"
 #include "app_buffer.h"
 #include "drivers.h"
-#include "app_config.h"
 #include "drivers/8258/gpio_8258.h"
 #include "ble.h"
 #include "app.h"
