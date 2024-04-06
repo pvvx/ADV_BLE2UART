@@ -5,21 +5,6 @@
 #include "stack/ble/ble.h"
 #include "app.h"
 
-#if (MCU_CORE_TYPE == MCU_CORE_9518)
-	/* default flash is 1M
-	 * for 1M Flash, flash_sector_mac_address equals to 0xFF000
-	 * for 2M Flash, flash_sector_mac_address equals to 0x1FF000 */
-	_attribute_ble_data_retention_	u32 flash_sector_mac_address = CFG_ADR_MAC;
-	_attribute_ble_data_retention_	u32 flash_sector_calibration = CFG_ADR_CALIBRATION;
-#else
-	/* default flash is 512K
-	 * for 512K Flash, flash_sector_mac_address equals to 0x76000
-	 * for 1M Flash, flash_sector_mac_address equals to 0xFF000
-	 * for 2M Flash, flash_sector_mac_address equals to 0x1FF000 */
-	_attribute_ble_data_retention_	u32 flash_sector_mac_address = CFG_ADR_MAC;
-	_attribute_ble_data_retention_	u32 flash_sector_calibration = CFG_ADR_CALIBRATION;
-#endif
-
 /**
  * @brief      This function servers to initialization all gpio.
  * @param[in]  en  -  if mcu wake up from deep retention mode, determine whether it is NOT necessary to reset analog register
