@@ -11,7 +11,6 @@ $(OUT_PATH)/source/utils.o \
 $(OUT_PATH)/source/app.o \
 $(OUT_PATH)/source/app_buffer.o \
 $(OUT_PATH)/source/scanning.o \
-$(OUT_PATH)/source/blt_common.o \
 $(OUT_PATH)/source/ble.o \
 $(OUT_PATH)/source/drv_uart.o \
 $(OUT_PATH)/source/tinyFlash.o \
