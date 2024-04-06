@@ -46,8 +46,8 @@
 #ifndef APP_BUFFER_H_
 #define APP_BUFFER_H_
 
-#include "tl_common.h"
 #include "app_config.h"
+#include "tl_common.h"
 
 
 #define SET_MAX_BUF		23

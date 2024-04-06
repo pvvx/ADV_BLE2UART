@@ -4,10 +4,10 @@
  *  Created on: 04.03.2024
  *      Author: pvvx
  */
+#include "app_config.h"
 #include "tl_common.h"
 #include "drivers/8258/register_8258.h"
 #include "drv_uart.h"
-#include "app_config.h"
 
 //--- UART DMA buffers ----------------------------
 

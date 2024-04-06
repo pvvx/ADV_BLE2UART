@@ -1,9 +1,9 @@
 #include <stdint.h>
+#include "app_config.h"
 #include "tl_common.h"
 #include "drivers.h"
 #include "stack/ble/ble.h"
 #include "app.h"
-#include "app_config.h"
 
 #if (MCU_CORE_TYPE == MCU_CORE_9518)
 	/* default flash is 1M
@@ -182,28 +182,8 @@ _attribute_ram_code_ int main (void) {    //must run in ramcode
 
 	clock_init(SYS_CLK_TYPE);
 
-	rf_drv_init(RF_MODE_BLE_1M);
-
 	_gpio_init(!deepRetWakeUp);  // analog resistance will keep available in deepSleep mode, so no need to initialize it again
-
-    // Initialize ports for the used LEDs
-    int leds[] = { GPIO_LED_B, GPIO_LED_R, GPIO_LED_G, GPIO_LED_E, GPIO_LED_W };
-    for (size_t i = 0; i < sizeof(leds)/sizeof(leds[0]); i++) {
-        gpio_set_func(leds[i], AS_GPIO);
-        gpio_set_output_en(leds[i], 1);
-        gpio_set_data_strength(leds[i], 1);
-    }
-
-    // Initialize UART RX port
-    gpio_set_func(GPIO_RX, AS_GPIO);
-    gpio_set_input_en(GPIO_RX, 1);
-    gpio_setup_up_down_resistor(GPIO_RX, PM_PIN_PULLUP_1M);
-
-    // Initialize UART TX port
-    gpio_set_func(GPIO_TX, AS_GPIO);
-    gpio_set_output_en(GPIO_TX, 1);
-    gpio_set_data_strength(GPIO_TX, 1);
-    gpio_setup_up_down_resistor(GPIO_TX, PM_PIN_PULLUP_1M);
+	rf_drv_init(RF_MODE_BLE_1M);
 
 	adc_power_on_sar_adc(0); // - 0.4 mA
 	lpc_power_down();

@@ -4,10 +4,10 @@
  *  Created on: 20.11.2021
  *      Author: pvvx
  */
+#include "app_config.h"
 #include "tl_common.h"
 #include "ble.h"
 #include "stack/ble/ble.h"
-#include "app_config.h"
 //#include "app.h"
 #include "drv_uart.h"
 #include "crc.h"
