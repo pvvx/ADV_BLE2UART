@@ -3,12 +3,12 @@
 import sys
 import time
 import serial
-import binascii
 import logging
 import argparse
 import os
 import json
 import codecs
+import re
 from construct import *
 
 
@@ -92,6 +92,12 @@ adv_scanning = Struct(
 )
 
 
+ReversedMacAddress = ExprAdapter(Byte[6],
+    decoder = lambda obj, ctx: ":".join("%02x" % b for b in obj[::-1]).upper(),
+    encoder = lambda obj, ctx: bytes.fromhex(re.sub(r'[.:\- ]', '', obj))[::-1]
+)
+
+
 class Command:
     CMD_ID_INFO = b'\x00'
     CMD_ID_SCAN = b'\x01'  # Scan on/off, (len_cmd = 3: parameters)
@@ -118,7 +124,7 @@ class Command:
 
 
 class Ble2Uart:
-    def __init__(self, port=None, baud=921600, timeout=0.1):
+    def __init__(self, port=None, baud=921600, timeout=0.3):
         self.sync = None
         self.data = None
         self.ser = None
@@ -126,10 +132,29 @@ class Ble2Uart:
         self.timeout = timeout
         self.baud = baud
         self.port = None
+        self.config_cmd = {}
+        self.cmd_time = time.time()
 
         self.reopen(baud, port, timeout)
 
+    def config_start(self):
+        self.config_cmd = {}
+        ret = time.time() - self.cmd_time
+        self.cmd_time = time.time()
+        return ret
+
+    def config_still_running(self):
+        if not self.config_cmd:
+            return -1
+        return time.time() - self.cmd_time
+
+    def config_account(self, cmd):
+        self.config_cmd[cmd[0]] = self.config_cmd.get(cmd[0], 0) - 1
+        if not self.config_cmd[cmd[0]]:
+            del self.config_cmd[cmd[0]]
+
     def reopen(self, baud=None, port=None, timeout=None):
+        self.config_start()
         self.data = bytearray()
         self.sync = None
         if timeout:
@@ -144,12 +169,12 @@ class Ble2Uart:
         if self.ser and self.ser.isOpen():
             self.ser.close()
             logging.warning(
-                'ReOpen %s, %d bit/s, timeout: %s secs...',
+                'ReOpen %s, %d baud, timeout: %s secs...',
                 self.port, self.baud, self.timeout
             )
         else:
             logging.warning(
-                'Open %s, %d bit/s, timeout: %s secs...',
+                'Open %s, %d baud, timeout: %s secs...',
                 self.port, self.baud, self.timeout
             )
         try:
@@ -214,84 +239,19 @@ class Ble2Uart:
             "send cmd: %s [%s] %s",
             HEX(b[0:1])[0], HEX(b[1:-2])[0], HEX(b[-2:])[0]
         )
+        self.config_cmd[cmd[0]] = self.config_cmd.get(cmd[0], 0) + 1
         time.sleep(0.05)
         return True
 
     def add_mac_list(self, mac, cmd=Command.CMD_ID_WMAC):
-        return self.command(bytearray([cmd[0]] + [i for i in mac[::-1]]))
+        return self.command(
+            bytearray([cmd[0]]) + bytearray(ReversedMacAddress.build(mac))
+        )
 
     def close(self):
         return self.ser.close()
 
     def read_adv(self):
-        """
-        read_adv(): read serial input, detect advertisements and decode commands.
-
-        Return: rssi, evtp, adtp, phys, mac, payload
-
-        Input packet format (commands and advertisements have different content):
-
-          - Header: 5 bytes (fixed for commands and advertisements)
-
-            - the first byte (l) is the length of the payload (if command: 0)
-
-            - rssi (if command: command number)
-
-            - adtp:
-                - BT4.2: pa->event_type
-                - ext_adv: pa->event_type
-                - periodic_adv: pExt->subEventCode
-                (if command: mac array position, or max number of positions)
-                (if command 0=CMD_ID_INFO: version in BCD format; 0x34 -> '3.4')
-
-                ADV_REPORT_EVENT_TYPE_ADV_IND           = 0x00,
-                ADV_REPORT_EVENT_TYPE_DIRECT_IND        = 0x01,
-                ADV_REPORT_EVENT_TYPE_SCAN_IND          = 0x02,
-                ADV_REPORT_EVENT_TYPE_NONCONN_IND       = 0x03,
-                ADV_REPORT_EVENT_TYPE_SCAN_RSP          = 0x04,
-
-            - evtp:
-                - BT4.2: pa->adr_type & 0x0f
-                - ext_adv: (pa->address_type & 0x0f) | (pa->direct_address_type << 4)
-                - periodic_adv: periodic_adv.advAddrType & 0x0f
-                (if command: length of the command data; can be 0)
-
-                PUBLIC = 0,
-                RANDOM = 1,
-                RESOLVE_PRIVATE_PUBLIC = 2,
-                RESOLVE_PRIVATE_RANDOM = 3,
-
-            - phys
-                - bt4.2: 0x00
-                - ext_adv: pa->primary_phy | (pa->secondary_phy << 4)
-                - periodic_adv: periodic_adv.advPHY
-                (if command: 0xff)
-
-                BLE_PHY_1M              = 0x01,
-                BLE_PHY_2M              = 0x02,
-                BLE_PHY_CODED           = 0x03,
-
-          - mac: 6 bytes, fixed for commands and advertisements
-                for advertisements: MAC in scope
-                (if command CMD_ID_CLRM: 000000000000)
-                (if command CMD_ID_INFO: public MAC address of the device)
-                (if command CMD_ID_SCAN: adv_scanning parameters; see length)
-                (if CMD_ID_WMAC and CMD_ID_BMAC: MAC in scope)
-
-          - payload: variable length 'l' (if command: not present)
-
-          - crc: 2 bytes, fixed for commands and advertisements
-                CRC16 of the total packet length
-
-        header (5 bytes) + mac (6 bytes) + crc (2 bytes) = 13 bytes
-        total packet length: l + 13
-
-        Examples of the structure of some commands:
-        - Command CMD_ID_INFO: 00 00 01 06 ff a4c138bfff34
-        - Command CMD_ID_CLRM: 00 04 40 00 ff 000000000000
-        - Command CMD_ID_BMAC: 00 03 01 06 ff aabbccddeeff
-        - Command CMD_ID_SCAN: 00 01 10 03 ff 000000003033
-        """
         rssi = ""
         adtp = ""
         evtp = ""
@@ -317,7 +277,7 @@ class Ble2Uart:
                         adtp = HEX(self.data[2:3])[0]
                         evtp = HEX(self.data[3:4])[0]
                         phys = HEX(self.data[4:5])[0]
-                        mac = HEX(bytearray(self.data[10:4:-1]))[0]
+                        mac = ReversedMacAddress.parse(self.data[5:11])
                         if self.data[4] == 0xff:  # phys = 0xff -> cmd response received; rssi is the cmd number
                             # 0, cmd id, position, length, 0xff; all commands have 11 bytes packet length
                             logging.verbose(
@@ -332,11 +292,13 @@ class Ble2Uart:
                                 ).decode()
                                 logging.warning("Debug message: %s", payload)
                             elif cmd == Command.CMD_ID_INFO:
+                                self.config_account(cmd)
                                 logging.warning(
                                     'resp: %s=CmdInfo, version: %s; '
-                                    'local MAC: %s', rssi, adtp, mac.decode()
+                                    'local MAC: %s', rssi, adtp, mac
                                 )  # command id, total number of definable mac list elements
                             elif cmd == Command.CMD_ID_CLRM:
+                                self.config_account(cmd)
                                 logging.warning(
                                     'resp: %s=ClearMacList, definable'
                                     ' elements: %s', rssi, self.data[2]
@@ -345,13 +307,15 @@ class Ble2Uart:
                                 Command.CMD_ID_WMAC,
                                 Command.CMD_ID_BMAC
                             ]:  # it includes a mac; print it in reverse
+                                self.config_account(cmd)
                                 logging.warning(  # command id, count, mac
                                     'resp: %s=Add %s List, '
                                     'position %s, MAC: %s', rssi,
                                     "WHITE" if cmd == Command.CMD_ID_WMAC
-                                    else "BLACK", self.data[2], mac.decode()
+                                    else "BLACK", self.data[2], mac
                                 )
                             elif cmd == Command.CMD_ID_SCAN:
+                                self.config_account(cmd)
                                 if self.data[5] == 0:
                                     logging.warning(
                                         'resp: %s=SCAN Disable %s',
@@ -376,7 +340,7 @@ class Ble2Uart:
                             logging.info(
                                 'adv: %s %s %s %s %s %s %s',
                                 len_payload, rssi, evtp.decode(), adtp.decode(),
-                                phys.decode(), mac.decode(), payload.decode()
+                                phys.decode(), mac, payload.decode()
                             )
                         self.data = self.data[len_payload + 13:]  # remove the processed packet
                     else:  # CRC error
@@ -402,9 +366,9 @@ class Ble2Uart:
         if clear:
             self.command(Command.CMD_ID_CLRM)  # clear w/b list
         for i in white_list:
-            self.add_mac_list(binascii.unhexlify(i), Command.CMD_ID_WMAC)
+            self.add_mac_list(i, Command.CMD_ID_WMAC)
         for i in black_list:
-            self.add_mac_list(binascii.unhexlify(i), Command.CMD_ID_BMAC)
+            self.add_mac_list(i, Command.CMD_ID_BMAC)
         if start:
             self.command(Command.START_SCAN)
 
@@ -456,6 +420,14 @@ def main():
         help='Print limited debug information'
     )
     parser.add_argument(
+        '-s',
+        '--sleep',
+        dest='sleep',
+        type=int,
+        help='add an initial delay in seconds before the query (default: 0)',
+        default=0
+    )
+    parser.add_argument(
         '-b',
         '--baudrate',
         dest='baudrate',
@@ -476,8 +448,8 @@ def main():
         '--timeout',
         dest='timeout',
         type=float,
-        help='serial port read timeout in seconds (default: 0.1)',
-        default=0.1
+        help='serial port read timeout in seconds (default: 0.3)',
+        default=0.3
     )
     parser.add_argument(
         '-n',
@@ -510,7 +482,9 @@ def main():
         baud=args.baudrate,
         timeout=args.timeout
     )
+    time.sleep(args.sleep)
     dv.read(64)  # flush
+    dv.config_start()
     dv.black_white_list()
     count = 0
     while True:
@@ -519,6 +493,12 @@ def main():
             count += 1
             if count == args.number:
                 break
+        if dv.config_still_running() > 3: 
+            logging.warning(
+                "Commands not answered in time: %s. Retrying...", dv.config_cmd
+                )
+            dv.config_start()
+            dv.black_white_list()
     dv.command(Command.STOP_SCAN)
     dv.read_adv()
     dv.close()  # close the connection
