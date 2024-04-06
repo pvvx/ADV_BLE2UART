@@ -1,48 +1,7 @@
-/********************************************************************************************************
- * @file	u_printf.c
- *
- * @brief	This is the source file for BLE SDK
- *
- * @author	BLE GROUP
- * @date	2020.06
- *
- * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
- *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
- *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
- *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *******************************************************************************************************/
+/*
+ * app_printf.c (improved version of u_printf from the BLE SDK)
+*/
+
 /*
  Copyright 2001, 2002 Georges Menie (www.menie.org)
  stdarg version contributed by Christian Ettinger
@@ -81,6 +40,7 @@
 #include "drv_uart.h"
 
 #include "scanning.h"
+#include "crc.h"
 
 extern my_fifo_t ad_fifo;
 
@@ -231,7 +191,12 @@ int print(char **out, const char *format, va_list args) {
 				/* char are converted to int then pushed on the stack */
 				scr[0] = (char) va_arg( args, int );
 				scr[1] = '\0';
-				pc += prints(out, scr, width, pad);
+                if (scr[0] == 0x00) {
+                    printchar(out, 0);
+                    pc++;
+                }
+                else
+                    pc += prints(out, scr, width, pad);
 				continue;
 			}
 		} else {
@@ -265,6 +230,7 @@ void u_array_printf(unsigned char*data, unsigned int len) {
 	u_printf("}\n");
 }
 
+// Write a Command.DEBUG_PRINT packet to the USB UART and uses the FIFO.
 void uart_printf(const char *format, ...) {
     u8 ret;
 	va_list args;
@@ -272,7 +238,7 @@ void uart_printf(const char *format, ...) {
 	u8 *s = my_fifo_wptr(&ad_fifo);
     char * out = (char *) &s[11];
 	if(s) {
-		memset(s, 0, HEAD_CRC_ADD_LEN);
+		memset(s, 0, HEAD_CRC_ADD_LEN);  // MAC (last 6 bytes) is set to 0
         ret = print(&out, format, args);  // message
 		s[0] = ret; // length of the message
 		s[1] = CMD_ID_PRNT;  // position of the rssi
@@ -283,6 +249,49 @@ void uart_printf(const char *format, ...) {
 		my_fifo_next(&ad_fifo);
 	}
     va_end(args);
+}
+
+#define MYFIFO_BLK_SIZE		(EXTADV_RPT_DATA_LEN_MAX + HEAD_CRC_ADD_LEN) // 229+12 = 241 bytes
+
+// Write raw data to the USB UART directly calling uart_send(), without using FIFO/headers/crc.
+// The length of the message is returned, or -1 if busy.
+int raw_printf(const char *format, ...) {
+    u8 out[MYFIFO_BLK_SIZE];
+    u8 length;
+	va_list args;
+    char * p = (char *) out;
+
+	va_start(args, format);
+    length = print(&p, format, args);
+    va_end(args);
+    return(uart_send(out, length));
+}
+
+// Write a Command.DEBUG_PRINT packet to the USB UART without using the FIFO.
+// The length of the message is returned, or -1 if busy.
+int p_printf(const char *format, ...) {
+    u8 out[MYFIFO_BLK_SIZE];
+    u8 length;
+	va_list args;
+    crc_t crc;
+    int len;
+    char * p = (char *) out + HEAD_CRC_ADD_LEN - 2;  // 2 is the CRC
+
+	va_start(args, format);
+    length = print(&p, format, args);  // message
+    va_end(args);
+    memset(out, 0, HEAD_CRC_ADD_LEN);  // MAC (last 6 bytes) is set to 0
+    out[0] = length; // length of the message
+    out[1] = CMD_ID_PRNT;  // position of the rssi
+    out[2] = 0xff;
+    out[3] = 0xff;
+    out[4] = 0xff;
+    len = length + HEAD_CRC_ADD_LEN - 2;
+    crc = crcFast(out, len);
+    out[len] = crc;
+    out[len+1] = crc >> 8;
+
+    return(uart_send(out, length + HEAD_CRC_ADD_LEN));
 }
 
 #endif

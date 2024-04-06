@@ -13,7 +13,7 @@
 #include "crc.h"
 #include "utils.h"
 #include "scanning.h"
-#include "u_printf.h"
+#include "app_printf.h"
 
 typedef struct {
 #if defined(GPIO_LED_R)
