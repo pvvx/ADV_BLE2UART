@@ -371,7 +371,7 @@ volatile unsigned char uart_send_byte(unsigned char byte)
 {
 	unsigned int addr;
 
-	unsigned char b[5] = {1, 0,0,0,0};
+	static unsigned char b[5] = {1, 0,0,0,0};
 
 	addr = (unsigned int)b;
 
@@ -434,7 +434,7 @@ unsigned char uart_is_parity_error(void)
  */
 void uart_clear_parity_error(void)
 {
-	reg_uart_status0|= FLD_UART_CLEAR_RX_FLAG; //write 1 to clear
+	reg_uart_status0 = FLD_UART_CLEAR_RX_FLAG; //write 1 to clear
 }
 
 /**

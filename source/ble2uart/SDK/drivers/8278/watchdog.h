@@ -62,8 +62,8 @@ extern void wd_set_interval_ms(unsigned int period_ms,unsigned long int tick_per
  * @return    none
  */
 static inline void wd_start(void){
-	BM_SET(reg_tmr_ctrl, FLD_TMR2_EN);
-	BM_SET(reg_tmr_ctrl, FLD_TMR_WD_EN);
+	BM_SET(reg_tmr_ctrl8, FLD_TMR2_EN);
+	BM_SET(reg_wd_ctrl1, FLD_WD_EN);
 }
 /**
  * @brief     stop watchdog. ie disable watchdog
@@ -71,7 +71,7 @@ static inline void wd_start(void){
  * @return    none
  */
 static inline void wd_stop(void){
-	BM_CLR(reg_tmr_ctrl, FLD_TMR_WD_EN);
+	BM_CLR(reg_wd_ctrl1, FLD_WD_EN);
 }
 
 /**

@@ -190,7 +190,7 @@ make
 
 If the compiler is not included in the SDK, the makefile downloads it.
 
-The *install_sdk.sh* script is tested with [b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201](https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip); it allows to download the latest SDK form Telink, patch it and install it to the target directory.
+The *install_sdk.sh* script is tested with [telink_b85m_ble_sdk_V4.0.1.3_Patch]((https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip)) including patch_0001_20231201 and patch_0002_20240402; it allows to download the latest SDK from Telink, patch it and install it to the target directory.
 
 Reinstall the SDK and compile:
 

@@ -771,7 +771,10 @@ enum{
 	FLD_TMR2_STA =				BIT(26),
 	FLD_CLR_WD =				BIT(27),
 };
-
+#define reg_wd_ctrl1            REG_ADDR8(0x622)
+enum{
+	FLD_WD_EN     = BIT(7),
+};
 #define reg_tmr_sta				REG_ADDR8(0x623)
 enum{
 	FLD_TMR_STA_TMR0 =			BIT(0),

@@ -142,8 +142,8 @@ enum {
 	 WAKEUP_STATUS_CORE 			= BIT(2),
 	 WAKEUP_STATUS_PAD    			= BIT(3),
 
-	 STATUS_GPIO_ERR_NO_ENTER_PM  	= BIT(7),
-
+	 STATUS_GPIO_ERR_NO_ENTER_PM  	= BIT(8),/**<Bit8 is used to determine whether the wake source is normal.*/
+	 
 	 STATUS_ENTER_SUSPEND  			= BIT(30),
 };
 
@@ -213,9 +213,6 @@ extern  suspend_handler_t 		 func_before_suspend;
 
 typedef void (*check_32k_clk_handler_t)(void);
 extern  check_32k_clk_handler_t  pm_check_32k_clk_stable;
-
-typedef unsigned int (*pm_get_32k_clk_handler_t)(void);
-extern  pm_get_32k_clk_handler_t	pm_get_32k_tick;
 
 /******************************* User Interface  ************************************/
 void bls_pm_registerFuncBeforeSuspend (suspend_handler_t func );
@@ -380,7 +377,7 @@ static inline void blc_pm_select_external_32k_crystal(void)
 	cpu_sleep_wakeup 	 	= cpu_sleep_wakeup_32k_xtal;
 	pm_tim_recover		 	= pm_tim_recover_32k_xtal;
 	pm_check_32k_clk_stable = check_32k_clk_stable;
-	pm_get_32k_tick         = get_32k_tick;
+
 	blt_miscParam.pad32k_en 	= 1; // set '1': 32k clk src use external 32k crystal
 }
 

@@ -768,6 +768,10 @@ enum{
 
 #define WATCHDOG_DISABLE	( reg_tmr_ctrl &= ~FLD_TMR_WD_EN )
 
+#define reg_wd_ctrl1            REG_ADDR8(0x622)
+enum{
+	FLD_WD_EN     = BIT(7),
+};
 #define reg_tmr_sta				REG_ADDR8(0x623)
 enum{
 	FLD_TMR_STA_TMR0 =			BIT(0),

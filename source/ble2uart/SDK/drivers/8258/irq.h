@@ -133,7 +133,7 @@ static inline unsigned long irq_get_src(){
  */
 static inline void irq_clr_src2(unsigned long msk)
 {
-    reg_irq_src |= msk;
+    reg_irq_src = msk;
 }
 
 /**
@@ -184,5 +184,6 @@ static inline unsigned short rf_irq_src_get(void)
  */
 static inline void rf_irq_clr_src(unsigned short msk)
 {
-    reg_rf_irq_status |= msk;
+    reg_rf_irq_status = msk;
 }
+

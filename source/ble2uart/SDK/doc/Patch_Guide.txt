@@ -13,3 +13,8 @@
 	replace file "b85m_ble_sdk/proj_lib/liblt_8278_m0s4.a" with "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/proj_lib/liblt_8278_m0s4.a";
 	replace file "b85m_ble_sdk/proj_lib/liblt_8278_m1s1.a" with "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/proj_lib/liblt_8278_m1s1.a";
 	replace file "b85m_ble_sdk/sdk_version.txt" with "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0001_20231201/sdk_version.txt";
+
+2. 0002_20240402
+	replace files in "b85m_ble_sdk/proj_lib" with files with same name in "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0002_20240402/proj_lib";
+	replace files in "b85m_ble_sdk/drivers" with files with same name in "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0002_20240402/drivers";
+	replace file "b85m_ble_sdk/sdk_version.txt" with "telink_b85m_ble_sdk_V4.0.1.3_Patch/patch_0002_20240402/sdk_version.txt";

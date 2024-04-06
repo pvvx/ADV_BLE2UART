@@ -48,6 +48,7 @@
 #include "irq.h"
 #include "analog.h"
 #include "timer.h"
+#include "pm.h"
 
 extern _attribute_data_retention_ unsigned char tl_24mrc_cal;
 
@@ -81,7 +82,14 @@ void clock_init(SYS_CLK_TypeDef SYS_CLK)
 		FLD_TMR_WD_CAPT, (MODULE_WATCHDOG_ENABLE ? (WATCHDOG_INIT_TIMEOUT * CLOCK_SYS_CLOCK_1MS >> WATCHDOG_TIMEOUT_COEFF):0)
 		, FLD_TMR_WD_EN, (MODULE_WATCHDOG_ENABLE?1:0));
 #endif
-
+	/*
+		In some customer application scenarios, they want code execution time to be short and power consumption to be low.
+		Meanwhile, they do not concerned about the accuracy of 24m rc or they want to control the calibration cycle themselves. 
+		Therefore, here we provide a way for users to configure the calibration logic without affecting compatibility.
+	*/
+	if(!pm_is_MCU_deepRetentionWakeup()){
+		rc_24m_cal();
+	}
 }
 
 /**
