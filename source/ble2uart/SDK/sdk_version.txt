@@ -1,2 +1,2 @@
 Telink BLE SDK_VERSION = 
-telink_b85m_ble_sdk_V4.0.1.3_patch0001
+telink_b85m_ble_sdk_V4.0.1.3_patch0002
