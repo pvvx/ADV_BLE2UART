@@ -424,8 +424,8 @@ def main():
         '--sleep',
         dest='sleep',
         type=int,
-        help='add an initial delay in seconds before the query (default: 0)',
-        default=0
+        help='add an initial delay in seconds before the query (default: 0.5)',
+        default=0.5
     )
     parser.add_argument(
         '-b',

@@ -11,13 +11,16 @@
 #include "drv_uart.h"
 #include "crc.h"
 #include "tinyFlash.h"
+#if DEBUG_MSG > 0
+#include "debug_ble_functions.h"
+#endif
 
 RAM u8 mac_public[6];
 // u8 mac_random_static[6];
 
-unsigned int baudrate_list[] = { 921600, 115200 };
+unsigned int baudrate_list[] = { 921600, 115200 };  // List of available UART baudrates in bit-per-second
 
-// Define the Index list used by tinyFlash
+// Define the Index list of persistent data used by tinyFlash
 enum
 {
     STORAGE_BAUD = 1,
@@ -81,6 +84,9 @@ void change_baud_rate(void) {
 
 __attribute__((optimize("-Os")))
 int app_controller_event_callback(u32 h, u8 *p, int n) {
+#if DEBUG_MSG > 0
+    debug_app_controller_event_callback(h, p, n);
+#endif
 	if (h & HCI_FLAG_EVENT_BT_STD) { // ble controller hci event
 		u8 evtCode = h & 0xff;
 		if(evtCode == HCI_EVT_LE_META) { //LE Event
@@ -195,6 +201,15 @@ void init_ble(void) {
 }
 
 // Scannning_Interval, Time = N * 0.625 ms
+
+/*
+During scanning, the Link Layer listens on a primary advertising channel index
+for the duration of the scan window (scanWindow). The scan interval (scanInterval)
+is defined as the interval between the start of two consecutive scan windows.
+If the scanWindow and the scanInterval parameters are set to the same value
+by the Host, the Link Layer should scan continuously.
+*/
+
 void start_adv_scanning(u8 flg, u16 tdw) {
 #if defined(GPIO_LED_R)
 	gpio_write(GPIO_LED_R, 0);
@@ -226,26 +241,36 @@ void start_adv_scanning(u8 flg, u16 tdw) {
             (flg >> 2) & 1, // Scan_Type for Coded PHY, Passive Scanning or Active Scanning.
             t2, t2 // Scan_Interval and Duration of the scan on the on the primary advertising physical channel for Coded PHY
         )) {
-#if defined(GPIO_LED_R)
+
+#if defined(GPIO_LED_R) && defined(GPIO_LED_W)
             gpio_write(GPIO_LED_R, 1);  // Show error...
+            gpio_write(GPIO_LED_W, 1);
             sleep_us(5000000); // ...for 5 seconds
+            gpio_write(GPIO_LED_R, 0);
+            gpio_write(GPIO_LED_W, 0);
 #endif
         }
 		if (blc_ll_setExtScanEnable( BLC_SCAN_ENABLE, (flg >> 3) & 1,
 				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS)
         ) {
-#if defined(GPIO_LED_R)
+#if defined(GPIO_LED_R) && defined(GPIO_LED_W)
             gpio_write(GPIO_LED_R, 1);  // Show error...
+            gpio_write(GPIO_LED_W, 1);
             sleep_us(2000000); // ...for 2 seconds
+            gpio_write(GPIO_LED_R, 0);
+            gpio_write(GPIO_LED_W, 0);
 #endif
         };
 	} else {
 		if (blc_ll_setExtScanEnable(BLC_SCAN_DISABLE, DUP_FILTER_DISABLE,
 				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS)
         ) {
-#if defined(GPIO_LED_R)
+#if defined(GPIO_LED_R) && defined(GPIO_LED_W)
             gpio_write(GPIO_LED_R, 1);  // Show error...
+            gpio_write(GPIO_LED_W, 1);
             sleep_us(2000000); // ...for 2 seconds
+            gpio_write(GPIO_LED_R, 0);
+            gpio_write(GPIO_LED_W, 0);
 #endif
         };
 	}

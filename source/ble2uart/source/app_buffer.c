@@ -90,5 +90,3 @@ _attribute_ble_data_retention_	u8 mtu_s_tx_fifo[SLAVE_MAX_NUM * MTU_S_BUFF_SIZE_
 /***************** ACL connection L2CAP layer MTU TX & RX data FIFO allocation, End **********************************/
 
 #endif // (BLE_DEVICE_ENABLE || BLE_MASTER_ENABLE)
-
-
