@@ -29,10 +29,10 @@ Characteristics of this BLE receiver firmware:
 
 - compatible with [Telink TLSR825x SoC](http://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/);
 - tested on Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 921600 (default) or 115200 Baud; the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 [one blink] or 115200 [two blinks] at the moment, but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
-- robust datalink with CRC16 for error detection while transitting data to the host via UART;
+- output to UART, 921600 (default) or 115200 baud; the bitrate can be changed with the "PROG" key, toggling between the defined ones (e.g. 921600 [one blink] or 115200 [two blinks] at the moment, but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
+- robust datalink with CRC16 for error detection while transitting data;
 - software FIFO sized for 4 packets of 240 bytes;
-- the firmware accepts BLE PHY 1M and Coded PHY S8 (125kbps BLE Long Range mode) concurrently;
+- the firmware scans BLE PHY 1M advertisements and Coded PHY S8 advertisements (125kbps BLE Long Range mode) concurrently;
 - white-list and black-list for 64 MAC addresses;
 - LEDs to monitor the advertising processing;
 - the software exploits the latest version of the [Telink SDK](https://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/#software-development-kit) for [Bluetooth LE Multi Connection](https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip);
@@ -41,7 +41,7 @@ Characteristics of this BLE receiver firmware:
 - the BLE device can be fully controlled by the hosts via commands;
 - Available commands can be extended.
 
-If the RGB LED switches on when powering on the device (e.g., new device), the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
+If the RGB LED switches on for a while when powering on the device (e.g., new device), the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
 
 When using modules like the TB-03F-KIT, this software allows experimenting BLE Long Range with a Windows PC or through a wide set of hosts supporting the CH340 USB-to-UART interface.
 
@@ -52,12 +52,12 @@ IC Port |LED Color|Description
 PC4     |RGB Green|PHY 1M advertisement received
 PC2     |RGB Blue |Coded PHY advertisement received
 PB4     |Yellow   |Advertisement succesfully sent to the UART FIFO
-PC3     |RGB Red  |FIFO overflow errors, when the UART troughtput is not enough to process all received BLE advertisements
+PC3     |RGB Red  |FIFO overflow error, when the UART troughtput is not enough to process all received BLE advertisements
 PB5     |White    |Host command received from the UART
 
 If a FIFO overflow is detected, it is suggested to add filters in the black and white lists to reduce the set of processed advertisements per device.
 
-Configuring the controller to transmit at 921600 baud (default bitrate) is suggested if also the host device driver allows this; otherwise the firmware can be recompiled to transmit data at 115200 baud. Reducing the bitrate increases the risk of FIFO overflow.
+Configuring the controller to transmit at 921600 baud (default bitrate) is suggested if also the host device driver allows this. Reducing the bitrate increases the risk of FIFO overflow.
 
 ## Installation and compilation
 
@@ -87,7 +87,7 @@ cd TLSR825x_ADV_BLE2UART/source/ble2uart
 make
 ```
 
-Recompiling the firmware without `make clean` and copy the created TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
+Recompiling the firmware without `make clean` and copying the created TLSR825xScaner.elf flash image to TLSR825xScaner.bin:
 
 ```
 make main-build
@@ -106,6 +106,10 @@ make clean
 ```
 
 The compiled firmware is in the directory TLSR825x_ADV_BLE2UART/source/ble2uart/TLSR825xScaner.bin
+
+### Debug some SDK functions
+
+To print UART debug messages tracing the parameters used to invoke some SDK functions (blc_ll_setExtScanParam(), blc_ll_setExtScanEnable(), advertising event callback function), set DEBUG_MSG to 1 in "app_config.h". This can be used to check the actual effect of the configuration dictionary passed to `adv_scanning.build()` in adv2uart.py.
 
 ## Flashing the firmware
 
@@ -149,9 +153,9 @@ python3 Telink_Tools.py --port com8 burn TLSR825xScaner.bin
 
 ## Persistent user data storage
 
-Flash user data storage starts from 0x70020 (458784) if the first byte 0x70000 (458752) is not FF, or 0x71020 (462880). Each update of a value (e.g., "bitrate" value) takes 4 sequential bytes. One buffer is 256 bytes.
+Flash user data storage starts from 0x70020 (458784) if the first byte 0x70000 (458752) is not FF, or from 0x71020 (462880). Each update of a value (e.g., "bitrate" value) takes 4 sequential bytes. One buffer is 256 bytes.
 
-After erasing a buffer, data can be written only once (not twice). A rewrite needs erasing data first. To avoid too many rewrites (that wears the storage), data are organized in an array where each segment is progressively updated in sequence so that the last value is the actual one.
+After erasing a buffer, data can be written only once (not twice). A rewrite needs erasing data first. To avoid too many rewrites (that wear the storage), data are organized in an array where each segment is progressively updated in sequence so that the last value is the actual one.
 
 See "tinyFlash.c".
 
@@ -167,13 +171,13 @@ The first two commands erase one buffer starting from the indicated address (0x7
 
 The third command writes 00 in the first byte. Notice that a *write_flash_fill* fills remaining data with 0xff until the end of the buffer; as they are already 0xff, the filled data are not written and can be used by the application.
 
-### Reaading the first buffer
+### Reading the first buffer
 
 ```bash
 Telink_Tools.py --port com10 read_flash 0x70000 255
 ```
 
-### Reaading the second buffer
+### Reading the second buffer
 
 ```bash
 Telink_Tools.py --port com10 read_flash 0x71000 255
@@ -421,7 +425,7 @@ This parameter can be set as “passive scan” (False) or “active scan” (Tr
 
 *scan_interval* and *scan_window* are internal parameters used within the Telink *blc_ll_setExtScanParam()* SDK system call (invoked by `Command.START_SCAN`).
 
-*scan_interval* is the time interval from when the Controller started its last scan until it begins the subsequent scan on the primary advertising physical channel
+*scan_interval* is the time interval from when the Controller started its last scan until it begins the subsequent scan on the primary advertising physical channel.
 
 *scan_window* is the duration of the scan on the primary advertising physical channel.
 
@@ -527,8 +531,7 @@ classDiagram
 
     class scanning["scanning.c"]{
         %% Functions:
-        scan_task [read adv from FIFO, send to UART, control LEDs, read and process input commands from UART]
-
+        scan_task
         send_resp
 
         ble_adv_callback
@@ -578,3 +581,82 @@ Notes:
 
 - [rf_drv_init()](http://wiki.telink-semi.cn/tools_and_sdk/Driver/doc/kite/html/rf__drv_8h.html#a22715be7838f01751b91706885914790)
 - [RF_MODE_BLE_1M](http://wiki.telink-semi.cn/tools_and_sdk/Driver/doc/kite/html/rf__drv_8h.html#aefccab4a2d5d5fcda5b92f00c7e120d3)
+
+### Main loop
+
+```mermaid
+flowchart LR
+
+subgraph scanning_c["scanning.c"]
+    subgraph scan_task["scan_task()"]
+    end
+end
+
+subgraph app_c["app.c"]
+    subgraph main_loop["main_loop()"]
+    end
+end
+
+subgraph main_c["main.c"]
+    subgraph main["main()"]
+    end
+end
+
+main --> main_loop 
+main_loop -- infinite loop --> main
+
+main_loop --> scan_task
+```
+
+`scan_task()` loop:
+
+- pop advertisement from FIFO `my_fifo_get(); my_fifo_pop();`
+- creates a packet and add CRC `crc = crcFast(p, len);`
+- send packet to UART `if(uart_send(p, len + 2) > 0)`
+- control LEDs `gpio_write(GPIO_LED_E, 1);`
+- read commands from UART `int len = uart_read(buf, sizeof(buf));`
+- process input commands
+
+### Events
+
+```mermaid
+flowchart TB
+
+subgraph main_c["main.c"]
+    main["main()"]
+end
+
+subgraph app_c["app.c"]
+    user_init_normal["user_init_normal()"]
+end
+
+subgraph ble_c["ble.c"]
+    init_ble["init_ble()"]
+    blc_hci_registerControllerEventHandler["blc_hci_registerControllerEventHandler()"]
+    app_controller_event_callback["app_controller_event_callback()"]
+end
+
+subgraph scanning_c["scanning.c"]
+    ble_adv_callback["ble_adv_callback()"]
+    ble_ext_adv_callback["ble_ext_adv_callback()"]
+    ble_le_periodic_adv_callback["ble_le_periodic_adv_callback()"]
+    ble_le_periodic_adv_sync_established_callback["ble_le_periodic_adv_sync_established_callback()"]
+    ble_le_periodic_adv_sync_lost_callback["ble_le_periodic_adv_sync_lost_callback()"]
+
+    FIFO{{"`Push event to FIFO`"}}        
+end
+
+main --> user_init_normal --> init_ble --> blc_hci_registerControllerEventHandler -- registers --o app_controller_event_callback
+
+app_controller_event_callback --> ble_adv_callback
+app_controller_event_callback --> ble_ext_adv_callback
+app_controller_event_callback --> ble_le_periodic_adv_callback
+app_controller_event_callback --> ble_le_periodic_adv_sync_established_callback
+app_controller_event_callback --> ble_le_periodic_adv_sync_lost_callback
+
+ble_adv_callback --- FIFO
+ble_ext_adv_callback --- FIFO
+ble_le_periodic_adv_callback --- FIFO
+ble_le_periodic_adv_sync_established_callback --- FIFO
+ble_le_periodic_adv_sync_lost_callback --- FIFO
+```

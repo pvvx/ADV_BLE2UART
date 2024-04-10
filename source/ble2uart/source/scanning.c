@@ -13,7 +13,9 @@
 #include "crc.h"
 #include "utils.h"
 #include "scanning.h"
+#if DEBUG_MSG > 0
 #include "app_printf.h"
+#endif
 
 typedef struct {
 #if defined(GPIO_LED_R)

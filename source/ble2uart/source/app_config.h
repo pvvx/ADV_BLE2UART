@@ -4,6 +4,8 @@
 
 #define SW_VERSION 0x01	 // BCD format (0x34 -> '3.4')
 
+#define DEBUG_MSG           0  // Set to 0 to disable debug mode; set to 1 to print UART debug messages as uart_printf
+
 #define BLE_DEVICE_ENABLE	0
 #define BLE_MASTER_ENABLE	0
 
