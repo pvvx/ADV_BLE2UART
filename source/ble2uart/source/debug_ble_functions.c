@@ -36,13 +36,13 @@ ble_sts_t debug_blc_ll_setExtScanParam(
         case SCAN_PHY_CODED: scan_phys = "CODED"; break;
         case SCAN_PHY_1M_CODED: scan_phys = "1M_&_CODED"; break;
     }
-    uart_printf("blc_ll_setExtScanParam(AddrType=%s, fp=%s, scan_phys=%s, Type_1M=%s, Interval_1M=%d, Duration_1M=%d, Type_C=%s, Interval_C=%d, Duration_C=%d)",
+    uart_printf("blc_ll_setExtScanParam(AddrType=%s, fp=%s, scan_phys=%s,\n\tType_1M=%s=%d, Interval_1M=%d, Duration_1M=%d,\n\tType_C=%s=%d, Interval_C=%d, Duration_C=%d)",
         ownAddrType, // ownAddrType - Own_Address_Type
         scan_fp, // scan_fp - Scanning_Filter_Policy
         scan_phys, // scan_phys - Scanning_PHYs, "SCAN_PHY_1M" or "SCAN_PHY_CODED"
-        (p_scanType_0) != 0 ? "Active" : "Passive", // Scan_Type for 1M PHY, Passive Scanning or Active Scanning.
+        (p_scanType_0) != 0 ? "Active" : "Passive", p_scanType_0, // Scan_Type for 1M PHY, Passive Scanning or Active Scanning.
         p_scanInter_0, p_scanWindow_0, // Scan_Interval and Duration of the scan on the primary advertising physical channel for 1M PHY
-        (p_scanType_1) != 0 ? "Active" : "Passive", // Scan_Type for Coded PHY, Passive Scanning or Active Scanning.
+        (p_scanType_1) != 0 ? "Active" : "Passive", p_scanType_1, // Scan_Type for Coded PHY, Passive Scanning or Active Scanning.
         p_scanInter_1, p_scanWindow_1 // Scan_Interval and Duration of the scan on the on the primary advertising physical channel for Coded PHY
     );
 
@@ -63,7 +63,7 @@ ble_sts_t debug_blc_ll_setExtScanEnable(
         scan_durn_t         duration,
         scan_period_t       period) {
 
-    uart_printf("blc_ll_setExtScanEnable(extScan_en=%s, filter_duplicate=%s, duration=%d%s, period=%d%s)",
+    uart_printf("blc_ll_setExtScanEnable(extScan_en=%s,\n\tfilter_duplicate=%s, duration=%d%s, period=%d%s)",
         extScan_en ? "Scanning_enabled": "Scanning_disabled",
         filter_duplicate ? "Filter_Duplicates" : "Do_Not_Filter_Duplicates",
         duration,
