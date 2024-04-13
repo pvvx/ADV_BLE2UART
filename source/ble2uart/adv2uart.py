@@ -396,7 +396,7 @@ def setup_logging(
 ########################### MAIN ###################################
 def main():
     parser = argparse.ArgumentParser(
-        epilog='BLE TLSR825x_ADV_BLE2UART scanner'
+        epilog='BLE ADV_BLE2UART scanner'
     )
     parser.add_argument(
         '-d',
@@ -424,8 +424,8 @@ def main():
         '--sleep',
         dest='sleep',
         type=int,
-        help='add an initial delay in seconds before the query (default: 0.5)',
-        default=0.5
+        help='add an initial delay in seconds before the query (default: 1)',
+        default=1
     )
     parser.add_argument(
         '-b',
