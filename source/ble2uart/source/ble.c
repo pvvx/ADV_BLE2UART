@@ -18,7 +18,7 @@
 RAM u8 mac_public[6];
 // u8 mac_random_static[6];
 
-unsigned int baudrate_list[] = { 921600, 115200 };  // List of available UART baudrates in bit-per-second
+unsigned int baudrate_list[] = { 2000000, 921600, 115200 };  // List of available UART baudrates in bit-per-second
 
 // Define the Index list of persistent data used by tinyFlash
 enum

@@ -29,7 +29,7 @@ Characteristics of this BLE receiver firmware:
 
 - compatible with [Telink TLSR825x SoC](http://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/);
 - tested on Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 921600 baud (default) or 115200 baud; the bitrate can be changed with the "PROG" key of TB-03F-KIT, toggling between the defined ones (e.g. at the moment 921600 [one blink] or 115200 [two blinks], but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
+- output to UART, 2000000, 921600 baud (default) or 115200 baud; the bitrate can be changed with the "PROG" key of TB-03F-KIT, toggling between the defined ones (e.g. at the moment 2000000 [one blink], 921600 [two blinks] or 115200 [three blinks], but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
 - robust datalink with CRC16 for error detection while transitting data;
 - software FIFO sized for 4 packets of 240 bytes;
 - the firmware can scan BLE PHY 1M advertisements and Coded PHY S8 advertisements (125kbps BLE Long Range mode) concurrently;
@@ -41,7 +41,7 @@ Characteristics of this BLE receiver firmware:
 - the BLE device can be fully controlled by the hosts via commands;
 - Available commands can be extended.
 
-If the RGB LED switches on for a while when powering on the device (e.g., new device), it means that the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
+If the RGB LED switches on for a while (all three colors) when powering on the device (e.g., new device), it means that the default bitrate has an invalid value; press the PROG key to define a valid UART bitrate.
 
 ## TB-03F-KIT LEDs
 
@@ -55,7 +55,7 @@ PB5     |White    |Host command received from the UART
 
 If a FIFO overflow is detected, it is suggested to add filters to the black and white lists to reduce the set of processed advertisements.
 
-Configuring the controller to transmit at 921600 baud (default bitrate) is suggested if also the host device driver allows this throughput. Reducing the bitrate increases the risk of FIFO overflow.
+Configuring the controller to transmit at 2000000 baud (default bitrate) is suggested if also the host device driver allows this throughput. Reducing the bitrate increases the risk of FIFO overflow.
 
 ## Installation and compilation
 
@@ -155,7 +155,7 @@ While there are ways to map Windows USB serial ports to WSL, the easiest method 
 
 ```bash
 # from WSL
-cmd.exe /c 'python3 freetz-ble\ble-adv-telink\make\Telink_Tools.py --port com10 burn ADV_BLE2UART\source\ble2uart\TLSR825xScaner.bin'
+make && cmd.exe /c 'python3 freetz-ble\ble-adv-telink\make\Telink_Tools.py --port com10 burn ADV_BLE2UART\source\ble2uart\TLSR825xScaner.bin'
 ```
 
 Similarly, you can also run *adv2uart.py*:
@@ -238,7 +238,7 @@ optional arguments:
   -s SLEEP, --sleep SLEEP
                         add an initial delay in seconds before the query (default: 1)
   -b BAUDRATE, --baudrate BAUDRATE
-                        serial connection baudrate (default: 921600)
+                        serial connection baudrate (default: 2000000)
   -p PORT, --port PORT  Serial port; default = COM11 or /dev/ttyUSB0
   -t TIMEOUT, --timeout TIMEOUT
                         serial port read timeout in seconds (default: 0.3)
@@ -249,6 +249,24 @@ BLE ADV_BLE2UART scanner
 ```
 
 ## API
+
+```python
+from adv2uart import Ble2Uart
+
+dv = Ble2Uart(
+    port=...,
+    baud=...,
+    timeout=...,
+    mac_separator=...
+)
+```
+
+Parameter|Description
+---------|-----------
+port|device name, depending on operating system. e.g. `"/dev/ttyUSB0"` on GNU/Linux or `"COM10"` on Windows.
+baud|Baud rate. CH340 supports common baud rates: 50, 75, 100, 110, 134.5, 150, 300, 600, 900, 1200, 1800, 2400, 3600, 4800, 9600, 14400, 19200, 28800, 33600, 38400, 56000, 57600, 76800, 115200, 128000, 153600, 230400, 460800, 921600, 1500000, 2000000 baud. Some devices only support up to 921600 baud, some up to 115200 baud.
+timeout|Read timeout value in seconds. Default is 0.3 seconds. `None` waits until 64 bytes are received. 0 is non-blocking (never waits).
+mac_separator|Separator of each digit of the 6-bytes MAC address. The default is no separator. To set it to a colon, use `mac_separator=':'`.
 
 ### black_white_list()
 
@@ -349,6 +367,10 @@ header (5 bytes) + mac (6 bytes) + crc (2 bytes) = 13 bytes
 total packet length: l + 13
 
 ### command()
+
+```python
+from adv2uart Command, adv_scanning
+```
 
 Argument:
 
@@ -498,7 +520,7 @@ classDiagram
         %% Invoked functions:
         blc_initMacAddress() [in blt_common.c]
         blc_ll_initBasicMCU();
-        init_uart(921600);
+        init_uart(port_speed);
         crcInit();
         blc_ll_initStandby_module(mac_public)
 

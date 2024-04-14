@@ -92,10 +92,15 @@ adv_scanning = Struct(
 )
 
 
-ReversedMacAddress = ExprAdapter(Byte[6],
-    decoder = lambda obj, ctx: ":".join("%02x" % b for b in obj[::-1]).upper(),
-    encoder = lambda obj, ctx: bytes.fromhex(re.sub(r'[.:\- ]', '', obj))[::-1]
-)
+class MacAdapter(Adapter):
+    def __init__(self, separator=':', reverse=False):
+        Adapter.__init__(self, Byte[6])
+        self._decode = lambda obj, ctx, path: separator.join(
+            "%02x" % b for b in obj[::-1 if reverse else 1]
+        ).upper()
+        self._encode = lambda obj, ctx, path: bytearray.fromhex(
+            re.sub(r'[.:\- ]', '', obj)
+        )[::-1 if reverse else 1]
 
 
 class Command:
@@ -124,7 +129,7 @@ class Command:
 
 
 class Ble2Uart:
-    def __init__(self, port=None, baud=921600, timeout=0.3):
+    def __init__(self, port=None, baud=2000000, timeout=0.3, mac_separator=""):
         self.sync = None
         self.data = None
         self.ser = None
@@ -134,6 +139,10 @@ class Ble2Uart:
         self.port = None
         self.config_cmd = {}
         self.cmd_time = time.time()
+        self.ReversedMacAddress = MacAdapter(
+            reverse=True,
+            separator=mac_separator
+        )
 
         self.reopen(baud, port, timeout)
 
@@ -245,7 +254,7 @@ class Ble2Uart:
 
     def add_mac_list(self, mac, cmd=Command.CMD_ID_WMAC):
         return self.command(
-            bytearray([cmd[0]]) + bytearray(ReversedMacAddress.build(mac))
+            bytearray([cmd[0]]) + bytearray(self.ReversedMacAddress.build(mac))
         )
 
     def close(self):
@@ -277,7 +286,7 @@ class Ble2Uart:
                         adtp = HEX(self.data[2:3])[0]
                         evtp = HEX(self.data[3:4])[0]
                         phys = HEX(self.data[4:5])[0]
-                        mac = ReversedMacAddress.parse(self.data[5:11])
+                        mac = self.ReversedMacAddress.parse(self.data[5:11])
                         if self.data[4] == 0xff:  # phys = 0xff -> cmd response received; rssi is the cmd number
                             # 0, cmd id, position, length, 0xff; all commands have 11 bytes packet length
                             logging.verbose(
@@ -432,8 +441,8 @@ def main():
         '--baudrate',
         dest='baudrate',
         type=int,
-        help='serial connection baudrate (default: 921600)',
-        default=921600
+        help='serial connection baudrate (default: 2000000)',
+        default=2000000
     )
     parser.add_argument(
         '-p', '--port',
