@@ -92,9 +92,9 @@ adv_scanning = Struct(
 )
 
 
-class MacAdapter(Adapter):
-    def __init__(self, separator=':', reverse=False):
-        Adapter.__init__(self, Byte[6])
+class ByteAdapter(Adapter):
+    def __init__(self, nbytes=6, separator=':', reverse=False):
+        Adapter.__init__(self, Byte[nbytes])
         self._decode = lambda obj, ctx, path: separator.join(
             "%02x" % b for b in obj[::-1 if reverse else 1]
         ).upper()
@@ -139,7 +139,8 @@ class Ble2Uart:
         self.port = None
         self.config_cmd = {}
         self.cmd_time = time.time()
-        self.ReversedMacAddress = MacAdapter(
+        self.ReversedMacAddress = ByteAdapter(
+            nbytes=6,
             reverse=True,
             separator=mac_separator
         )

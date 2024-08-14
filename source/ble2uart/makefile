@@ -4,7 +4,7 @@ PGM_PORT?=COM14
 
 TEL_PATH ?= ./SDK
 
-PROJECT_NAME := TLSR825xScaner
+PROJECT_NAME := TLSR825xScanner
 
 PROJECT_PATH := ./source
 OUT_PATH :=./out

@@ -19,6 +19,8 @@ __version__ = "12.11.20"
 
 SRAM_BASE_ADDR = 0x840000
 
+hexify = lambda s: [hex(ord(i)) for i in list(str(s))]
+
 class FatalError(RuntimeError):
 	def __init__(self, message):
 		RuntimeError.__init__(self, message)
