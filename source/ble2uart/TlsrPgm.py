@@ -22,6 +22,8 @@ DEFAULT_UART_BAUD = 230400
 
 FLASH_SECTOR_SIZE = 4096
 
+hexify = lambda s: [hex(ord(i)) for i in list(str(s))]
+
 class FatalError(RuntimeError):
 	def __init__(self, message):
 		RuntimeError.__init__(self, message)

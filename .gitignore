@@ -1,0 +1,5 @@
+
+/build
+/dist
+*.spec
+Telink_Tools.py
