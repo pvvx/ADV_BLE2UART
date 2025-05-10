@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	hci_cmd.h
+ * @file    hci_cmd.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef HCI_CMD_H_
@@ -50,6 +28,16 @@
 #include "stack/ble/ble_format.h"
 
 
+/**
+ *  @brief  Bluetooth Core Specification version
+ */
+typedef enum{
+	BLUETOOTH_CORE_4_2			=	0x08,
+	BLUETOOTH_CORE_5_0			=	0x09,
+	BLUETOOTH_CORE_5_1			=	0x0A,
+	BLUETOOTH_CORE_5_2			=	0x0B,
+	BLUETOOTH_CORE_5_3			=	0x0C,
+}core_version_t;
 
 
 /**
@@ -63,14 +51,81 @@ typedef struct {
 
 
 /**
+ *  @brief  Return Parameters for "7.3.39 Host Buffer Size command"
+ */
+typedef struct
+{
+	u16 aclDataPktLen;
+	u8  scoDataPktLen;
+	u16 aclDataPktTotalNum; //total
+	u16 scoDataPktTotalNum;
+} hci_hostBufferSize_cmdParam_t;
+
+/**
+ *  @brief  Return Parameters for "7.3.40 Host Number Of Completed Packets command"
+ */
+typedef struct
+{
+	u16 ConHandle; //The actual usage is 12bit
+	u16 numPktCompleted;
+} hostNumOfCompletedPkt_cfg_t;
+
+typedef struct
+{
+	u8	num_sets;
+	hostNumOfCompletedPkt_cfg_t completePktCfg[ACL_CENTRAL_MAX_NUM + ACL_PERIPHR_MAX_NUM];
+} hci_hostNumOfCompletedPkt_cmdParam_t;
+
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+/**
+ *  @brief  Return Parameters for "7.3.93 Read Authenticated Payload Timeout command"
+ */
+typedef struct __attribute__((packed)) {
+	u8		status;
+	u16		connHandle;
+	u16		auth_pdu_timeout;
+} hci_readAuthPduTimeout_retParam_t;
+
+/**
+ *  @brief  Command & Return Parameters for "7.3.94 HCI write authenticated payload timeout"
+ */
+typedef struct
+{
+	u16 connHandle; //The actual usage is 12bit
+	u16 timeout;   // unit: 10ms
+} hci_writeAuthPayloadTimeout_cmdParam_t;
+
+typedef struct __attribute__((packed))
+{
+	u8 status;
+	u16 connHandle; //The actual usage is 12bit
+} hci_writeAuthPayloadTimeout_retParam_t;
+#endif
+/**
+ *  @brief  Return Parameters for "7.4.2 Read Local Supported Commands command"
+ */
+typedef struct {
+	u8	status;
+	u8	Supported_Commands[64];
+} hci_readLocSupCmds_retParam_t;
+
+
+/**
+ *  @brief  Return Parameters for "7.4.3 Read Local Supported Features command"
+ */
+typedef struct {
+	u8	status;
+	u8	LMP_features[8];
+} hci_readLocSupFeatures_retParam_t;
+
+
+/**
  *  @brief  Return Parameters for "7.4.6 Read BD_ADDR command"
  */
 typedef struct {
 	u8	status;
 	u8	bd_addr[6];
 } hci_readBdAddr_retParam_t;
-
-
 
 
 /**
@@ -156,6 +211,9 @@ typedef enum{
 	OWN_ADDRESS_RESOLVE_PRIVATE_RANDOM = 3,
 }own_addr_type_t;
 
+#define OWN_ADDRESS_TYPE_RANDOM_MASK		BIT(0)
+#define OWN_ADDRESS_TYPE_RPA_MASK			BIT(1)
+
 /* Advertising_Channel_Map */
 typedef enum{
 	BLT_ENABLE_ADV_37	=		BIT(0),
@@ -201,8 +259,8 @@ typedef enum {
 } scan_type_t;
 
 
-/* Scannning_Interval, Time = N * 0.625 ms,
- * Notice that these are just part of but not all Scannning_Interval value */
+/* Scanning_Interval, Time = N * 0.625 ms,
+ * Notice that these are just part of but not all Scanning_Interval value */
 typedef enum{
 	SCAN_INTERVAL_10MS              =            16,
 	SCAN_INTERVAL_20MS              =            32,
@@ -229,8 +287,8 @@ typedef enum{
 	SCAN_INTERVAL_1000MS            =            1600,
 }scan_inter_t;
 
-/* Scannning_Window, Time = N * 0.625 ms,
- * Notice that these are just part of but not all Scannning_Window value */
+/* Scanning_Window, Time = N * 0.625 ms,
+ * Notice that these are just part of but not all Scanning_Window value */
 typedef enum{
 	SCAN_WINDOW_10MS                =            16,
 	SCAN_WINDOW_20MS                =            32,
@@ -257,14 +315,35 @@ typedef enum{
 	SCAN_WINDOW_1000MS              =            1600,
 }scan_wind_t;
 
-/* Scanning_Filter_Policy */
-typedef enum {
-	SCAN_FP_ALLOW_ADV_ANY						=		0x00,  //except direct adv address not match
-	SCAN_FP_ALLOW_ADV_WL        				=		0x01,  //except direct adv address not match
-	SCAN_FP_ALLOW_UNDIRECT_ADV      			=		0x02,  //and direct adv address match initiator's resolvable private MAC
-	SCAN_FP_ALLOW_ADV_WL_DIRECT_ADV_MACTH		=		0x03,  //and direct adv address match initiator's resolvable private MAC
 
+
+
+/**
+ *  @brief Scanning_Filter_Policy
+ *
+ *	0x00 	Accept all advertising and scan response PDUs except directed advertising PDUs not addressed to this device
+ *
+ *	0x01 	Accept only advertising and scan response PDUs from devices where the advertiser's address is in the White List.
+ *			Directed advertising PDUs which are not addressed to this device shall be ignored.
+ *
+ *	0x02 	Accept all advertising and scan response PDUs except directed advertising PDUs where the identity address
+ *				corresponding to TargetA does not address this device.
+ *			Note: Directed advertising PDUs where the TargetA is a resolvable private address that cannot be resolved are also accepted.
+ *
+ *	0x03 	Accept all advertising and scan response PDUs except:
+ *			. advertising and scan response PDUs where the advertiser's identity address is not in the White List; and
+ *			. directed advertising PDUs where the identity address corresponding to TargetA does not address this device.
+ *			Note: Directed advertising PDUs where TargetA is a resolvable private address that cannot be resolved are also accepted.
+ */
+typedef enum {
+	SCAN_FP_ALLOW_ADV_ANY						=		0x00,
+	SCAN_FP_ALLOW_ADV_WL 	      				=		0x01,
+	SCAN_FP_ALLOW_UNDIRECTED_ADV      			=		0x02,
+	SCAN_FP_ALLOW_ADV_WL_DIRECT_ADV_MATCH		=		0x03,
 } scan_fp_type_t;
+
+#define SCAN_FP_WHITELIST_MASK							BIT(0)
+#define SCAN_FP_DIRECT_RPA_PASS_MASK					BIT(1)
 
 
 
@@ -306,11 +385,31 @@ typedef struct{
 
 
 
-/* Initiator_Filter_Policy */
+/**
+ *  @brief Initiator_Filter_Policy
+ *
+ *	0x00 	White List is not used to determine which advertiser to connect to. Peer_Address_Type and Peer_Address shall be used.
+ *
+ *	0x01 	White List is     used to determine which advertiser to connect to. Peer_Address_Type and Peer_Address shall be ignored
+ */
 typedef enum {
 	INITIATE_FP_ADV_SPECIFY        				=		0x00,  //connect ADV specified by host
 	INITIATE_FP_ADV_WL         					=		0x01,  //connect ADV in whiteList
 } init_fp_t;
+
+
+/**
+ *  @brief Peer_Address_Type
+ */
+typedef enum {
+	PEERATYPE_PUBLIC_DEVICE_ADDRESS		=	0x00,  // Public Device Address
+	PEERATYPE_RANDOM_DEVICE_ADDRESS		=	0x01,  // Random Device Address
+	PEERATYPE_PUBLIC_IDENTITY_ADDRESS	=	0x02,  // Public Identity Address (Corresponds to peer's Resolvable Private Address)
+	PEERATYPE_RANDOM_IDENTITY_ADDRESS	=	0x03,  // Random (static) Identity Address (Corresponds to peer's Resolvable Private Address).
+}peer_address_type_t;
+
+#define	PEERATYPE_RANDOM_MASK			BIT(0)
+#define	PEERATYPE_IDENTITY_MASK			BIT(1)
 
 
 /* Connection_Interval, Time = N * 1.25 ms,
@@ -401,14 +500,22 @@ typedef enum{
 }conn_tm_t;
 
 
+/**
+ *  @brief  Return Parameters for "7.8.14 LE Read White List Size command"
+ */
+typedef struct {
+	u8		status;
+	u8		wl_size;
+} hci_le_readWhiteListSizeCmd_retParam_t;
+
 
 /**
- *  @brief  Command Parameters for "7.8.16 LE Add Device To White List command"
+ *  @brief  Command Parameters for "7.8.16 LE Add Device To Filter Accept List command"
  */
 typedef struct{
 	u8		adr_type;
 	u8		addr[6];
-} hci_le_addDeviceWhitelist_cmdParam_t;
+} hci_le_addDeviceAcceptlist_cmdParam_t;
 
 /**
  *  @brief  Command Parameters for "7.8.17 LE Remove Device From White List command"
@@ -417,6 +524,84 @@ typedef struct{
 	u8		adr_type;
 	u8		addr[6];
 } hci_le_removeDeviceWhitelist_cmdParam_t;
+
+
+
+typedef struct{
+	u8		peer_identity_address_type;
+	u8		peer_identity_address[6];
+} le_identityAddress_t;
+
+
+/**
+ *  @brief  Command Parameters for "7.8.24 LE Enable Encryption command"
+ *  core_5.1 and previous version :  LE Start Encryption command
+ *  core_5.2 and later    version :  LE Enable Encryption command
+ */
+typedef struct{
+	u16		connHandle;
+	u8		random_number[8];
+	u8		enc_div[2];
+	u8		long_term_key[16];
+} hci_le_enableEncryption_cmdParam_t;
+
+
+/**
+ *  @brief  Command Parameters for "7.8.38 LE Add Device To Resolving List command"
+ */
+typedef struct{
+	u8		peer_identity_address_type;
+	u8		peer_identity_address[6];
+	u8		peer_IRK[16];
+	u8		local_IRK[16];
+} hci_le_addDeviceResolvinglist_cmdParam_t;
+
+
+/**
+ *  @brief  Identity_Address_Type
+ */
+typedef enum{
+	PUBLIC_IDENTITY_ADDRESS				= 	0x00,	//Public Identity Address
+	RANDOM_IDENTITY_ADDRESS				=	0x01,	//Random (static) Identity Address
+}ida_type_t; //identity address type
+
+/**
+ *  @brief  Return Parameters for "7.8.41 LE Read Resolving List Size command"
+ */
+typedef struct{
+	u8		status;
+	u8		rl_size;	//resolving list size
+} hci_le_readResolvingListSizeCmd_retParam_t;
+
+
+/**
+ *  @brief  Return Parameters for "7.8.42 LE Read Peer Resolvable Address command"
+ */
+typedef struct{
+	u8		status;
+	u8		peer_res_addr[6];
+} hci_le_readPeerResolvableAddress_retParam_t;
+
+
+/**
+ *  @brief  Return Parameters for "7.8.43 LE Read Local Resolvable Address command"
+ */
+typedef struct{
+	u8		status;
+	u8		local_res_addr[6];
+} hci_le_readLocalResolvableAddress_retParam_t;
+
+
+/**
+ *  @brief  Command Parameters for "7.8.44 LE Set Address Resolution Enable command"
+ */
+/**
+ *  @brief  Identity_Address_Type
+ */
+typedef enum {
+	ADDR_RES_DISABLE = 0x00,	//Address Resolution Disable
+	ADDR_RES_ENABLE  = 0x01,		//Address Resolution Enable
+} addr_res_en_t;
 
 
 
@@ -516,7 +701,7 @@ typedef struct {
     u8		sec_adv_max_skip;
     u8		sec_adv_phy;
     u8		adv_sid;
-    u8		scan_req_noti_en;
+    u8		scan_req_notify_en;
 }hci_le_setExtAdvParam_cmdParam_t;
 
 /* Advertising_Handle */
@@ -603,6 +788,13 @@ typedef enum{
 /**
  *  @brief  Command Parameters for "7.8.54 LE Set Extended Advertising Data command"
  */
+typedef struct{
+	u8		adv_handle;
+    u8		operation;
+    u8	 	fragmentPrefer;
+	u8		length;
+    u8 		data[251];
+}hci_le_setExtAdvData_cmdParam_t;
 
 /* Operation */
 typedef enum {
@@ -610,17 +802,26 @@ typedef enum {
 	DATA_OPER_FIRST      	=	0x01,
 	DATA_OPER_LAST       	=	0x02,
 	DATA_OPER_COMPLETE   	=	0x03,
-	DATA_OPER_UNCHANGEED	=  	0x04,
+	DATA_OPER_UNCHANGED	=  	0x04,
 } data_oper_t;
 
 
 /* Fragment_Preference */
 typedef enum {
-	DATA_FRAGM_ALLOWED			      	=	0x00,
-	DATA_FRAGM_NONE_OR_MINIMIZE      	=	0x01,
-} data_fragm_t;
+	DATA_FRAGMENT_ALLOWED			      	=	0x00,
+	DATA_FRAGMENT_NONE_OR_MINIMIZE      	=	0x01,
+} data_fragment_t;
 
-
+/**
+ *  @brief  Command Parameters for "7.8.55 LE Set Extended Scan Response Data command"
+ */
+typedef struct{
+	u8		adv_handle;
+    u8		operation;
+    u8	 	fragmentPrefer;
+	u8		length;
+    u8 		data[251];
+}hci_le_setExtScanRspData_cmdParam_t;
 
 
 
@@ -892,6 +1093,29 @@ typedef struct{
 	u16		Sync_CTE_Type;
 } hci_le_periodicAdvCreateSync_cmdParam_t;
 
+
+
+/**
+ *  @brief  Command Parameters for "7.8.77 LE Set Privacy Mode command"
+ */
+typedef struct __attribute__((packed)) {
+	u8		peer_identity_address_type;
+	u8		peer_identity_address[6];
+	u8		privacy_mode;
+} hci_le_setPrivacyMode_cmdParam_t;
+
+/* Privacy_Mode for peer device */
+typedef enum{
+	NETWORK_PRIVACY_MODE	=		0x00,
+	DEVICE_PRIVACY_MODE 	=		0x01,
+}privacy_mode_t;
+
+
+
+
+
+
+
 /**
  * @brief  Command Parameters for "7.8.80 LE Set Connectionless CTE Transmit Parameters command"
  */
@@ -910,7 +1134,9 @@ typedef struct{
 	adv_handle_t	adv_handle;
 	u8 				CTE_enable;
 }hci_le_CTE_enable_type;
-
+/**
+ * @brief  Command Parameters for "7.8.82 LE Set Connectionless IQ Sampling Enable command"
+ */
 typedef struct{
 	u16		Sync_Handle;
 	u8		Sampling_Enable;
@@ -920,8 +1146,9 @@ typedef struct{
 	u8		Switching_pattern_len;
 	u8		Antenna_IDs[1];
 }hci_le_setConnectionless_IQsampleEn_t;
-
-
+/**
+ * @brief  Command Parameters for "7.8.83 LE Set Connection CTE Receive Parameters command"
+ */
 typedef struct{
 	u8		conn_handle;
 	u8		sampling_en;
@@ -930,14 +1157,18 @@ typedef struct{
 
 	u8		antenna_ids[1];
 }hci_le_setConnection_CTERevParams_t;
-
+/**
+ * @brief  Command Parameters for "7.8.84 LE Set Connection CTE Transmit Parameters command"
+ */
 typedef struct{
 	u8		conn_handle;
 	u8		CTE_type;
 	u8		switching_pattern_len;
 	u8		antenna_IDs[1];
 }hci_le_setConnection_CTETransmitParams_t;
-
+/**
+ * @brief  Command Parameters for "7.8.87 LE Read Antenna Information command"
+ */
 typedef struct{
 	u8	status;
 	u8	support_switch_sample_rate;
@@ -946,8 +1177,10 @@ typedef struct{
 
 	u8	max_cte_len;
 
-}cte_antenna_infor_t;
-
+}cte_antenna_info_t;
+/**
+ * @brief  Command Parameters for "7.8.85 LE Connection CTE Request Enable command"
+ */
 typedef struct{
 	u8		conn_handle;
 	u8		cte_req_en;
@@ -956,12 +1189,29 @@ typedef struct{
 	u8		req_cte_len;
 	u8		req_cte_type;
 }hci_le_cteReqEn_t;
-
+/**
+ * @brief  Command Parameters for "7.8.86 LE Connection CTE Response Enable command"
+ */
 typedef struct{
 	u8		conn_handle;
 	u8		rsp_enable;
 }hci_le_cteRspEn_t;
 
+#if BQB_TEST_EN		//LL/DDI/ADV/BV-69-C	//Add by wenjing
+/**
+ * @brief Command for "7.8.122 LE Set Data Related Address Changes command"
+ */
+typedef struct
+{
+	u8		adv_handle;
+	u8		reasons;
+}hci_le_setDataAddrChange_cmdParams_t;
+
+typedef enum{
+	REFRESH_RPA_ADVDATA_CHANGE 				= BIT(0),
+	REFRESH_RPA_SCANRSPDATA_CHANGE 			= BIT(1),
+}chng_reason_msk_t;
+#endif
 
 /* Options */
 typedef enum {
@@ -1011,47 +1261,6 @@ typedef enum{
 }sync_tm_t;
 
 
-
-
-typedef struct{
-	u8		cis_id;
-	u16		max_sdu_m2s;
-	u16		max_sdu_s2m;
-  	u8  	phy_m2s;
-  	u8		phy_s2m;
-  	u8		rtn_m2s;
-  	u8		rtn_s2m;
-} cigParam_cisCfg_t;
-
-/**
- *  @brief  Command Parameters for "7.8.97 LE Set CIG Parameters command"
- */
-typedef struct {
-	u8  	cig_id;
-	u8		sdu_int_m2s[3];
-	u8		sdu_int_s2m[3];
-	u8		sca;
-	u8		packing;
-	u8	    framing;
-	u16 	max_trans_lat_m2s;
-	u16 	max_trans_lat_s2m;
-	u8		cis_count;
-	cigParam_cisCfg_t		cisCfg[1];
-} hci_le_setCigParam_cmdParam_t;
-
-typedef struct{
-	u8		cis_id;
-	u8		nse;
-	u16		max_sdu_m2s;
-	u16		max_sdu_s2m;
-	u16		max_pdu_m2s;
-	u16		max_pdu_s2m;
-  	u8  	phy_m2s;
-  	u8		phy_s2m;
-  	u8		bn_m2s;
-  	u8		bn_s2m;
-} cigParamTest_cisCfg_t;
-
 /* Slaves_Clock_Accuracy */
 typedef enum {
 	PPM_251_500     =	0x00,
@@ -1065,247 +1274,55 @@ typedef enum {
 } slv_clk_accuracy_t;
 
 
-/* Packing */
-typedef enum {
-	PACK_SEQUENTIAL     =	0x00,
-	PACK_INTERLEAVED     =	0x01,
-} packing_type_t;
-
-/* Framing */
-typedef enum {
-	UNFRAMED   =	0x00,
-	FRAMED     =	0x01,
-} framing_t;
-
-
-
 /**
- *  @brief  Command Parameters for "7.8.98 LE Set CIG Parameters Test command"
+ * @brief	for user to  initialize BLE Host controller interface management
+ * @param	none
+ * @return	none
  */
-typedef struct{
-	u8		cig_id;
-	u8		sdu_int_m2s[3];
-  	u8		sdu_int_s2m[3];
-	u8		ft_m2s;
-	u8		ft_s2m;
-	u16 	iso_intvl;
-	u8		sca;
-	u8		packing;
-	u8	    framing;
-  	u8		cis_count;   //15 B above
-  	cigParamTest_cisCfg_t		cisCfg[1];  //14 B for one CIS configuration
-} hci_le_setCigParamTest_cmdParam_t;
-
-
-
+void hci_initHciMng(void);   //Reset
 /**
- *  @brief  Return Parameters for "LE Set CIG Parameters command" and "LE Set CIG Parameters Test command"
+ * @brief	for user to initialize data from some interface when the connection is disconnected
+ * @param	none
+ * @return	none
  */
-typedef struct {
-	u8  	status;
-	u8		cig_id;
-	u8		cis_count;
-	u16		cis_connHandle[1];  //not 4 byte aligned, but no problem
-} hci_le_setCigParam_retParam_t;
-
-
-/* ISO_Interval, Time = N * 1.25 ms,
- * Notice that these are just part of but not all ISO_Interval value */
-typedef enum{
-	ISO_INTERVAL_5MS                  =        	 4,
-	ISO_INTERVAL_6P75MS               =          5,
-	ISO_INTERVAL_7P5MS                =          6,
-	ISO_INTERVAL_8P75MS               =          7,
-	ISO_INTERVAL_10MS                 =          8,
-	ISO_INTERVAL_11P25MS              =          9,
-	ISO_INTERVAL_12P5MS               =          10,
-	ISO_INTERVAL_15MS                 =          12,
-	ISO_INTERVAL_18P75MS              =          15,
-	ISO_INTERVAL_20MS                 =          16,
-	ISO_INTERVAL_25MS                 =          20,
-	ISO_INTERVAL_27P5MS               =          22,
-	ISO_INTERVAL_30MS                 =          24,
-	ISO_INTERVAL_31P25MS              =          25,
-	ISO_INTERVAL_38P75MS              =          31,
-	ISO_INTERVAL_40MS                 =          32,
-	ISO_INTERVAL_48P75MS              =          39,
-	ISO_INTERVAL_50MS                 =          40,
-	ISO_INTERVAL_100MS                =          80,
-}iso_inter_t;
-
-
-
-
+void hci_DataNumInit(void);   //Disconnect
 /**
- *	@brief  Command Parameters for "7.8.99 LE Create CIS command"
+ * @brief	for user to set the flow control state between the controller and the host
+ * @param	none
+ * @return	none
  */
-typedef struct
-{
-	u16		cis_handle;
-	u16		acl_handle;
-} cisConnParams_t;
-
-typedef struct
-{
-	u8		cis_count;
-	cisConnParams_t	cisConn[1];
-}hci_le_CreateCisParams_t;
-
-
-
-#if 0
+ble_sts_t hci_setControllerToHostFlowCtrl(u8 ctrl);
 /**
- *	@brief  Command Parameters for "7.8.102 LE Reject CIS Request command"
+ * @brief	for user to get the flow control state between the controller and the host
+ * @param	none
+ * @return	none
  */
-typedef struct
-{
-	u16		cis_handle;
-	u8		reason;
-} hci_le_rejectCisReqParams_t;
-#endif
-
-
-
+u8 hci_getControllerToHostFlowCtrl(void);
 /**
- *	@brief  Command Parameters for "7.8.103 LE Create BIG command"
+ * @brief	for user to query the buffer state of the host
+ * @param	none
+ * @return	none
  */
-typedef struct
-{
-  	u8  	big_handle;			/* Used to identify the BIG */
-	u8		adv_handle;			/* Used to identify the periodic advertising train */
-	u8		num_bis;			/* Total number of BISes in the BIG */
-  	u8  	sdu_intvl[3];		/* The interval, in microseconds, of BIS SDUs */
-  	u16		max_sdu;			/* Maximum size of an SDU, in octets */
-  	u16		max_trans_lat; 		/* Maximum time, in milliseconds, for transmitting an SDU */
-  	u8  	rtn; 				/* The maximum number of times that every BIS Data PDU should be retransmitted */
-  	u8		phy;				/* The transmitter PHY of packets */
-	packing_type_t		packing;//type same as u8
-	framing_t	    	framing;//type same as u8
-	u8		enc;				/* Encryption flag */
-	u8      broadcast_code[16]; /* The code used to derive the session key that is used to encrypt and decrypt BIS payloads */
-} hci_le_createBigParams_t;
-
-
-
-
+u16 hci_getHostAvailBufNum(void);
 /**
- *	@brief  Command Parameters for "7.8.104 LE Create BIG Test command"
+ * @brief	for user to reduces the number of buffers available to the host
+ * @param	none
+ * @return	none
  */
-typedef struct
-{
-  	u8  	big_handle;			/* Used to identify the BIG */
-	u8		adv_handle;			/* Used to identify the periodic advertising train */
-	u8		num_bis;			/* Total number of BISes in the BIG */
-  	u8  	sdu_intvl[3];		/* The interval, in microseconds, of periodic SDUs */
-  	u16     iso_intvl;			/* The time between consecutive BIG anchor points, Time = N * 1.25 ms */
-  	u8		nse;				/* The total number of subevents in each interval of each BIS in the BIG */
-  	u16		max_sdu;			/* Maximum size of an SDU, in octets */
-  	u16		max_pdu; 			/* Maximum size, in octets, of payload */
-  	u8		phy;				/* The transmitter PHY of packets, BIT(0): LE 1M; BIT(1): LE 2M; BIT(3): LE Coded PHY */
-	u8		packing;
-	u8		framing;
-	u8		bn;					/* The number of new payloads in each interval for each BIS */
-	u8		irc;				/* The number of times the scheduled payload(s) are transmitted in a given event*/
-	u8		pto;				/* Offset used for pre-transmissions */
-	u8		enc;				/* Encryption flag */
-	u8      broadcast_code[16]; /* The code used to derive the session key that is used to encrypt and decrypt BIS payloads */
-} hci_le_createBigParamsTest_t;
-
-
-
-
+void hci_reduceOneHostAvailBuf(void);
 /**
- *	@brief  Command Parameters for "7.8.105 LE Terminate BIG command"
+ * @brief	for user to sets or queries the host's buffer size
+ * @param	cmdPara
+ * @return     status, 0x00:  succeed
+ * 					   other: failed
  */
-typedef struct
-{
-	u8		big_handle;
-	u8		reason;
-} hci_le_terminateBigParams_t;
-
-
-
-
-typedef struct
-{
-  	u8  	big_handle;			/* Used to identify the BIG */
-	u16		sync_handle;		/* Identifier of the periodic advertising train */
-	u8		enc;				/* Encryption flag */
-	u8      broadcast_code[16]; /* The code used to derive the session key that is used to encrypt and decrypt BIS payloads */
-	u8		mse;				/* The Controller can schedule reception of any number of subevents up to NSE */
-  	u16		big_sync_timeout;	/* Synchronization timeout for the BIG, Time = N*10 ms, Time Range: 100 ms to 163.84 s */
-  	u8  	num_bis; 			/* Total number of BISes to synchronize */
-  	u8      bis[1];				/* List of indices of BISes */
-} hci_le_bigCreateSyncParams_t;
-
-
-
-
+ble_sts_t hci_hostBufferSize(hci_hostBufferSize_cmdParam_t * cmdPara);
 /**
- *	@brief  Command Parameters for "7.8.109 LE Setup ISO Data Path command"
+ * @brief	for user to gets the number of packets that the host has completed transmission
+ * @param	CompPackCom
+ * @return     status, 0x00:  succeed
+ * 					   other: failed
  */
-typedef struct
-{
-	u16 conn_handle;
-	u8  data_path_direction;
-	u8  data_path_id;
-	u8  codec_id[5];
-
-	u32 controller_delay 		  :24;
-	u32 codec_configration_length :8;
-
-	u8	codec_config[1];
-
-}hci_le_setupIsoDataPathCmdParams_t;
-
-
-/**
- * @brief Command Parameters for "7.8.111 LE ISO Transmit Test command"
- */
-typedef struct
-{
-	u16 handle;
-	u8  payload_type;
-}hci_le_isoTransmitTestCmdParams_t;
-
-
-
-/**
- * @brief Command Parameters for "7.8.112 LE ISO Receive Test command"
- */
-typedef struct
-{
-	u16 handle;
-	u8  payload_type;
-}hci_le_isoReceiveTestCmdParams_t;
-
-
-/**
- * @brief return parameters for LE ISO Read Test Counters command
- */
-typedef struct{
-
-	u8 status;
-	u16 handle;
-
-	u32 received_packet_count;
-	u32 miss_packet_count;
-	u32 failed_packet_count;
-
-}hci_le_isoReadTestCountersCmdRetParam_t;
-
-/**
- * @brief return parameters for LE ISO Test End command
- */
-typedef struct{
-
-	u8 status;
-	u16 handle;
-
-	u32 received_packet_count;
-	u32 miss_packet_count;
-	u32 failed_packet_count;
-
-}hci_le_isoTestEndCmdRetParam_t;
+ble_sts_t hci_hostNumCompletedPackets(hci_hostNumOfCompletedPkt_cmdParam_t* CompPackCom);
 
 #endif /* HCI_CMD_H_ */

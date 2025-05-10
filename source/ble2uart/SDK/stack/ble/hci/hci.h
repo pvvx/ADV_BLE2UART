@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	hci.h
+ * @file    hci.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #pragma  once
@@ -50,6 +28,7 @@
 
 typedef int (*blc_hci_rx_handler_t) (void);
 typedef int (*blc_hci_tx_handler_t) (void);
+typedef int (*blc_hci_user_handler_t)(u8 *p, u32 len);
 
 
 
@@ -79,11 +58,14 @@ typedef int (*blc_hci_tx_handler_t) (void);
 extern	blc_hci_rx_handler_t	blc_hci_rx_handler;
 extern	blc_hci_tx_handler_t	blc_hci_tx_handler;
 
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+extern u32		hci_eventMask_2;
+#endif
 
 
 extern  my_fifo_t	hci_tx_iso_fifo;
 
-typedef	struct {
+typedef	struct _attribute_aligned_(4) {
 	u32		size;
 	u8		num;
 	u8		mask;
@@ -138,6 +120,23 @@ typedef enum{
 	HCI_ISO_LOST_DATA				=	0x02, //Part(s) of the ISO_SDU were not received correctly. This is reported as "lost data"
 } iso_ps_flag_t;
 
+#if BQB_TEST_EN //HCI//CIN//BV-14-C Add by Jingying
+
+typedef struct __attribute__((packed))
+{
+	u8 		status;
+	u16 	connHandle;
+	s8 		rssi;
+}hci_readRssi_retParam_t;
+/**
+ * @brief Command & Return Parameters for "7.5.4 Read RSSI command"
+ */
+typedef struct
+{
+	u16 	connHandle;
+}hci_readRssi_cmdParam_t;
+
+#endif
 
 
 // Controller event handler
@@ -160,6 +159,7 @@ extern hci_fifo_t			    bltHci_txfifo;
 
 void hci_set_revision(u16 revision);
 u16  hci_get_revision(void);
+u8 hci_dtm_test(void);
 
 /**
  * @brief      for user to initialize HCI TX FIFO.
@@ -283,6 +283,12 @@ void 		blc_hci_registerControllerDataHandler (hci_data_handler_t handle);
  */
 void 		blc_register_hci_handler (void *prx, void *ptx);
 
+/**
+ * @brief      this function is used to register HCI user callback function
+ * @param[in]  *usrHandler - blc_hci_rx_handler
+ * @return     none.
+ */
+void 		blc_hci_register_user_handler(void *usrHandler);
 
 /**
  * @brief      this function is used to send ACL data to HOST

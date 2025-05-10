@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	hci_event.h
+ * @file    hci_event.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef HCI_EVENT_H_
@@ -154,7 +132,7 @@ typedef struct {
 /**
  *  @brief  Event Parameters for "7.7.65.1 LE Connection Complete event"
  */
-typedef struct {
+typedef struct{
 	u8         subEventCode;
 	u8         status;
 	u16        connHandle;
@@ -162,7 +140,7 @@ typedef struct {
 	u8         peerAddrType;
 	u8         peerAddr[6];
 	u16        connInterval;
-	u16        slaveLatency;
+	u16        peripheralLatency;
 	u16        supervisionTimeout;
 	u8         masterClkAccuracy;
 } hci_le_connectionCompleteEvt_t;
@@ -170,9 +148,14 @@ typedef struct {
 
 /* ACL Connection Role */
 typedef enum {
-	LL_ROLE_MASTER 	= 0,
-	LL_ROLE_SLAVE 	= 1,
-} acl_conection_role_t;
+	ACL_ROLE_CENTRAL 		= 0,
+	ACL_ROLE_PERIPHERAL 	= 1,
+} acl_connection_role_t;
+
+
+/* compatible with previous released SDK */
+#define LL_ROLE_MASTER		ACL_ROLE_CENTRAL
+#define LL_ROLE_SLAVE		ACL_ROLE_PERIPHERAL
 
 /**
  *  @brief  Event Parameters for "7.7.65.2 LE Advertising Report event"
@@ -308,6 +291,21 @@ typedef struct {
 
 
 /**
+ *  @brief  Event Parameters for "7.7.65.11 LE Directed Advertising Report event"
+ */
+typedef struct{
+	u8         subEventCode;
+	u8         num_reports;
+	u8		   event_type;
+	u8		   addr_type;
+	u8         address[6];
+	u8         direct_addr_type;
+	u8         direct_address[6];
+	s8         rssi;
+} hci_le_directAdvRptEvt_t;
+
+
+/**
  *  @brief  Event Parameters for "7.7.65.12 LE PHY Update Complete event"
  */
 typedef struct {
@@ -331,13 +329,45 @@ typedef struct{
 	u8		secondary_phy;		// 1
 	u8		advertising_sid;	// 1
 	u8		tx_power;			// 1
-	u8		rssi;				// 1
+	s8		rssi;				// 1
 	u16		perd_adv_inter;		// 2   Periodic_Advertising_Interval
 	u8		direct_address_type;// 1
 	u8		direct_address[6];	// 6
 	u8		data_length;		// 1
 	u8		data[1];
 } extAdvEvt_info_t;
+
+typedef struct __attribute__((packed)) {
+	u8 		subEventCode;
+	u8		num_reports;
+	u16		event_type;			// 2
+	//4~11
+	u8		address_type;       // 1
+	u8		address[6];			// 6
+	u8		primary_phy;		// 1
+
+	//12~15
+	u8		secondary_phy;		// 1
+	u8		advertising_sid;	// 1
+	u8		tx_power;			// 1
+	u8		rssi;				// 1
+
+	//16~25
+	u16		perd_adv_inter;		// 2   Periodic_Advertising_Interval
+	u8		direct_address_type;// 1
+	u8		direct_address[6];	// 6
+	u8		data_length;		// 1   //offset=25
+	u8		data[2];            // 2 indicate align 4B
+} extAdvRptEvt_t; //need align 4B
+
+/* Direct_Address_Type*/
+typedef enum{
+	DIRECT_ADDR_PUBLIC			=	0x00,	//Public Device Address
+	DIRECT_ADDR_NRPA_STATIC    	=	0x01,	//Non-resolvable Private Address or Static Device Address
+	DIRECT_ADDR_RPA_PUBLIC  	=   0x02,   //Resolvable Private Address (resolved by Controller; Own_Address_ress_Type_Type was 0x00 or 0x02)
+	DIRECT_ADDR_RPA_RANDOM      =	0x03,   //Resolvable Private Address (resolved by Controller; Own_Address_ress_Type_Type was 0x01 or 0x03)
+	DIRECT_ADDR_RPA_FAIL        =	0xFE,   //Resolvable Private Address (Controller unable to resolve)
+}direct_addr_type_t;
 
 typedef struct{
 	u8	 sub_code;
@@ -495,137 +525,43 @@ typedef struct {
 typedef struct {
 	u8         subEventCode;
 	u16        connHandle;
-	u8		   channel_selection_algotihm;
+	u8		   channel_selection_algorithm;
 } hci_le_chnSelectAlgorithmEvt_t;
 
-
-
-
-
-
+//#if (CUSTOM_CONNECTION_ESTABLISH_EVT_ENABLE)
+/* create connection fail reason */
 /**
- *  @brief  Event Parameters for "7.7.65.25 LE CIS Established event"
+ *  @brief  Event Parameters for Telink Private "LE Connection Establish event"
  */
 typedef struct {
-	u8        	subEventCode;
-	u8        	status;
-	u16			cisHandle;
-	u8          cigSyncDly[3];
-	u8          cisSyncDly[3];
-	u8          transLaty_m2s[3];
-	u8          transLaty_s2m[3];
-	u8			phy_m2s;
-	u8			phy_s2m;
-	u8			nse;
-	u8			bn_m2s;
-	u8			bn_s2m;
-	u8			ft_m2s;
-	u8			ft_s2m;
-	u16			maxPDU_m2s;
-	u16			maxPDU_s2m;
-	u16			isoIntvl;
-} hci_le_cisEstablishedEvt_t;
+	u8         subEventCode;
+	u8         status;
+	u16        connHandle;
+	u8         role;
+	u8         peerAddrType;
+	u8         peerAddr[6];
+	u16        connInterval;
+	u16        slaveLatency;
+	u16        supervisionTimeout;
+	u8         masterClkAccuracy;
+} hci_tlk_connectionEstablishEvt_t;
 
 
 /**
- *  @brief  Event Parameters for "7.7.65.26 LE CIS Request event"
+ *  @brief  Event Parameters for Telink Private "LE Create Connection Fail event"
  */
 typedef struct {
-	u8        	subEventCode;
-	u16        	aclHandle;
-	u16        	cisHandle;
-	u8			cigId;
-	u8			cisId;
-} hci_le_cisReqEvt_t;
+	u8         subEventCode;
+	u8         fail_reason;
+	u8         create_conn_cnt;
+} hci_tlk_createConnFailEvt_t;
 
-
-/**
- *  @brief  Event Parameters for "7.7.65.27 LE Create BIG Complete event"
- */
-typedef struct {
-	u8        	subEventCode;
-	u8        	status;
-	u8			bigHandle;
-	u8        	bigSyncDly[3];
-	u8          transLatyBig[3];
-	u8			phy;
-	u8			nse;
-	u8			bn;
-	u8			pto;
-	u8			irc;
-	u16			maxPDU;
-	u16			isoIntvl;
-	u8			numBis;
-	u16		    bisHandles[1];//LL_BIS_IN_PER_BIG_BCST_NUM_MAX];
-} hci_le_createBigCompleteEvt_t;
-
-
-
-/**
- *  @brief  Event Parameters for "7.7.65.28 LE Terminate BIG Complete event"
- */
-typedef struct {
-	u8        	subEventCode;
-	u8			bigHandle;
-	u8			reason;
-} hci_le_terminateBigCompleteEvt_t;
-
-
-/**
- *  @brief  Event Parameters for "7.7.65.20 LE Channel Selection Algorithm event"
- */
-typedef struct {
-	u8        	subEventCode;
-	u8        	status;
-	u8			bigHandle;
-	u8          transLatyBig[3];
-	u8			nse;
-	u8			bn;
-	u8			pto;
-	u8			irc;
-	u16			maxPDU;
-	u16			isoIntvl;
-	u8			numBis;
-	u16         bisHandles[1];//BIS_IN_PER_BIG_SYNC_NUM_MAX];
-} hci_le_bigSyncEstablishedEvt_t;
-
-
-/**
- *  @brief  Event Parameters for "7.7.65.29 LE BIG Sync Established event"
- */
-typedef struct {
-	u8        	subEventCode;
-	u8			bigHandle;
-	u8			reason;
-} hci_le_bigSyncLostEvt_t;
-
-
-
-/**
- *  @brief  Event Parameters for "7.7.65.30 LE BIG Sync Lost event"
- */
-
-
-/**
- *  @brief  Event Parameters for "7.7.65.34 LE BIGInfo Advertising Report event"
- */
-typedef struct {
-	u8		subEventCode;
-	u16		syncHandle;
-	u8		numBis;
-	u8		nse;
-	u16		IsoItvl; //in units of 1.25 ms.
-	u8		bn;
-	u8		pto;
-	u8		irc;
-	u16		maxPdu;
-	u8		sduItvl[3];
-	u16		maxSdu;
-	u8		phy;
-	u8		framing;
-	u8		enc;
-} hci_le_bigInfoAdvReportEvt_t;
-
+/* create connection fail reason */
+typedef enum{
+	INIT_TIMEOUT	= 0x01,
+	CONNECT_FAIL	= 0x02,
+}crt_conn_fail_resson_t;
+//#endif
 
 int		hci_le_periodicAdvSyncEstablished_evt (u8 status, u16 syncHandle,u8 advSID, u8 advAddrType, u8 advAddress[6], u8 advPHY,
 										       u16 perdAdvItvl, u8 advClkAccuracy);
@@ -634,28 +570,20 @@ int		hci_le_periodicAdvSyncEstablished_evt (u8 status, u16 syncHandle,u8 advSID,
 int		hci_le_periodicAdvReport_evt (u8 subEventCode, u16 syncHandle, u8 txPower, u8 RSSI, u8 cteType,u8 dataStatus, u8 dataLength,
 								      u8* data);
 int		hci_le_periodicAdvSyncLost_evt (u16 syncHandle);
-int		hci_le_cisEstablished_evt(u8 status, u16 cisHandle, u8 cigSyncDly[3], u8 cisSyncDly[3], u8 transLaty_m2s[3], u8 transLaty_s2m[3], u8 phy_m2s,
-		                         u8 phy_s2m, u8 nse, u8 bn_m2s, u8 bn_s2m, u8 ft_m2s, u8 ft_s2m, u16 maxPDU_m2s, u16 maxPDU_s2m, u16 isoIntvl );
-int		hci_le_cisReq_evt(u16 aclHandle, u16 cisHandle, u8 cigId, u8 cisId);
-int		hci_le_createBigComplete_evt(u8 status, u8 bigHandle, u8 bigSyncDly[3], u8 transLatyBig[3], u8 phy, u8 nse,
-								     u8 bn, u8 pto, u8 irc, u16 maxPDU, u16 isoIntvl, u8 numBis, u16* bisHandles);
-int		hci_le_terminateBigComplete_evt(u8 bigHandle, u8 reason);
-int		hci_le_bigSyncEstablished_evt(u8 staus, u8 bigHandle, u8 transLatyBig[3], u8 nse, u8 bn, u8 pto, u8 irc,
-		                              u16 maxPDU, u16 isoIntvl,  u8 numBis, u16* bisHandles);
-int		hci_le_bigSyncLost_evt(u8 bigHandle, u8 reason);
-int		hci_le_BigInfoAdvReport_evt(u16 syncHandle, u8 numBis, u8 nse, u16 IsoItvl, u8 bn, u8 pto, u8 irc,
-		                             u16 maxPdu, u8 sduItvl[3], u16 maxSdu, u8 phy, u8 framing, u8 enc);
+
 int		hci_disconnectionComplete_evt(u8 status, u16 connHandle, u8 reason);
 int		hci_cmdComplete_evt(u8 numHciCmds, u8 opCode_ocf, u8 opCode_ogf, u8 paraLen, u8 *para, u8 *result);
 void	hci_cmdStatus_evt(u8 numHciCmds, u8 opCode_ocf, u8 opCode_ogf, u8 status, u8 *result);
 int		hci_le_connectionComplete_evt(u8 status, u16 connHandle, u8 role, u8 peerAddrType, u8 *peerAddr,
-                                      u16 connInterval, u16 slaveLatency, u16 supervisionTimeout, u8 masterClkAccuracy);
-int		hci_le_enhancedConnectionComplete_evt(u8 status, u16 connHandle, u8 role, u8 peerAddrType, u8 *peerAddr, u8 *loaclRpa, u8 *peerRpa,
+                                      u16 connInterval, u16 periphr_Latency, u16 supervisionTimeout, u8 masterClkAccuracy);
+int		hci_le_enhancedConnectionComplete_evt(u8 status, u16 connHandle, u8 role, u8 peerAddrType, u8 *peerAddr, u8 *localRpa, u8 *peerRpa,
                                               u16 connInterval, u16 connLatency, u16 supervisionTimeout, u8 masterClkAccuracy);
 int		hci_le_connectionUpdateComplete_evt(u8 status, u16 connHandle, u16 connInterval,
         									u16 connLatency, u16 supervisionTimeout);
+
+int 	hci_le_directAdvertisingReport_evt(u8 addr_type, u8 *addr, u8 *direct_addr, s8 rssi);
 int		hci_le_readRemoteFeaturesComplete_evt(u8 status, u16 connHandle, u8 * feature);
-int		hci_le_chennel_selection_algorithm_evt(u16 connhandle, u8 channel_selection_alg);
+int		hci_le_channel_selection_algorithm_evt(u16 connhandle, u8 channel_selection_alg);
 int		hci_le_phyUpdateComplete_evt(u16 connhandle,u8 status, u8 new_phy);
 int		hci_le_data_len_update_evt(u16 connhandle,u16 effTxOctets, u16 effRxOctets, u16 maxtxtime, u16 maxrxtime);
 int		hci_le_longTermKeyRequest_evt(u16 connHandle, u8* random, u16 ediv, u8* result);
@@ -665,6 +593,12 @@ int		hci_le_encryptChange_evt(u16 connhandle,  u8 encrypt_en);
 int		hci_le_encryptKeyRefresh_evt(u16 connhandle);
 int		hci_remoteNateReqComplete_evt (u8* bd_addr);
 
+//#if (CUSTOM_CONNECTION_ESTABLISH_EVT_ENABLE)
+int 	hci_tlk_connectionEstablish_evt(u8 status, u16 connHandle, u8 role, u8 peerAddrType, u8 *peerAddr,
+                                   	   u16 connInterval, u16 slaveLatency, u16 supervisionTimeout, u8 masterClkAccuracy);
+
+int 	hci_tlk_createConnectionFail_evt(u8 fail_reason, u8 create_conn_cnt);
+//#endif
 
 #endif /* HCI_EVENT_H_ */
 

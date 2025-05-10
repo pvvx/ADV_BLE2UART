@@ -1,54 +1,31 @@
 /********************************************************************************************************
- * @file	hci_const.h
+ * @file    hci_const.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
-
 #ifndef HCI_CONST_H_
 #define HCI_CONST_H_
 
 /****HCI INFO****/
-#define HCI_VERSION 0x09       //Bluetooth Core Specification 5.0
+#define HCI_VERSION 0x09       //Bluetooth Core Specification
 #define HCI_REVISION 0x0002     //Revision of the Current HCI in the BR/EDR Controller
 #define HCI_LMP_VERSION 0x09  //Version of the Current LMP or PAL in the Controller, Bluetooth Core Specification 5.0
 #define HCI_MANUFACTURER_NAME 		VENDOR_ID //Manufacturer Name of the BR/EDR Controller
@@ -73,6 +50,9 @@
 #define HCI_EVT_DATA_BUF_OVERFLOW                                    0x1A
 #define HCI_EVT_ENCRYPTION_KEY_REFRESH                               0x30
 #define HCI_EVT_LE_META                                              0x3E
+#if BQB_TEST_EN	
+#define HCI_EVT_AUTH_PAYLOAD_TIMEOUT_EXPIRED                         0x57
+#endif
 #define HCI_EVT_HT_ERR_FLAG                                          0xF0
 
 // LE Meta Event Codes
@@ -118,7 +98,8 @@
 #define HCI_SUB_EVT_MAX												 0x23
 
 
-#define HCI_SUB_EVT_LE_CONNECTION_ESTABLISH					         0xFF   //Telink private
+#define HCI_SUB_EVT_LE_CONNECTION_ESTABLISH					         0xF0   //Telink private
+#define HCI_SUB_EVT_LE_CONNECTION_FAIL						         0xF1	//Telink privat
 
 
 
@@ -133,10 +114,15 @@
 #define HCI_EVT_MASK_AUTHENTICATION_COMPLETE                     	 0x0000000020
 #define HCI_EVT_MASK_REMOTE_NAME_REQUEST_COMPLETE                	 0x0000000040
 #define HCI_EVT_MASK_ENCRYPTION_CHANGE                           	 0x0000000080
-#define HCI_EVT_MASK_CHANGE_CONECTION_LINK_KEY_COMPLETE              0x0000000100
+#define HCI_EVT_MASK_CHANGE_CONNECTION_LINK_KEY_COMPLETE              0x0000000100
 #define HCI_EVT_MASK_MASTER_LINK_KEY_COMPLETE                        0x0000000200
 #define HCI_EVT_MASK_READ_REMOTE_SUPPORTED_FEATURES_COMPLETE     	 0x0000000400
 #define HCI_EVT_MASK_READ_REMOTE_VERSION_INFORMATION_COMPLETE    	 0x0000000800     //
+
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+//Event mask page 2
+#define HCI_EVT_MASK_AUTH_PAYLOAD_TIMEOUT_EXPIRED                     (((unsigned long long)1)<<23)
+#endif
 
 #define HCI_EVT_MASK_DEFAULT                                     	 HCI_EVT_MASK_DISCONNECTION_COMPLETE
 
@@ -229,7 +215,8 @@
 #define HCI_CMD_WRITE_NUM_BROADCAST_RETRANSMISSIONS			         0x2A
 #define HCI_CMD_WRITE_HOLD_MODE_ACTIVITY			         		 0x2C
 #define HCI_CMD_READ_TX_POWER_LEVEL                                  0x2D
-#define HCI_CMD_SYNCHRONOUS_FLOW_CONTROL_ENABLE						 0x2F
+#define HCI_CMD_READ_SYNCHRONOUS_FLOW_CONTROL_ENABLE				 0x2E
+#define HCI_CMD_WRITE_SYNCHRONOUS_FLOW_CONTROL_ENABLE				 0x2F
 #define HCI_CMD_SET_CONTROLLER_TO_HOST_FLOW_CTRL                     0x31
 #define HCI_CMD_HOST_BUF_SIZE                                        0x33
 #define HCI_CMD_HOST_NUM_OF_COMPLETE_PACKETS                         0x35
@@ -239,7 +226,10 @@
 #define HCI_CMD_WRITE_INQUIRY_MODE									 0x45
 #define HCI_CMD_WRITE_PAGE_SCAN_TYPE								 0x47
 #define HCI_CMD_SET_EVT_MASK_PAGE_2                                  0x63
-
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+	#define HCI_CMD_READ_AUTH_PAYLOAD_TIMEOUT                            0x7B
+	#define HCI_CMD_WRITE_AUTH_PAYLOAD_TIMEOUT                           0x7C
+#endif
 //Informational Parameters
 //-- OGF --
 #define HCI_CMD_IP_OPCODE_OGF										 0x10  //0x04 <<2, information parameter
@@ -406,6 +396,13 @@
 #define HCI_CMD_LE_SET_TRANSMIT_POWER_REPORTING_ENABLE				 0x7A //7.8.121 LE Set Transmit Power Reporting Enable command
 //core_5.2 end
 
+#if BQB_TEST_EN	
+//core_5.3 begin
+#define	HCI_CMD_LE_SET_DATA_RELATE_ADDRESS_CHANGES					 0X7C //7.8.122 LE Set Data Related Address Changes command
+#define	HCI_CMD_LE_SET_DEFAULT_SUBRATE								 0x7D //7.8.123 LE Set Default Subrate command
+#define HCI_CMD_LE_SUBRATE_REQUEST									 0x7E //7.8.124 LE Subrate Request command
+//core_5.3 end
+#endif
 
 #define HCI_CMD_LINK_POLICY_OPCODE_OGF								 0x08 //0x02<<2 = 0x08
 #define HCI_CMD_TEST_OPCODE_OGF										 0x18 //0x06<<2 = 0x18

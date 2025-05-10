@@ -1,51 +1,28 @@
 /********************************************************************************************************
- * @file	custom_pair.c
+ * @file    custom_pair.c
  *
- * @brief	This is the source file for BLE SDK
+ * @brief   This is the source file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #include "tl_common.h"
 #include "drivers.h"
-#include "blt_common.h"
 #include "custom_pair.h"
 
 
@@ -54,13 +31,16 @@
 				// proc user  PAIR and UNPAIR
 **********************************************************************************/
 
+u32 flash_sector_custom_pairing = FLASH_ADR_SMP_PAIRING_512K_FLASH;
+
+
 man_pair_t blm_manPair;
 
 /* define pair slave max num,
    if exceed this max num, two methods to process new slave pairing
    method 1: overwrite the oldest one(telink demo use this method)
    method 2: not allow pairing unless unfair happened  */
-#define	USER_PAIR_SLAVE_MAX_NUM       4  //telink demo use max 4, you can change this value
+#define	USER_PAIR_ACL_PERIPHR_MAX_NUM       4  //telink demo use max 4, you can change this value
 
 
 typedef struct {
@@ -71,8 +51,8 @@ typedef struct {
 
 
 typedef struct {
-	u32 bond_flash_idx[USER_PAIR_SLAVE_MAX_NUM];  //mark paired slave mac address in flash
-	macAddr_t bond_device[USER_PAIR_SLAVE_MAX_NUM];  //macAddr_t alreay defined in ble stack
+	u32 bond_flash_idx[USER_PAIR_ACL_PERIPHR_MAX_NUM];  //mark paired slave mac address in flash
+	macAddr_t bond_device[USER_PAIR_ACL_PERIPHR_MAX_NUM];  //macAddr_t already defined in ble stack
 	u8 curNum;
 } user_salveMac_t;
 
@@ -110,7 +90,7 @@ void user_tbl_slave_mac_delete_by_index(int index)  //remove the oldest adr in s
 {
 	//erase the oldest with ERASE_MARK
 	u8 delete_mark = ADR_ERASE_MARK;
-	flash_write_page (FLASH_ADR_CUSTOM_PAIRING + user_tbl_slaveMac.bond_flash_idx[index], 1, &delete_mark);
+	flash_write_page (flash_sector_custom_pairing + user_tbl_slaveMac.bond_flash_idx[index], 1, &delete_mark);
 
 	for(int i=index; i<user_tbl_slaveMac.curNum - 1; i++){ 	//move data
 		user_tbl_slaveMac.bond_flash_idx[i] = user_tbl_slaveMac.bond_flash_idx[i+1];
@@ -129,7 +109,7 @@ void user_tbl_slave_mac_delete_by_index(int index)  //remove the oldest adr in s
 int user_tbl_slave_mac_add(u8 adr_type, u8 *adr)  //add new mac address to table
 {
 	u8 add_new = 0;
-	if(user_tbl_slaveMac.curNum >= USER_PAIR_SLAVE_MAX_NUM){ //salve mac table is full
+	if(user_tbl_slaveMac.curNum >= USER_PAIR_ACL_PERIPHR_MAX_NUM){ //salve mac table is full
 		//slave mac max, telink use  method 1: overwrite the oldest one
 		user_tbl_slave_mac_delete_by_index(0);  //overwrite, delete index 0 (oldest) of table
 		add_new = 1;  //add new
@@ -150,7 +130,7 @@ int user_tbl_slave_mac_add(u8 adr_type, u8 *adr)  //add new mac address to table
 		user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum].adr_type = adr_type;
 		memcpy(user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum].address, adr, 6);
 
-		flash_write_page (FLASH_ADR_CUSTOM_PAIRING + user_bond_slave_flash_cfg_idx, 8, (u8 *)&user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum] );
+		flash_write_page (flash_sector_custom_pairing + user_bond_slave_flash_cfg_idx, 8, (u8 *)&user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum] );
 
 		user_tbl_slaveMac.bond_flash_idx[user_tbl_slaveMac.curNum] = user_bond_slave_flash_cfg_idx;  //mark flash idx
 		user_tbl_slaveMac.curNum++;
@@ -178,7 +158,7 @@ int user_tbl_slave_mac_search(u8 adr_type, u8 * adr)
 		if( user_tbl_slaveMac.bond_device[i].adr_type == adr_type && \
 			!memcmp(user_tbl_slaveMac.bond_device[i].address ,adr, 6)){  //match
 
-			return (i+1);  //return index+1( 1 - USER_PAIR_SLAVE_MAX_NUM)
+			return (i+1);  //return index+1( 1 - USER_PAIR_ACL_PERIPHR_MAX_NUM)
 		}
 	}
 
@@ -200,7 +180,7 @@ int user_tbl_slave_mac_delete_by_adr(u8 adr_type, u8 *adr)  //remove adr from sl
 
 			//erase the match adr
 			u8 delete_mark = ADR_ERASE_MARK;
-			flash_write_page (FLASH_ADR_CUSTOM_PAIRING + user_tbl_slaveMac.bond_flash_idx[i], 1, &delete_mark);
+			flash_write_page (flash_sector_custom_pairing + user_tbl_slaveMac.bond_flash_idx[i], 1, &delete_mark);
 
 			for(int j=i; j< user_tbl_slaveMac.curNum - 1;j++){ //move data
 				user_tbl_slaveMac.bond_flash_idx[j] = user_tbl_slaveMac.bond_flash_idx[j+1];
@@ -226,7 +206,7 @@ void user_tbl_slave_mac_delete_all(void)  //delete all the  adr in slave mac tab
 {
 	u8 delete_mark = ADR_ERASE_MARK;
 	for(int i=0; i< user_tbl_slaveMac.curNum; i++){
-		flash_write_page (FLASH_ADR_CUSTOM_PAIRING + user_tbl_slaveMac.bond_flash_idx[i], 1, &delete_mark);
+		flash_write_page (flash_sector_custom_pairing + user_tbl_slaveMac.bond_flash_idx[i], 1, &delete_mark);
 		memset( (u8 *)&user_tbl_slaveMac.bond_device[i], 0, 8);
 		//user_tbl_slaveMac.bond_flash_idx[i] = 0;  //do not  concern
 	}
@@ -260,7 +240,7 @@ void	user_bond_slave_flash_clean (void)
 
 	adbg_flash_clean = 1;
 
-	flash_erase_sector (FLASH_ADR_CUSTOM_PAIRING);
+	flash_erase_sector (flash_sector_custom_pairing);
 
 	user_bond_slave_flash_cfg_idx = -8;  //init value for no bond slave mac
 
@@ -269,7 +249,7 @@ void	user_bond_slave_flash_clean (void)
 		//u8 add_mark = ADR_BOND_MARK;
 
 		user_bond_slave_flash_cfg_idx += 8;  //inc flash idx to get the new 8 bytes area
-		flash_write_page (FLASH_ADR_CUSTOM_PAIRING + user_bond_slave_flash_cfg_idx, 8, (u8*)&user_tbl_slaveMac.bond_device[i] );
+		flash_write_page (flash_sector_custom_pairing + user_bond_slave_flash_cfg_idx, 8, (u8*)&user_tbl_slaveMac.bond_device[i] );
 
 		user_tbl_slaveMac.bond_flash_idx[i] = user_bond_slave_flash_cfg_idx;  //update flash idx
 	}
@@ -285,11 +265,11 @@ void	user_master_host_pairing_flash_init(void)
 	u8 flag;
 	for (user_bond_slave_flash_cfg_idx=0; user_bond_slave_flash_cfg_idx<4096; user_bond_slave_flash_cfg_idx+=8)
 	{ //traversing 8 bytes area in sector 0x11000 to find all the valid slave mac adr
-		flash_read_page(FLASH_ADR_CUSTOM_PAIRING + user_bond_slave_flash_cfg_idx, 1, &flag);
+		flash_read_page(flash_sector_custom_pairing + user_bond_slave_flash_cfg_idx, 1, &flag);
 		if( flag == ADR_BOND_MARK ){  //valid adr
-			if(user_tbl_slaveMac.curNum < USER_PAIR_SLAVE_MAX_NUM){
+			if(user_tbl_slaveMac.curNum < USER_PAIR_ACL_PERIPHR_MAX_NUM){
 				user_tbl_slaveMac.bond_flash_idx[user_tbl_slaveMac.curNum] = user_bond_slave_flash_cfg_idx;
-				flash_read_page (FLASH_ADR_CUSTOM_PAIRING + user_bond_slave_flash_cfg_idx, 8, (u8 *)&user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum] );
+				flash_read_page (flash_sector_custom_pairing + user_bond_slave_flash_cfg_idx, 8, (u8 *)&user_tbl_slaveMac.bond_device[user_tbl_slaveMac.curNum] );
 				user_tbl_slaveMac.curNum ++;
 			}
 			else{ //slave mac in flash more than max, we think it's code bug
@@ -315,5 +295,27 @@ void	user_master_host_pairing_flash_init(void)
  */
 void user_master_host_pairing_management_init(void)
 {
+
+	#if (ACL_CENTRAL_CUSTOM_PAIR_ENABLE && ACL_CENTRAL_SMP_ENABLE)
+		#error "can not use custom pair when ACL Central SMP enable !!!"
+	#endif
+
+	/* when custom pair enable, ACL Central SMP not disable, so using flash address for SMP storage is OK */
+	#if (FLASH_ZB25WD40B_SUPPORT_EN || FLASH_GD25LD40C_SUPPORT_EN || FLASH_GD25LD40E_SUPPORT_EN || FLASH_P25D40SU_SUPPORT_EN)	//512K
+		if(blc_flash_capacity == FLASH_SIZE_512K){
+			flash_sector_custom_pairing = FLASH_ADR_SMP_PAIRING_512K_FLASH;
+		}
+	#endif
+	#if (FLASH_ZB25WD80B_SUPPORT_EN || FLASH_GD25LD80C_SUPPORT_EN || FLASH_GD25LD80E_SUPPORT_EN || FLASH_P25Q80SU_SUPPORT_EN)	//1M
+		else if(blc_flash_capacity == FLASH_SIZE_1M){
+			flash_sector_custom_pairing = FLASH_ADR_SMP_PAIRING_1M_FLASH;
+		}
+	#endif
+	#if (FLASH_P25Q16SU_SUPPORT_EN)	//2M
+		else if(blc_flash_capacity == FLASH_SIZE_2M){
+			flash_sector_custom_pairing = FLASH_ADR_SMP_PAIRING_2M_FLASH;
+		}
+	#endif
+
 	user_master_host_pairing_flash_init();
 }

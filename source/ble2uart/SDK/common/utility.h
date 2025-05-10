@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	utility.h
+ * @file    utility.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #pragma once
@@ -121,7 +99,7 @@
 #define COMPARE(x, y) 			(((x) > (y)) - ((x) < (y)))
 #define SIGN(x) 				COMPARE(x, 0)
 
-// better than xor swap:  http://stackoverflow.com/questions/3912699/why-swap-with-xor-works-fine-in-c-but-in-java-doesnt-some-puzzle
+// better than xor swap:  http://stackoverflow.com/questions/3912699/why-swap-with-xor-works-fine-in-c-but-in-java-doesn't-some-puzzle
 #define SWAP(x, y, T) 			do { T tmp = (x); (x) = (y); (y) = tmp; } while(0)
 #define SORT2(a, b, T) 			do { if ((a) > (b)) SWAP((a), (b), T); } while (0)
 
@@ -141,6 +119,23 @@
 #define U32_BYTE2(a) (((a) >> 16) & 0xFF)
 #define U32_BYTE3(a) (((a) >> 24) & 0xFF)
 
+#define STREAM_TO_U8(n, p)		{n = *(p); p++;}
+#define STREAM_TO_U16(n, p)		{BYTE_TO_UINT16(n,p); p+=2;}
+#define STREAM_TO_U24(n, p)		{BYTE_TO_UINT24(n,p); p+=3;}
+#define STREAM_TO_U32(n, p)		{BYTE_TO_UINT32(n,p); p+=4;}
+#define STREAM_TO_STR(n, p, l)	{memcpy(n, p, l); p+=l;}
+
+#define U8_TO_STREAM(p, n)		{*(p)++ = (u8)(n);}
+#define U16_TO_STREAM(p, n)		{*(p)++ = (u8)(n); *(p)++ = (u8)((n)>>8);}
+#define U24_TO_STREAM(p, n)		{*(p)++ = (u8)(n); *(p)++ = (u8)((n)>>8); \
+								*(p)++ = (u8)((n)>>16);}
+#define U32_TO_STREAM(p, n)		{*(p)++ = (u8)(n); *(p)++ = (u8)((n)>>8); \
+								*(p)++ = (u8)((n)>>16); *(p)++ = (u8)((n)>>24);}
+#define U40_TO_STREAM(p, n)		{*(p)++ = (u8)(n); *(p)++ = (u8)((n)>>8); \
+								*(p)++ = (u8)((n)>>16); *(p)++ = (u8)((n)>>24); \
+								*(p)++ = (u8)((n)>>32);}
+
+#define STR_TO_STREAM(p, n, l)	{memcpy(p, n, l); p+=l;}
 
 
 void swapN (unsigned char *p, int n);
@@ -160,7 +155,7 @@ void flip_addr(u8 *dest, u8 *src);
 static inline u64 mul64_32x32(u32 u, u32 v)
 {
 	//Kite/Vulture's HW do not support HW long mul, here must open
-#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
+#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x || MCU_CORE_TYPE == MCU_CORE_TC321X)
     u32  u0,   v0,   w0;
     u32  u1,   v1,   w1,   w2,   t;
     u32  x, y;
@@ -182,12 +177,10 @@ static inline u64 mul64_32x32(u32 u, u32 v)
 
 
     return(((u64)x << 32) | y);
-#elif(MCU_CORE_TYPE == MCU_CORE_9518)
-    return (u64)u*v;
 #endif
 }
 
-#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
+#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x || MCU_CORE_TYPE == MCU_CORE_TC321X)
 
 	u32 __div64_32(u64 *dividend, u32 divisor);
 	u64 __div64_64(u64 *dividend, u64 divisor);
@@ -218,7 +211,7 @@ static inline u64 mul64_32x32(u32 u, u32 v)
 		return __div64_64(&result, divisor);
 	}
 
-#endif ///#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
+#endif ///#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x || MCU_CORE_TYPE == MCU_CORE_TC321X)
 
 typedef	struct {
 	u32		size;
@@ -243,5 +236,9 @@ u8 * my_fifo_get (my_fifo_t *f);
 												__attribute__((section(".retention_data"))) my_fifo_t name = {size,n,0,0, name##_b}
 #endif
 
-#define		DATA_LENGTH_ALLIGN4(n)				((n + 3) / 4 * 4)
-#define		DATA_LENGTH_ALLIGN16(n)				((n + 15) / 16 * 16)
+#define		DATA_LENGTH_ALIGN4(n)				((n + 3) / 4 * 4)
+#define		DATA_LENGTH_ALIGN16(n)				((n + 15) / 16 * 16)
+
+
+const char *hex_to_str(const void *buf, u8 len);
+

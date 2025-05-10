@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	simple_sdp.c
+ * @file    simple_sdp.c
  *
- * @brief	This is the source file for BLE SDK
+ * @brief   This is the source file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #include "tl_common.h"
@@ -49,9 +27,8 @@
 
 #include "simple_sdp.h"
 #include "device_manage.h"
-#include "blt_common.h"
 
-#if (BLE_MASTER_SIMPLE_SDP_ENABLE)
+#if (ACL_CENTRAL_SIMPLE_SDP_ENABLE)
 
 
 typedef struct{
@@ -65,7 +42,7 @@ typedef struct{
 }ble_att_findInfoRsp_t;
 
 
-int	master_sdp_pending = 0;			// SDP: service discovery
+int	central_sdp_pending = 0;			// SDP: service discovery
 
 
 dev_char_info_t  cur_sdp_device;  //current connected device which is in SDP flow
@@ -81,7 +58,7 @@ ble_sts_t  host_att_discoveryService (u16 handle, att_db_uuid16_t *p16, int n16,
 
 
 
-void simple_sdp_loop (void)
+void simple_sdp_loop(void)
 {
 	if (main_service)
 	{
@@ -106,7 +83,7 @@ void app_service_discovery (void)
 	memset (db16, 0, ATT_DB_UUID16_NUM * sizeof (att_db_uuid16_t));
 	memset (db128, 0, ATT_DB_UUID128_NUM * sizeof (att_db_uuid128_t));
 
-	if ( master_sdp_pending && host_att_discoveryService (master_sdp_pending, db16, ATT_DB_UUID16_NUM, db128, ATT_DB_UUID128_NUM) == BLE_SUCCESS)	// service discovery OK
+	if ( central_sdp_pending && host_att_discoveryService (central_sdp_pending, db16, ATT_DB_UUID16_NUM, db128, ATT_DB_UUID128_NUM) == BLE_SUCCESS)	// service discovery OK
 	{
 		cur_sdp_device.char_handle[0] = blm_att_findHandleOfUuid128 (db128, my_MicUUID);            //MIC
 		cur_sdp_device.char_handle[2] = blm_att_findHandleOfUuid128 (db128, my_OtaUUID);			//OTA
@@ -123,12 +100,12 @@ void app_service_discovery (void)
 		/* peer device att_handle value store in flash */
 		dev_char_info_store_peer_att_handle(&cur_sdp_device);
 
-		//my_dump_str_data(APP_DUMP_SDP_EN,"OTA handle", (u8*)&cur_sdp_device.char_handle[2], 2);
-		//my_dump_str_data(APP_DUMP_SDP_EN,"CMKEY handle", (u8*)&cur_sdp_device.char_handle[3], 2);
-		//my_dump_str_data(APP_DUMP_SDP_EN,"KBKEY handle", (u8*)&cur_sdp_device.char_handle[4], 2);
+		//tlkapi_send_string_data(APP_DUMP_SDP_EN,"OTA handle", (u8*)&cur_sdp_device.char_handle[2], 2);
+		//tlkapi_send_string_data(APP_DUMP_SDP_EN,"CMKEY handle", (u8*)&cur_sdp_device.char_handle[3], 2);
+		//tlkapi_send_string_data(APP_DUMP_SDP_EN,"KBKEY handle", (u8*)&cur_sdp_device.char_handle[4], 2);
 	}
 
-	master_sdp_pending = 0;  //service discovery finish
+	central_sdp_pending = 0;  //service discovery finish
 }
 
 /**
@@ -222,25 +199,25 @@ int host_att_service_wait_event (u16 handle, u8 *p, u32 timeout)
 }
 
 //Gaoqiu add ------------------------------------------------------------------
-int app_char_discovery(u8* reslut, u16 connHandle, u16 startAttHandle, u16 endAttHandle, u8*uuid, u8 uuidLen)
+int app_char_discovery(u8* result, u16 connHandle, u16 startAttHandle, u16 endAttHandle, u8*uuid, u8 uuidLen)
 {
 	blc_gatt_pushReadByTypeRequest(connHandle, startAttHandle, endAttHandle, uuid, uuidLen);
 
-	return host_att_service_wait_event(connHandle, reslut, 1000000);
+	return host_att_service_wait_event(connHandle, result, 1000000);
 }
 
-int app_read_char_value(u8* reslut, u16 connHandle, u16 attHandle)
+int app_read_char_value(u8* result, u16 connHandle, u16 attHandle)
 {
 	blc_gatt_pushReadRequest(connHandle, attHandle);
 
-	return host_att_service_wait_event(connHandle, reslut, 1000000);
+	return host_att_service_wait_event(connHandle, result, 1000000);
 }
 
-int app_find_char_info(u8* reslut, u16 connHandle, u16 startAttHandle, u16 endAttHandle)
+int app_find_char_info(u8* result, u16 connHandle, u16 startAttHandle, u16 endAttHandle)
 {
 	blc_gatt_pushFindInformationRequest(connHandle, startAttHandle, endAttHandle);
 
-	return host_att_service_wait_event(connHandle, reslut, 1000000);
+	return host_att_service_wait_event(connHandle, result, 1000000);
 }
 
 
@@ -288,7 +265,7 @@ ble_sts_t  host_att_discoveryService (u16 handle, att_db_uuid16_t *p16, int n16,
 		dat[6] = ATT_OP_READ_BY_TYPE_REQ;
 		if (app_char_discovery(dat, handle, s, 0xffff, (u8 *)&uuid, 2)) // 1s
 		{
-			return  GATT_ERR_SERVICE_DISCOVERY_TIEMOUT;			//timeout
+			return  GATT_ERR_SERVICE_DISCOVERY_TIMEOUT;			//timeout
 		}
 
 		// process response data
@@ -348,7 +325,7 @@ ble_sts_t  host_att_discoveryService (u16 handle, att_db_uuid16_t *p16, int n16,
 			dat[6] = ATT_OP_FIND_INFORMATION_REQ;
 			if (app_find_char_info(dat, handle, p16->handle, 0xffff)) // 1s
 			{
-				return  GATT_ERR_SERVICE_DISCOVERY_TIEMOUT;			//timeout
+				return  GATT_ERR_SERVICE_DISCOVERY_TIMEOUT;			//timeout
 			}
 
 			ble_att_findInfoRsp_t *p_rsp = (ble_att_findInfoRsp_t *) dat;
@@ -369,7 +346,7 @@ ble_sts_t  host_att_discoveryService (u16 handle, att_db_uuid16_t *p16, int n16,
 					    //-----------		read attribute ----------------
 						dat[6] = ATT_OP_READ_REQ;
 						if(app_read_char_value(dat, handle, pd[0])){
-							return  GATT_ERR_SERVICE_DISCOVERY_TIEMOUT;			//timeout
+							return  GATT_ERR_SERVICE_DISCOVERY_TIMEOUT;			//timeout
 						}
 
 						ble_att_readRsp_t *pr = (ble_att_readRsp_t *) dat;
@@ -413,13 +390,13 @@ ble_sts_t  host_att_discoveryService (u16 handle, att_db_uuid16_t *p16, int n16,
 int dev_char_info_add_peer_att_handle (dev_char_info_t* dev_char_info)
 {
 	int i;
-	for(i=0; i< conn_master_num; i++){
+	for(i=0; i< acl_conn_central_num; i++){
 		if( conn_dev_list[i].conn_handle == dev_char_info->conn_handle){
 			break;
 		}
 	}
 
-	if( i < conn_master_num){
+	if( i < acl_conn_central_num){
 		for(int j=0; j<CHAR_HANDLE_MAX;  j++){
 			conn_dev_list[i].char_handle[j] = dev_char_info->char_handle[j];
 		}
@@ -440,18 +417,21 @@ int dev_char_info_add_peer_att_handle (dev_char_info_t* dev_char_info)
  * @brief       Use for store peer device att handle to flash.
  * @param[in]   dev_char_info    Pointer point to peer device ATT handle info.
  * @return      0: failed
- *             !0: return falsh address
+ *             !0: return flash address
  */
 int		dev_char_info_store_peer_att_handle(dev_char_info_t* pdev_char)
 {
 	u8 mark;
 	u32 current_flash_adr;
-	for(current_flash_adr = FLASH_SDP_ATT_ADRRESS; current_flash_adr < (FLASH_SDP_ATT_ADRRESS + FLASH_SDP_ATT_MAX_SIZE); current_flash_adr += sizeof(dev_att_t) )
+	for(current_flash_adr = flash_sector_simple_sdp_att; current_flash_adr < (flash_sector_simple_sdp_att + FLASH_SDP_ATT_MAX_SIZE); current_flash_adr += sizeof(dev_att_t) )
 	{
 		flash_read_page(current_flash_adr, 1, &mark);
 
 		if( mark == U8_MAX){
 
+			if(flash_prot_op_cb){
+				flash_prot_op_cb(FLASH_OP_EVT_APP_SIMPLE_SDP_STORE_PEER_ATT_HANDLE_BEGIN, current_flash_adr, current_flash_adr + sizeof(dev_att_t));
+			}
 			flash_write_page( current_flash_adr + OFFSETOF(dev_att_t, adr_type),  7, (u8 *)&pdev_char->peer_adrType);  // peer_adrType(1)+peer_addr(6)
 
 #if (PEER_SLAVE_USE_RPA_EN)
@@ -476,6 +456,9 @@ int		dev_char_info_store_peer_att_handle(dev_char_info_t* pdev_char)
 			mark = ATT_BOND_MARK;
 			flash_write_page( current_flash_adr,  1, (u8 *)&mark);
 
+			if(flash_prot_op_cb){
+				flash_prot_op_cb(FLASH_OP_EVT_APP_SIMPLE_SDP_STORE_PEER_ATT_HANDLE_END, current_flash_adr, current_flash_adr + sizeof(dev_att_t));
+			}
 			return current_flash_adr;  //Store Success
 		}
 	}
@@ -495,7 +478,7 @@ int		dev_char_info_store_peer_att_handle(dev_char_info_t* pdev_char)
  * @param[in]   addr             Pointer point to peer address buffer
  * @param[out]  dev_att          Pointer point to dev_att_t
  * @return      0: failed
- *             !0: return falsh address
+ *             !0: return flash address
  */
 int		dev_char_info_search_peer_att_handle_by_peer_mac(u8 adr_type, u8* addr, dev_att_t* pdev_att)
 {
@@ -503,7 +486,7 @@ int		dev_char_info_search_peer_att_handle_by_peer_mac(u8 adr_type, u8* addr, dev
 
 	u8 mark;
 	u32 current_flash_adr;
-	for(current_flash_adr = FLASH_SDP_ATT_ADRRESS; current_flash_adr < (FLASH_SDP_ATT_ADRRESS + FLASH_SDP_ATT_MAX_SIZE); current_flash_adr += sizeof(dev_att_t) )
+	for(current_flash_adr = flash_sector_simple_sdp_att; current_flash_adr < (flash_sector_simple_sdp_att + FLASH_SDP_ATT_MAX_SIZE); current_flash_adr += sizeof(dev_att_t) )
 	{
 		flash_read_page(current_flash_adr, 1, &mark);
 
@@ -559,8 +542,8 @@ int dev_char_info_delete_peer_att_handle_by_peer_mac(u8 addrType, u8 *addr)
 {
 	dev_att_t dev_info;
 
-	for(u32 cur_flash_addr = FLASH_SDP_ATT_ADRRESS;
-		cur_flash_addr < FLASH_SDP_ATT_ADRRESS + FLASH_SDP_ATT_MAX_SIZE;
+	for(u32 cur_flash_addr = flash_sector_simple_sdp_att;
+		cur_flash_addr < flash_sector_simple_sdp_att + FLASH_SDP_ATT_MAX_SIZE;
 		cur_flash_addr += sizeof(dev_att_t))
 	{
 		u8 flag;
@@ -582,7 +565,13 @@ int dev_char_info_delete_peer_att_handle_by_peer_mac(u8 addrType, u8 *addr)
 			{
 				if(dev_info.adr_type == addrType && !memcmp(dev_info.addr, addr, 6)){
 					u8 temp = ATT_ERASE_MARK;
+					if(flash_prot_op_cb){
+						flash_prot_op_cb(FLASH_OP_EVT_APP_SIMPLE_SDP_DELETE_PEER_ATT_HANDLE_BEGIN, cur_flash_addr, cur_flash_addr + 1);
+					}
 					flash_write_page(cur_flash_addr, 1, (u8*)&temp);
+					if(flash_prot_op_cb){
+						flash_prot_op_cb(FLASH_OP_EVT_APP_SIMPLE_SDP_DELETE_PEER_ATT_HANDLE_END, cur_flash_addr, cur_flash_addr + 1);
+					}
 					return 0;//find
 				}
 			}
@@ -592,4 +581,4 @@ int dev_char_info_delete_peer_att_handle_by_peer_mac(u8 addrType, u8 *addr)
 }
 
 
-#endif    //end of BLE_MASTER_SIMPLE_SDP_ENABLE
+#endif    //end of ACL_CENTRAL_SIMPLE_SDP_ENABLE

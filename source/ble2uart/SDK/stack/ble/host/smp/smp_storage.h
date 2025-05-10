@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	smp_storage.h
+ * @file    smp_storage.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef SMP_STORAGE_H_
@@ -57,14 +35,18 @@
 #define 	IS_PEER_ADDR_RES_SUPPORT(peerAddrResSuppFlg)	(!(peerAddrResSuppFlg & BIT(7)))
 
 
+/**
+ * @brief   strategy for how to deal with new paring device when bonding device number reach maximum number(set by API "blc_smp_setBondingDeviceMaxNumber")
+ */
 typedef enum {
-	Index_Update_by_Pairing_Order = 0,     //default value
-	Index_Update_by_Connect_Order = 1,
-} index_updateMethod_t;
+	NEW_DEVICE_OVERWRITE_OLD_WITH_PAIRING_ORDER = 0,
 
+	NEW_DEVICE_REJECT_WHEN_PER_MAX_BONDING_NUM	= 4,		//When peripheral reach it's max bonding centrals, it reject new pair req.
+//	NEW_DEVICE_REJECT_WHEN_CEN_MAX_BONDING_NUM	= 5,		//Not supported now.
+}dev_exceed_max_strategy_t;
 
 /*
- * smp parameter need save to flash.
+ * @brief   smp parameter need save to flash.
  */
 typedef struct {
 	//0x00
@@ -82,7 +64,7 @@ typedef struct {
 	u8 		local_peer_ltk[16];   //slave: local_ltk; master: peer_ltk
 
 	//0x20
-	u8 		encryt_key_size;
+	u8 		encrypt_key_size;
 	u8		local_id_adrType;
 	u8		local_id_addr[6];
 
@@ -105,6 +87,7 @@ typedef struct {
 
 /**
  * @brief      This function is used to configure the bonding storage address and size.
+ *   		   attention: If this API is used, must be called before "blc_smp_smpParamInit" when initialization !!!
  * @param[in]  address - SMP bonding storage start address.
  * @param[in]  size_byte - SMP bonding storage size(e.g.: 2*4096).
  * @return     none.
@@ -114,11 +97,13 @@ void 			blc_smp_configPairingSecurityInfoStorageAddressAndSize (int address, int
 
 /**
  * @brief      This function is used to configure the number of master and slave devices that can be bound.
- * @param[in]  peer_slave_max - The number of slave devices that can be bound.
- * @param[in]  peer_master_max - The number of master devices that can be bound.
- * @return     none.
+ *   		   attention: If this API is used, must be called before "blc_smp_smpParamInit"
+ *  						and after "blc_gap_init" when initialization !!!
+ * @param[in]  master_max_bonNum - The number of master devices that can be bound.
+ * @param[in]  slave_max_bondNum - The number of slave devices that can be bound.
+ * @return     ble_sts_t.
  */
-void 			blc_smp_setBondingDeviceMaxNumber ( int peer_slave_max, int peer_master_max);
+ble_sts_t 		blc_smp_setBondingDeviceMaxNumber ( u8 master_max_bonNum, int slave_max_bondNum);
 
 
 /**
@@ -152,13 +137,11 @@ int				blc_smp_deleteBondingSlaveInfo_by_PeerMacAddress(u8 peer_addr_type, u8* p
 
 
 /**
- * @brief      This function is used to configure the storage order of binding information.
- * @param[in]  method - The storage order of binding info method value can refer to the structure 'index_updateMethod_t'.
- *                      0: Index update by pairing order;
- *                      1: Index update by connect order.
+ * @brief      This function is used to configure the bonding strategy.
+ * @param[in]  strategy - The strategy. Refer to the structure 'dev_exceed_max_strategy_t'.
  * @return     none.
  */
-void			blc_smp_setBondingInfoIndexUpdateMethod(index_updateMethod_t method);
+void			blc_smp_setDevExceedMaxStrategy(dev_exceed_max_strategy_t strategy);
 
 
 /**
@@ -211,11 +194,11 @@ u32				blc_smp_loadBondingInfoFromFlashByIndex(u8 isMaster, u8 slaveDevIdx, u8 i
 
 
 /**
- * @brief      This function is used to delete binding information according to the peer device address and device address type.
- * @param[in]  peer_addr_type - Address type.
- * @param[in]  peer_addr - Address.
- * @return     0: Failed to delete binding information;
- *             others: FLASH address of the deleted information area.
+ * @brief      This function is used to set bonding information as RPA supported or not.
+ * @param[in]  flash_addr - Bonding information address.
+ * @param[in]  support - 1:support RPA; 0: not support.
+ * @return     0: Failed to set RPA support;
+ *             others: FLASH address of the bonding information area.
  */
 int				blc_smp_setPeerAddrResSupportFlg(u32 flash_addr, u8 support);
 

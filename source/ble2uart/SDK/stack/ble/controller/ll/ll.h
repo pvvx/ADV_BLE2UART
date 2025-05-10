@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	ll.h
+ * @file    ll.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    06,2022
  *
- * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
+ * @par     Copyright (c) 2022, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef LL_H_
@@ -49,44 +27,24 @@
 
 
 /**
- * @brief	Telink defined LinkLayer Event Callback
+ * @brief	This callback function type for handling IRQ.
+ * @param	None.
+ * @return	None.
  */
-typedef void (*blt_event_callback_t)(u8 e, u8 *p, int n);
+typedef void (*user_irq_handler_cb_t)(void);
+extern user_irq_handler_cb_t usr_irq_handler_cb;
 
 
 
 
-typedef enum{
-	BLT_EV_FLAG_ADV_DURATION_TIMEOUT	=	0,
-	BLT_EV_FLAG_RX_DATA_ABANDOM,
-	BLT_EV_FLAG_GPIO_EARLY_WAKEUP,
-	BLT_EV_FLAG_SLEEP_ENTER,
-	BLT_EV_FLAG_SUSPEND_EXIT,
-	BLT_EV_FLAG_LL_REJECT_IND,
-	BLT_EV_MAX_NUM,
-}blt_ev_flag_t;
-
-
-
-
-
-
-
+/**
+ * @brief Enumeration defining values for enabling or disabling a feature.
+ */
 typedef enum{
 	LL_FEATURE_ENABLE	= 1,
 	LL_FEATURE_DISABLE  = 0,
 }ll_feature_value_t;
 
-typedef void (*user_irq_handler_cb_t)(void);
-extern  user_irq_handler_cb_t  usr_irq_handler_cb;
-
-/**
- * @brief	Telink defined LinkLayer Event callBack
- * @param[in]	e - event number, must use element of "blt_ev_flag_t"
- * @param[in]	p - callBack function
- * @return	none
- */
-void 		blc_ll_registerTelinkControllerEventCallback (u8 e, blt_event_callback_t p);
 
 /**
  * @brief      register user irq handler call-back
@@ -96,79 +54,52 @@ void 		blc_ll_registerTelinkControllerEventCallback (u8 e, blt_event_callback_t 
 void blc_ll_register_user_irq_handler_cb(user_irq_handler_cb_t cb);
 
 /**
- * @brief	irq_handler for BLE stack, process system tick interrupt and RF interrupt
- * @param	none
- * @return	none
+ * @brief   irq_handler for BLE stack, process system tick interrupt and RF interrupt
+ * @param   none
+ * @return  none
  */
-void 		blc_sdk_irq_handler(void);
+void blc_sdk_irq_handler(void);
 
 /**
  * @brief   main_loop for BLE stack, process data and event
- * @param	none
- * @return	none
+ * @param   none
+ * @return  none
  */
-void 		blc_sdk_main_loop (void);
-
+void blc_sdk_main_loop(void);
 
 
 /**
  * @brief      for user to initialize MCU
- * @param	   none
+ * @param      none
  * @return     none
  */
-void 		blc_ll_initBasicMCU (void);
-
+void blc_ll_initBasicMCU(void);
 
 
 /**
  * @brief      for user to initialize link layer Standby state
- * @param	   none
+ * @param      none
  * @return     none
  */
-void 		blc_ll_initStandby_module (u8 *public_adr);
+void blc_ll_initStandby_module(u8 *public_adr);
 
 
 /**
  * @brief      this function is used to read MAC address
  * @param[in]  *addr -  The address where the read value(MAC address) prepare to write.
  * @return     status, 0x00:  succeed
- * 					   other: failed
+ *                     other: failed
  */
-ble_sts_t   blc_ll_readBDAddr(u8 *addr);
+ble_sts_t blc_ll_readBDAddr(u8 *addr);
 
 
 /**
  * @brief      this function is used to set the LE Random Device Address in the Controller
  * @param[in]  *randomAddr -  Random Device Address
  * @return     status, 0x00:  succeed
- * 					   other: failed
+ *                     other: failed
  */
-ble_sts_t 	blc_ll_setRandomAddr(u8 *randomAddr);
-
-
-/**
- * @brief      This function is used to check if the address's type is public
- * @param[in]  *addr -  The address need to check.
- * @return     bool, 0x00: no public, 0x01: Public
- */
-bool 		blc_ll_isValidPublicAddr(u8* addr);
-
-
-/**
- * @brief      This function is used to check if the address's type is random
- * @param[in]  *addr -  The address need to check.
- * @return     bool, 0x00: no random, 0x01: random
- */
-bool 		blc_ll_isValidRandomAddr(u8* addr);
-
-
-/**
- * @brief      This function is used to check if owner's address type is valid
- * @param[in]  ownAddrType -  Owner address type.
- * @param[in]  randomAddr -  If Owner's address type is Random, input Random address.
- * @return     bool, 0x00: invalid, 0x01: valid
- */
-bool 		blc_ll_isValidOwnAddrByAddrType(u8 ownAddrType, u8* randomAddr);
+ble_sts_t blc_ll_setRandomAddr(u8 *randomAddr);
 
 
 /**
@@ -182,42 +113,57 @@ bool 		blc_ll_isValidOwnAddrByAddrType(u8 ownAddrType, u8* randomAddr);
 ble_sts_t	blc_hci_le_setHostFeature(u8 bit_number, ll_feature_value_t bit_value);
 
 
-/**
- * @brief      this function is used check if any controller buffer initialized by application incorrect.
- * 			   attention: this function must be called at the end of BLE LinkLayer Initialization.
- * @param	   none
- * @return     status, 0x00:  succeed, no buffer error
- * 					   other: buffer error code
- */
-ble_sts_t	blc_controller_check_appBufferInitialization(void);
-
-
 
 /**
  * @brief      this function is used by the Host to specify a channel classification based on its local information,
- *             only the master role is valid.
+ *             only the ACL Central role is valid.
  * @param[in]  *map - channel map
  * @return     status, 0x00:  succeed
- * 			           other: failed
+ *                     other: failed
  */
-ble_sts_t 	blc_ll_setHostChannel(u8 * chnMap);
+ble_sts_t blc_ll_setHostChannel(u8 *chnMap);
 
 
-/**
- * @brief      this function is used to reset module of all.
- * @param	   none
- * @return     status, 0x00:  succeed, no buffer error
- * 					   other: buffer error code
- */
-ble_sts_t  	blc_hci_reset(void);
+
 ble_sts_t 	blc_hci_le_getRemoteSupportedFeatures(u16 connHandle);
 ble_sts_t 	blc_hci_le_readChannelMap(u16 connHandle, u8 *returnChannelMap);
 
 /**
- * @brief      this function checks whether the Bluetooth stack task is IDLE
- * @param	   none
+ * @brief      this function checks whether the Bluetooth stack task is IDLE, not recommended
+ * @param      none
  * @return     status, 0:  idle
  *                     1:  task
  */
 u32 blc_ll_checkBleTaskIsIdle(void);
+
+
+/**
+ * @brief      this function checks whether the Bluetooth stack task is IDLE
+ * @param      none
+ * @return     bool, 0:  ble task running
+ *                   1:  idle
+ */
+bool blc_ll_isBleTaskIdle(void);
+
+
+/**
+ * @brief 		this function is used to solving issue that BLE connection RF IRQ affected by Flash writing status duration
+ * 				by finding idle timing to write safely.
+ *              If MCU do not support multiple priority IRQ, Flash write status duration influencing BLE RF IRQ, then lead to BLE data error
+ * 			    attention: it's for Flash lock & unlock in BLE connection state
+ * @param[in]  	type	- the type of status.8 bit or 16 bit.
+ * @param[in]  	data	- the value of status.
+ * @return 		none.
+ */
+void blc_ll_acl_write_flash_status(flash_status_typedef_e type , unsigned short data);
+
+/**
+ * @brief      This function is used to set some other channel to replace advertising chn37/38/39 in ADV state and SCAN state.
+ * @param[in]  chn0 - channel to replace channel 37
+ * @param[in]  chn1 - channel to replace channel 38
+ * @param[in]  chn2 - channel to replace channel 39
+ * @return     none
+ */
+void 		blc_ll_setCustomizedPrimaryChannel (u8 chn0, u8 chn1, u8 chn2);
+
 #endif /* LL_H_ */
