@@ -41,3 +41,7 @@ Common characteristics:
 - Available commands can be extended.
 
 This software allows experimenting BLE Long Range with a Windows PC or through a wide set of hosts supporting the USB-to-UART interface.
+
+---------------------
+
+> Related project: [WCHBLE2ETH](https://github.com/pvvx/WCHBLE2ETH), which uses a CH32V208W SoC to receive BLE advertisements (including "LE Long Range" - CODED PHY), forwarding them via TCP/IP socket (port 1000) and using DHCP for network configuration.
