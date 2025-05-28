@@ -1,0 +1,18 @@
+Vendor=WCH
+Toolchain=RISC-V
+Series=CH58X
+RTOS=NoneOS
+MCU=CH582M
+Link=WCH-Link
+PeripheralVersion===========1.0
+Description===========
+Mcu Type=CH58x
+Address=0x00000000
+CLKSpeed=3
+DebugInterfaceMode=-1
+Erase All=true
+Program=true
+Verify=true
+Reset=true
+SDIPrintf=false
+Target Path=obj/CH582M_SCAN.hex
