@@ -28,7 +28,7 @@ class FatalError(RuntimeError):
 
 	@staticmethod
 	def WithResult(message, result):
-		message += " (result was %s)" % hexify(result)
+		message += " (result was %s)" % hexlify(result)
 		return FatalError(message)
 
 def signal_handler(signal, frame):
