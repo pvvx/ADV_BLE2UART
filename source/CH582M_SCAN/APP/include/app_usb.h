@@ -17,8 +17,6 @@
 extern "C" {
 #endif
 
-
-
 extern void app_usb_init(void);
 
 extern uint8_t USBSendData(void);

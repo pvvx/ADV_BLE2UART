@@ -15,7 +15,6 @@
  */
 #include "CONFIG.h"
 #include "observer.h"
-#include "scanning.h"
 #include "app_usb.h"
 
 /*********************************************************************
@@ -33,6 +32,9 @@
 /*********************************************************************
  * GLOBAL VARIABLES
  */
+// Task ID for internal task/event processing
+uint8_t ObserverTaskId;
+
 scan_params_t scan_params = {
         .mode = DEVDISC_MODE_ALL,
         .phys = 0, // GAP_PHY_BIT_LE_1M | GAP_PHY_BIT_LE_CODED,
@@ -40,6 +42,13 @@ scan_params_t scan_params = {
         .own_addr_type = 0,
         .duration = DEFAULT_SCAN_DURATION
 };
+
+app_drv_fifo_t app_tx_fifo;
+
+uint8_t app_cmd_buf[APP_RX_BUFFER_LENGTH];
+uint8_t app_cmd_len;
+
+mac_list_t mac_list;
 
 /*********************************************************************
  * EXTERNAL VARIABLES
@@ -52,35 +61,15 @@ scan_params_t scan_params = {
 /*********************************************************************
  * LOCAL VARIABLES
  */
-uint8_t gStatus;
-
-// Task ID for internal task/event processing
-uint8_t ObserverTaskId;
-
-// Number of scan results and scan result index
-//static uint8_t ObserverScanRes;
-
-// Scan result list
-//static gapDevRec_t ObserverDevList[DEFAULT_MAX_SCAN_RES];
-
-
-// Peer device address
-//static uint8_t PeerAddrDef[B_ADDR_LEN] = {0x02, 0x02, 0x03, 0xE4, 0xC2, 0x84};
-
-app_drv_fifo_t app_tx_fifo;
-app_drv_fifo_t app_rx_fifo;
-
-adv_msg_t adv_msg;
-
 uint8_t app_tx_buffer[APP_TX_BUFFER_LENGTH];
-uint8_t app_rx_buffer[APP_RX_BUFFER_LENGTH];
+
+adv_msg_t adv_msg; // buffer adv.message
 
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
 static void ObserverEventCB(gapRoleEvent_t *pEvent);
 static void Observer_ProcessTMOSMsg(tmos_event_hdr_t *pMsg);
-static void ObserverAddDeviceInfo(uint8_t *pAddr, uint8_t addrType);
 
 /*********************************************************************
  * PROFILE CALLBACKS
@@ -114,20 +103,28 @@ void Observer_Init()
     ObserverTaskId = TMOS_ProcessEventRegister(Observer_ProcessEvent);
 
     app_drv_fifo_init(&app_tx_fifo, app_tx_buffer, APP_TX_BUFFER_LENGTH);
-    app_drv_fifo_init(&app_rx_fifo, app_rx_buffer, APP_RX_BUFFER_LENGTH);
 
-    // Setup Observer Profile
-    uint8_t scanRes = DEFAULT_MAX_SCAN_RES;
-    GAPRole_SetParameter(GAPROLE_MAX_SCAN_RES, sizeof(uint8_t), &scanRes);
+    // Setup Observer Profile -> Default is 0 = unlimited.
+    //uint8_t scanRes = DEFAULT_MAX_SCAN_RES;
+    //GAPRole_SetParameter(GAPROLE_MAX_SCAN_RES, sizeof(uint8_t), &scanRes);
 
     // Setup a delayed profile startup
     tmos_set_event(ObserverTaskId, START_DEVICE_EVT);
 }
 
-void send_resp(uint8_t cmd, uint8_t id, uint8_t *pmac, uint8_t len) {
-    uint8_t s[HEAD_CRC_ADD_LEN];
+/*********************************************************************
+ * @fn      send_cmd_resp
+ *
+ * @brief
+ *
+ * @param   cmd, id, pmac, len
+ *
+ * @return  none
+ */
+void send_cmd_resp(uint8_t cmd, uint8_t id, uint8_t *pmac, uint8_t len) {
+    uint8_t s[HEAD_MSG_LEN];
     uint16_t llen = len;
-    memset(s, 0, HEAD_CRC_ADD_LEN);
+    memset(s, 0, HEAD_MSG_LEN);
     //s[0] = 0;
     s[1] = cmd; // rssi
     s[2] = id; // ev type
@@ -135,7 +132,8 @@ void send_resp(uint8_t cmd, uint8_t id, uint8_t *pmac, uint8_t len) {
     s[4] = 0xff; // phy = 0xff -> cmd response
     if(llen)
         memcpy(&s[5], pmac, (llen > 6)? 6 : llen);
-    llen = HEAD_CRC_ADD_LEN; // - 2;
+    app_cmd_len = 0;
+    llen = HEAD_MSG_LEN; // - 2;
 /*
     uint16_t crc = crcFast(s, llen);
     s[llen++] = crc;
@@ -145,24 +143,39 @@ void send_resp(uint8_t cmd, uint8_t id, uint8_t *pmac, uint8_t len) {
     app_drv_fifo_write(&app_tx_fifo, s, &llen);
     tmos_set_event(ObserverTaskId, NEW_BLEDATA_EVT);
 }
-
-
-uint8_t read_buf[32];
-
-void parse_command(void) {
-    uint16_t len = sizeof(read_buf);
-    if(app_drv_fifo_read(&app_rx_fifo, read_buf, &len) != APP_DRV_FIFO_RESULT_SUCCESS)
-        return;
-    app_drv_fifo_flush(&app_rx_fifo);
-    int cmd = read_buf[0];
+/*********************************************************************
+ * @fn      StopDiscovery
+ *
+ * @brief   Stop Discovery
+ *
+ * @param   none
+ *
+ * @return  none
+ */
+void StopDiscovery(void) {
+    PRINT("Stop discovery\n");
+    GAPRole_ObserverCancelDiscovery();
+    app_drv_fifo_flush(&app_tx_fifo);
+}
+/*********************************************************************
+ * @fn      parse_command
+ *
+ * @brief   Parse commands
+ *
+ * @param   none
+ *
+ * @return  none
+ */
+void parse_command(uint32_t len) {
+    int cmd = app_cmd_buf[0];
     if(cmd == CMD_ID_SCAN && len >= 4) {
-        uint8_t flg = read_buf[1];
+        uint8_t flg = app_cmd_buf[1];
         scan_params.phys = flg & 7;
         scan_params.scan_type = (flg >> 3) & 1; // =1 Passive scan, =0 Active scan
         scan_params.mode = (flg >> 4) & 3;
         mac_list.filtr = flg >> 6;
 
-        scan_params.duration = read_buf[2] | (read_buf[3] << 8);
+        scan_params.duration = app_cmd_buf[2] | (app_cmd_buf[3] << 8);
 
         if(scan_params.phys) {
             // Setup GAP
@@ -173,55 +186,53 @@ void parse_command(void) {
             GAPRole_ObserverStartDiscovery(scan_params.mode,
                                         scan_params.scan_type,
                                        DEFAULT_DISCOVERY_WHITE_LIST);
-            PRINT("Discovery...\n");
+            PRINT("Start discovery\n");
         } else {
-            GAPRole_ObserverCancelDiscovery();
-            app_drv_fifo_flush(&app_tx_fifo);
-            PRINT("Stop discovery...\n");
+            StopDiscovery();
         }
-        send_resp(cmd, mac_list.count, &read_buf[1], 3);
+        send_cmd_resp(cmd, mac_list.count, &app_cmd_buf[1], 3);
     } else if(len >= 6 + 1) {
-        if(read_buf[0] == CMD_ID_WMAC) {
+        if(app_cmd_buf[0] == CMD_ID_WMAC) {
             mac_list.mode = WHITE_LIST;
             if(mac_list.count < MAC_MAX_SCAN_LIST) {
 #if 1
-                memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+                memcpy(&mac_list.mac[mac_list.count], &app_cmd_buf[1], 6);
 #else
-                mac_list.mac[mac_list.count][0] = read_buf[6];
-                mac_list.mac[mac_list.count][1] = read_buf[5];
-                mac_list.mac[mac_list.count][2] = read_buf[4];
-                mac_list.mac[mac_list.count][3] = read_buf[3];
-                mac_list.mac[mac_list.count][4] = read_buf[2];
-                mac_list.mac[mac_list.count][5] = read_buf[1];
+                mac_list.mac[mac_list.count][0] = app_cmd_buf[6];
+                mac_list.mac[mac_list.count][1] = app_cmd_buf[5];
+                mac_list.mac[mac_list.count][2] = app_cmd_buf[4];
+                mac_list.mac[mac_list.count][3] = app_cmd_buf[3];
+                mac_list.mac[mac_list.count][4] = app_cmd_buf[2];
+                mac_list.mac[mac_list.count][5] = app_cmd_buf[1];
 #endif
                 mac_list.count++;
             }
-            send_resp(cmd, mac_list.count, &read_buf[1], 6);
-        } else if(read_buf[0] == CMD_ID_BMAC) {
+            send_cmd_resp(cmd, mac_list.count, &app_cmd_buf[1], 6);
+        } else if(app_cmd_buf[0] == CMD_ID_BMAC) {
             mac_list.mode = BALCK_LIST;
             if(mac_list.count < MAC_MAX_SCAN_LIST) {
 #if 1
-                memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
+                memcpy(&mac_list.mac[mac_list.count], &app_cmd_buf[1], 6);
 #else
-                mac_list.mac[mac_list.count][0] = read_buf[6];
-                mac_list.mac[mac_list.count][1] = read_buf[5];
-                mac_list.mac[mac_list.count][2] = read_buf[4];
-                mac_list.mac[mac_list.count][3] = read_buf[3];
-                mac_list.mac[mac_list.count][4] = read_buf[2];
-                mac_list.mac[mac_list.count][5] = read_buf[1];
+                mac_list.mac[mac_list.count][0] = app_cmd_buf[6];
+                mac_list.mac[mac_list.count][1] = app_cmd_buf[5];
+                mac_list.mac[mac_list.count][2] = app_cmd_buf[4];
+                mac_list.mac[mac_list.count][3] = app_cmd_buf[3];
+                mac_list.mac[mac_list.count][4] = app_cmd_buf[2];
+                mac_list.mac[mac_list.count][5] = app_cmd_buf[1];
 #endif
                 mac_list.count++;
             }
-            send_resp(cmd, mac_list.count, &read_buf[1], 6);
+            send_cmd_resp(cmd, mac_list.count, &app_cmd_buf[1], 6);
         }
     } else if(len >= 1) {
-        if(read_buf[0] == CMD_ID_CLRM)  {
+        if(app_cmd_buf[0] == CMD_ID_CLRM)  {
             mac_list.count = 0;
-            send_resp(cmd, MAC_MAX_SCAN_LIST, &read_buf[1], 0);
+            send_cmd_resp(cmd, MAC_MAX_SCAN_LIST, &app_cmd_buf[1], 0);
         }
-        else if(read_buf[0] == CMD_ID_INFO) {
-            GetMACAddress(read_buf);
-            send_resp(cmd, SW_VERSION, read_buf, 6);
+        else if(app_cmd_buf[0] == CMD_ID_INFO) {
+            GetMACAddress(app_cmd_buf);
+            send_cmd_resp(cmd, SW_VERSION, app_cmd_buf, 6);
         }
     }
 }
@@ -255,9 +266,8 @@ uint16_t Observer_ProcessEvent(uint8_t task_id, uint16_t events)
     }
 
     if(events & NEW_USBDATA_EVT) {
-        uint16_t len = app_drv_fifo_length(&app_rx_fifo);
-        if(len)
-            parse_command();
+        if(app_cmd_len)
+            parse_command(app_cmd_len);
         // return unprocessed events
         return (events ^ NEW_USBDATA_EVT);
     }
@@ -285,6 +295,13 @@ uint16_t Observer_ProcessEvent(uint8_t task_id, uint16_t events)
 
         return (events ^ START_DEVICE_EVT);
     }
+
+    if(events & STOP_DISCOVERY_EVT)
+    {
+        StopDiscovery();
+        return (events ^ STOP_DISCOVERY_EVT);
+    }
+
 /*
     if(events & START_SYNC_TIMEOUT_EVT)
     {
@@ -341,9 +358,15 @@ void debug_print_mac(uint8_t * mac) {
 #define debug_print_mac()
 #endif
 
-
-mac_list_t mac_list;
-
+/*********************************************************************
+ * @fn      chk_mac
+ *
+ * @brief   test mac black/white list
+ *
+ * @param   pmac - pointer to mac
+ *
+ * @return  none
+ */
 static int chk_mac(uint8_t *pmac) {
     int ret = 0;
     if(mac_list.count) {
@@ -380,17 +403,12 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
             GAP_SetParamValue(TGAP_DISC_SCAN_PHY, scan_params.phys);
             GAP_SetParamValue(TGAP_FILTER_ADV_REPORTS, 0);
 
-//            GAPRole_ObserverStartDiscovery(scan_params.mode,
-//                                            scan_params.scan_type,
-//                                           DEFAULT_DISCOVERY_WHITE_LIST);
             PRINT("Init done...\n");
         }
         break;
 
         case GAP_DEVICE_INFO_EVENT:
         {
-//            PRINT("Recv legacy adv ");
-//            debug_print_mac(pEvent->deviceDirectInfo.addr);
             if(chk_mac(pEvent->deviceInfo.addr)
               && (pEvent->deviceInfo.addrType & mac_list.filtr) == 0) {
                 len = (uint8_t)pEvent->deviceInfo.dataLen;
@@ -402,7 +420,7 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
                 memcpy(adv_msg.addr, pEvent->deviceInfo.addr, B_ADDR_LEN);
                 if(len)
                     memcpy(adv_msg.data, pEvent->deviceInfo.pEvtData, len);
-                len += HEAD_CRC_ADD_LEN;
+                len += HEAD_MSG_LEN;
                 app_drv_fifo_write(&app_tx_fifo, (uint8_t *)&adv_msg, &len);
                 tmos_set_event(ObserverTaskId, NEW_BLEDATA_EVT);
             }
@@ -418,16 +436,12 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
                                            DEFAULT_DISCOVERY_WHITE_LIST);
                 PRINT("Discovery over...\n");
             }
-//            ObserverScanRes = 0;
         }
         break;
 
+
         case GAP_EXT_ADV_DEVICE_INFO_EVENT:
         {
-//            PRINT("Recv ext. adv ");
-//            debug_print_mac(pEvent->deviceDirectInfo.addr);
-//            if(socket_connected == 0)
-//                  break;
             if(chk_mac(pEvent->deviceExtAdvInfo.addr)
               && (pEvent->deviceInfo.addrType & mac_list.filtr) == 0) {
                 len = (uint8_t)pEvent->deviceExtAdvInfo.dataLen;
@@ -439,7 +453,7 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
                 memcpy(adv_msg.addr, pEvent->deviceExtAdvInfo.addr, B_ADDR_LEN);
                 if(len)
                     memcpy(adv_msg.data, pEvent->deviceExtAdvInfo.pEvtData, len);
-                len += HEAD_CRC_ADD_LEN;
+                len += HEAD_MSG_LEN;
                 app_drv_fifo_write(&app_tx_fifo, (uint8_t *)&adv_msg, &len);
                 tmos_set_event(ObserverTaskId, NEW_BLEDATA_EVT);
 
@@ -449,10 +463,6 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
 
         case GAP_DIRECT_DEVICE_INFO_EVENT:
         {
-//            PRINT("Recv dir. adv ");
-//            debug_print_mac(pEvent->deviceDirectInfo.addr);
-//            if(socket_connected == 0)
-//                break;
             if(chk_mac(pEvent->deviceDirectInfo.addr)
               && (pEvent->deviceInfo.addrType & mac_list.filtr) == 0) {
                 adv_msg.len = 0;
@@ -461,7 +471,7 @@ static void ObserverEventCB(gapRoleEvent_t *pEvent)
                 adv_msg.phyTypes = GAP_PHY_BIT_LE_1M | (GAP_PHY_BIT_LE_1M << 4);
                 adv_msg.rssi = pEvent->deviceDirectInfo.rssi;
                 memcpy(adv_msg.addr, pEvent->deviceDirectInfo.addr, B_ADDR_LEN);
-                len = HEAD_CRC_ADD_LEN;
+                len = HEAD_MSG_LEN;
                 app_drv_fifo_write(&app_tx_fifo, (uint8_t *)&adv_msg, &len);
                 tmos_set_event(ObserverTaskId, NEW_BLEDATA_EVT);
             }
