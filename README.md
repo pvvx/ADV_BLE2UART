@@ -27,6 +27,7 @@ The following Wireless [SoC](https://en.wikipedia.org/wiki/System_on_a_chip) sol
 
 - [Telink TLSR825x](source/ble2uart/README.md)
 - [ESP32-C3 USB](source/esp32-c3/ble50_scan/README.md)
+- [CH582/CH583 USB](source/CH582M_SCAN)
 
 Check related README documents for further details on each implementation.
 
