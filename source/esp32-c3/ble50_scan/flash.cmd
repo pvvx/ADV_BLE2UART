@@ -1,0 +1,1 @@
+esptool.exe --chip esp32c3 --port %1 -b 460800 write_flash --flash_mode dio --flash_size 2MB --flash_freq 80m 0x0 build/bootloader.bin 0x8000 build/partition-table.bin 0x10000 build/ble50_scan.bin

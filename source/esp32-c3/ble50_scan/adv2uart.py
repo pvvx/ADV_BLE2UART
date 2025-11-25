@@ -6,6 +6,13 @@ import serial
 import binascii
 from pynput import keyboard
 
+
+CMD_ID_INFO		= 0x00
+CMD_ID_SCAN 	= 0x01 # Scan on/off, parameters
+CMD_ID_WMAC		= 0x02 # add whitelist mac
+CMD_ID_BMAC 	= 0x03 # add blacklist mac
+CMD_ID_CLRM		= 0x04 # clear mac list
+
 crctable = (
 0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
 0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
@@ -118,7 +125,7 @@ class BLE2UART:
 		print("cmd:", blk.hex())
 		time.sleep(0.02)
 		return True
-	def add_mac_list(self, mac, m = 2):
+	def add_mac_list(self, mac, m = CMD_ID_WMAC):
 		b = bytearray(7)
 		b[0] = m
 		b[1] = mac[5]
@@ -150,16 +157,33 @@ def main():
 	#	if data[0] == 0:
 	#		data = data[1:]				
 	dv.command(b'\x04') #clear w/b list
-	dv.add_mac_list(binascii.unhexlify('381f8dd93cb6'), 3) #add black list
-	dv.add_mac_list(binascii.unhexlify('381f8d941e11'), 3)
-	dv.add_mac_list(binascii.unhexlify('381f8dd8b52d'), 3)
-	dv.add_mac_list(binascii.unhexlify('381f8d942ef9'), 3)
-	dv.add_mac_list(binascii.unhexlify('381f8dd93b3a'), 3)
-	dv.add_mac_list(binascii.unhexlify('39ee85f86c71'), 3)
-	dv.add_mac_list(binascii.unhexlify('1c90ffdc0cc6'), 3)
-	dv.add_mac_list(binascii.unhexlify('1c90ffd8ba69'), 3)
+	# MAC List (max 64) Mode: BlackList or WhiteList! The list type is set by the last MAC add command
+	# Add BlackList:
+	#dv.add_mac_list(binascii.unhexlify('381f8dd93cb6'), CMD_ID_BMAC) 
+	#dv.add_mac_list(binascii.unhexlify('381f8d941e11'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('381f8dd8b52d'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('381f8d942ef9'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('381f8dd93b3a'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('39ee85f86c71'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('1c90ffdc0cc6'), CMD_ID_BMAC)
+	#dv.add_mac_list(binascii.unhexlify('1c90ffd8ba69'), CMD_ID_BMAC)
+	# Or Add WhiteList (max 64):
+	#dv.add_mac_list(binascii.unhexlify('123456789000'), CMD_ID_WMAC)
+	#dv.add_mac_list(binascii.unhexlify('123456789abc'), CMD_ID_WMAC)
+
+	# Scan Type:
+	# bit0: =1 Scan PHY 1M 
+	# bit1: =1 Scan PHY Coded 
+	# bit2: =0 Passive scan, =1 Active scan
+	# bit3: none
+	# bit[4:5] Out Scan Filter: Out if AddressType &  ScanFilter == 0
+	# bit[6:7] Scan address type: =0 BLE_ADDR_TYPE_PUBLIC, =1 BLE_ADDR_TYPE_RANDOM, =2 BLE_ADDR_TYPE_RPA_PUBLIC, =3 BLE_ADDR_TYPE_RPA_RANDOM 
 	
-	dv.command(b'\x01\x33\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
+	#dv.command(b'\x01\x33\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
+	#print("Start passive scan PHY 1M and Coded PHY, Windows 30 ms")
+
+	dv.command(b'\x01\x01\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
+	print("Start passive scan PHY 1M, Windows 30 ms")
 	with keyboard.Listener(on_press=on_press) as listener:
 		while listener.running:
 			blk = dv.read(64)
@@ -170,9 +194,9 @@ def main():
 						l = data[0]
 						if crc16(data, l+13) == 0:
 							rssi = data[1:2].hex() 
-							adtp = data[2:3].hex() 
-							evtp = data[3:4].hex()
-							phys = data[4:5].hex()
+							evtp = data[2:3].hex() 
+							phys = data[3:4].hex()
+							adtp = data[4:5].hex()
 							xmac = bytes([data[10], data[9], data[8], data[7], data[6], data[5]])
 							if data[4] == 0xff:
 								x = data[3]
@@ -189,7 +213,7 @@ def main():
 							else:
 								mac = xmac.hex() 
 								dump = data[11:l+11].hex()
-								print('adv:', rssi, evtp, adtp, phys, mac, dump)
+								print('adv:', rssi, evtp, phys, adtp, mac, dump)
 							data = data[l + 13:]
 						else:
 							data = data[1:]
