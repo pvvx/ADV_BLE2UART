@@ -131,6 +131,7 @@ clean:
 	-$(RM) $(FLASH_IMAGE) $(ELFS) $(OBJS) $(LST) $(SIZEDUMMY) $(ELF_FILE) $(BIN_FILE) $(LST_FILE)
 	-@echo ' '
 
+# Ref. https://github.com/Ai-Thinker-Open/Telink_SIG_Mesh
 pre-build:
 	mkdir -p $(foreach s,$(OUT_DIR),$(OUT_PATH)$(s))
 	-@echo ' '

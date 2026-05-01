@@ -1,4 +1,20 @@
-out/*
-SDK/
 *.bin
 *.elf
+out/*
+out_scanner
+pycache
+*.pyc
+build/
+dist/
+*.egg-info/
+.venv/ (o venv/)
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.ipynb_checkpoints/
+TLSR825xScanner.bin
+SDK/
