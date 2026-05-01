@@ -168,7 +168,7 @@ _attribute_ram_code_ int main (void) {    //must run in ramcode
 	clock_init(SYS_CLK_TYPE);
 
 	_gpio_init(!deepRetWakeUp);  // analog resistance will keep available in deepSleep mode, so no need to initialize it again
-	rf_drv_init(RF_MODE_BLE_1M);
+	rf_drv_ble_init();  // init RF for all BLE PHYs (1M, 2M, Coded) - needed for Coded PHY scanning
 
 	adc_power_on_sar_adc(0); // - 0.4 mA
 	lpc_power_down();

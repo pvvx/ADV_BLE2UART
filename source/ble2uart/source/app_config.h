@@ -96,6 +96,12 @@
 
 #define ATT_LEGACY_MTU_SIZE  23
 
+#define MASTER_MAX_NUM  1
+#define SLAVE_MAX_NUM   1
+
+#define MASTER_MAX_NUM  1
+#define SLAVE_MAX_NUM   1
+
 #define RAM _attribute_data_retention_ // short version, this is needed to keep the values in ram after sleep
 
 /////////////////// Clock  /////////////////////////////////

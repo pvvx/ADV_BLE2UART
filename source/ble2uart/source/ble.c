@@ -15,6 +15,12 @@
 #endif
 
 RAM u8 mac_public[6];
+
+#if BLE_MASTER_ENABLE
+_attribute_ble_data_retention_ static u8 _acl_rxfifo[ACL_RX_FIFO_SIZE * ACL_RX_FIFO_NUM];
+_attribute_ble_data_retention_ static u8 _acl_mstTxfifo[ACL_MASTER_TX_FIFO_SIZE * ACL_MASTER_TX_FIFO_NUM * MASTER_MAX_NUM];
+_attribute_ble_data_retention_ static u8 _acl_slvTxfifo[ACL_SLAVE_TX_FIFO_SIZE * ACL_SLAVE_TX_FIFO_NUM * SLAVE_MAX_NUM];
+#endif
 // u8 mac_random_static[6];
 
 unsigned int baudrate_list[] = { 2000000, 921600, 115200 };  // List of available UART baudrates in bit-per-second
@@ -156,29 +162,13 @@ void init_ble(void) {
 	blc_ll_initStandby_module(mac_public); //must
 
 	blc_ll_initExtendedScanning_module();	//extended scan module
-    blc_ll_initExtendedInitiating_module();
+	blc_ll_initExtendedInitiating_module();
 
 	blc_ll_initPeriodicAdvertisingSynchronization_module();
+
 	blc_ll_initAclConnection_module();
 
-#if BLE_MASTER_ENABLE
-	blc_ll_setMaxConnectionNumber(MASTER_MAX_NUM, SLAVE_MAX_NUM);
-	blc_ll_setAclConnMaxOctetsNumber(ACL_CONN_MAX_RX_OCTETS,
-			ACL_MASTER_MAX_TX_OCTETS, ACL_SLAVE_MAX_TX_OCTETS);
-	/* all ACL connection share same RX FIFO */
-	blc_ll_initAclConnRxFifo(app_acl_rxfifo, ACL_RX_FIFO_SIZE, ACL_RX_FIFO_NUM);
-	/* ACL Master TX FIFO */
-	blc_ll_initAclConnMasterTxFifo(app_acl_mstTxfifo, ACL_MASTER_TX_FIFO_SIZE,
-			ACL_MASTER_TX_FIFO_NUM, MASTER_MAX_NUM);
-	blc_ll_setAclMasterConnectionInterval(CONN_INTERVAL_31P25MS);
-#endif // BLE_MASTER_ENABLE
 	blc_hci_registerControllerEventHandler(app_controller_event_callback);
-#if 0
-	blc_hci_setEventMask_cmd(0xffffffff);
-	blc_hci_le_setEventMask_cmd(0xffffffff);
-	blc_hci_le_setEventMask_2_cmd(0xffffffff);
-#else
-	//bluetooth event
 	//bluetooth low energy(LE) event
 	blc_hci_le_setEventMask_cmd( HCI_LE_EVT_MASK_ADVERTISING_REPORT
 			| HCI_LE_EVT_MASK_DIRECT_ADVERTISING_REPORT
@@ -187,15 +177,10 @@ void init_ble(void) {
 			| HCI_LE_EVT_MASK_PERIODIC_ADVERTISING_SYNC_LOST
 			| HCI_LE_EVT_MASK_SCAN_REQUEST_RECEIVED
 			| HCI_LE_EVT_MASK_EXTENDED_ADVERTISING_REPORT);
-#endif
 
-	blc_controller_check_appBufferInitialization();
+	//blc_controller_check_appBufferInitialization(); // removed: may crash if ACL FIFOs not inited
 
-#if BLE_MASTER_ENABLE
-	blc_hci_registerControllerDataHandler (blc_l2cap_pktHandler);
-	blc_l2cap_initAclConnMasterMtuBuffer(mtu_m_rx_fifo, MTU_M_BUFF_SIZE_MAX, 0, 0);
-	blc_att_setMasterRxMTUSize(ATT_MTU_MASTER_RX_MAX_SIZE);
-#endif // BLE_MASTER_ENABLE
+	blc_gap_init();
 
 	rf_set_power_level_index(MY_RF_POWER);
 	//start_adv_scanning(3, SCAN_INTERVAL_30MS);
