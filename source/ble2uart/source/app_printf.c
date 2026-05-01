@@ -32,7 +32,9 @@
 #if 1
 #include <stdarg.h>
 
+#include "tl_common.h"
 #include "drivers.h"
+#include "stack/ble/ble.h"
 
 #ifdef PUTCHAR
 #include "putchar.h"

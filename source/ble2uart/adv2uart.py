@@ -92,6 +92,30 @@ adv_scanning = Struct(
 )
 
 
+def build_scan_command(
+    scan_phy_1m=True,
+    scan_phy_coded=True,
+    address_type_filter_random=False,
+    address_type_filter_private=False,
+    window_ms=30,
+    cmd_id_scan=b'\x01',
+):
+    return cmd_id_scan + adv_scanning.build(
+        {
+            "flag": {
+                "address_type": "PUBLIC",
+                "address_type_filter_random": address_type_filter_random,
+                "address_type_filter_private": address_type_filter_private,
+                "DUP_FILTER_ENABLE": False,
+                "SCAN_TYPE_ACTIVE": False,
+                "SCAN_PHY_CODED": scan_phy_coded,
+                "SCAN_PHY_1M": scan_phy_1m
+            },
+            "window_ms": window_ms
+        }
+    )
+
+
 class ByteAdapter(Adapter):
     def __init__(self, nbytes=6, separator=':', reverse=False):
         Adapter.__init__(self, Byte[nbytes])
@@ -111,20 +135,7 @@ class Command:
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
     # CMD_ID_PRNT = b'\x05'  # debug print
     DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
-    START_SCAN  = CMD_ID_SCAN + adv_scanning.build(
-        {
-            "flag": {
-                "address_type": "PUBLIC",
-                "address_type_filter_random": True,
-                "address_type_filter_private": True,
-                "DUP_FILTER_ENABLE": False,
-                "SCAN_TYPE_ACTIVE": False,
-                "SCAN_PHY_CODED": True,
-                "SCAN_PHY_1M": True
-            },
-            "window_ms": 30
-        }
-    )
+    START_SCAN  = build_scan_command(scan_phy_1m=True, scan_phy_coded=True)
     STOP_SCAN   = CMD_ID_SCAN + b'\x00\x00\x00'
 
 
@@ -139,6 +150,7 @@ class Ble2Uart:
         self.port = None
         self.config_cmd = {}
         self.cmd_time = time.time()
+        self.scan_enabled = None
         self.ReversedMacAddress = ByteAdapter(
             nbytes=6,
             reverse=True,
@@ -167,6 +179,7 @@ class Ble2Uart:
         self.config_start()
         self.data = bytearray()
         self.sync = None
+        self.scan_enabled = None
         if timeout:
             self.timeout = timeout
         if baud:
@@ -244,7 +257,7 @@ class Ble2Uart:
         ac = crc_16(blk, len(blk))
         b = blk + bytearray([ac & 0xFF, (ac >> 8) & 0xFF])
         self.write(b)
-        self.ser.flushOutput()
+        self.ser.flush()
         logging.debug(
             "send cmd: %s [%s] %s",
             HEX(b[0:1])[0], HEX(b[1:-2])[0], HEX(b[-2:])[0]
@@ -327,11 +340,13 @@ class Ble2Uart:
                             elif cmd == Command.CMD_ID_SCAN:
                                 self.config_account(cmd)
                                 if self.data[5] == 0:
+                                    self.scan_enabled = False
                                     logging.warning(
                                         'resp: %s=SCAN Disable %s',
                                         rssi, adtp,  # command id, single numeric attribute
                                     )
                                 else:
+                                    self.scan_enabled = True
                                     logging.warning(
                                         'resp: %s=SCAN Enable, '
                                         'MAC addresses in list: %s, %s=%s',
@@ -370,6 +385,7 @@ class Ble2Uart:
         info=True,
         clear=True,
         start=True,
+        start_cmd=None,
     ):
         if info:
             self.command(Command.CMD_ID_INFO)
@@ -380,7 +396,17 @@ class Ble2Uart:
         for i in black_list:
             self.add_mac_list(i, Command.CMD_ID_BMAC)
         if start:
-            self.command(Command.START_SCAN)
+            self.command(start_cmd or Command.START_SCAN)
+
+    def stop_scan(self, wait_seconds=2.0):
+        self.command(Command.STOP_SCAN)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if self.scan_enabled is False:
+                return True
+        logging.warning('SCAN Disable confirmation not received')
+        return False
 
 
 def setup_logging(
@@ -469,7 +495,74 @@ def main():
         help='Number of advertisements to process (default is 0 = infinite)',
         default=0
     )
+    parser.add_argument(
+        '--duration',
+        dest='duration',
+        type=float,
+        help='stop scanning after this many seconds (default: 0 = infinite)',
+        default=0
+    )
+    parser.add_argument(
+        '--idle-timeout',
+        dest='idle_timeout',
+        type=float,
+        help='stop scanning after this many seconds without advertisements (default: 0 = disabled)',
+        default=0
+    )
+    parser.add_argument(
+        '--status-interval',
+        dest='status_interval',
+        type=float,
+        help='print an idle status every N seconds while listening (default: 10, 0 = disabled)',
+        default=10
+    )
+    parser.add_argument(
+        '--phy',
+        dest='phy',
+        choices=['1m', 'coded', 'both'],
+        help='scan PHY selection (default: both)',
+        default='both'
+    )
+    parser.add_argument(
+        '--scan-window-ms',
+        dest='scan_window_ms',
+        type=float,
+        help='scan window in milliseconds (default: 30)',
+        default=30
+    )
+    parser.add_argument(
+        '--filter-random',
+        dest='filter_random',
+        action='store_true',
+        help='discard random-address advertisements'
+    )
+    parser.add_argument(
+        '--accept-random',
+        dest='filter_random',
+        action='store_false',
+        help='accept random-address advertisements'
+    )
+    parser.add_argument(
+        '--filter-private',
+        dest='filter_private',
+        action='store_true',
+        help='discard private-address advertisements'
+    )
+    parser.add_argument(
+        '--accept-private',
+        dest='filter_private',
+        action='store_false',
+        help='accept private-address advertisements'
+    )
+    parser.add_argument(
+        '--info-after',
+        dest='info_after',
+        type=float,
+        help='send INFO this many seconds after scan start and report whether it is acknowledged',
+        default=0
+    )
 
+    parser.set_defaults(filter_random=False, filter_private=False)
     args = parser.parse_args()
 
     setup_logging()
@@ -487,31 +580,75 @@ def main():
     logging.warning("Press 'ESC' to exit")
     logging.warning('Connecting to %s...' + args.serial_port[0])
 
-    dv = Ble2Uart(
-        port=args.serial_port[0],
-        baud=args.baudrate,
-        timeout=args.timeout
-    )
-    time.sleep(args.sleep)
-    dv.read(64)  # flush
-    dv.config_start()
-    dv.black_white_list()
-    count = 0
-    while True:
-        rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
-        if payload and args.number:
-            count += 1
-            if count == args.number:
+    dv = None
+    scan_started = False
+    try:
+        dv = Ble2Uart(
+            port=args.serial_port[0],
+            baud=args.baudrate,
+            timeout=args.timeout
+        )
+        time.sleep(args.sleep)
+        dv.read(64)  # flush
+        dv.config_start()
+        start_scan_cmd = build_scan_command(
+            scan_phy_1m=args.phy in ['1m', 'both'],
+            scan_phy_coded=args.phy in ['coded', 'both'],
+            address_type_filter_random=args.filter_random,
+            address_type_filter_private=args.filter_private,
+            window_ms=args.scan_window_ms,
+            cmd_id_scan=Command.CMD_ID_SCAN,
+        )
+        dv.black_white_list(start_cmd=start_scan_cmd)
+        scan_started = True
+        count = 0
+        started_at = time.time()
+        last_adv_at = started_at
+        last_status_at = started_at
+        info_sent_at = 0
+        info_timeout_reported = False
+        while True:
+            now = time.time()
+            if args.duration and now - started_at >= args.duration:
+                logging.warning('Duration reached: %.1f seconds', args.duration)
                 break
-        if dv.config_still_running() > 3: 
-            logging.warning(
-                "Commands not answered in time: %s. Retrying...", dv.config_cmd
+            if args.idle_timeout and now - last_adv_at >= args.idle_timeout:
+                logging.warning('Idle timeout reached: %.1f seconds without advertisements', args.idle_timeout)
+                break
+            if args.status_interval and now - last_adv_at >= args.status_interval and now - last_status_at >= args.status_interval:
+                logging.info('idle: no advertisements for %.1f seconds; scanner still running', now - last_adv_at)
+                last_status_at = now
+            if args.info_after and not info_sent_at and now - started_at >= args.info_after:
+                logging.warning('Sending INFO during active scan at %.1f seconds', now - started_at)
+                dv.command(Command.CMD_ID_INFO)
+                info_sent_at = now
+            rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
+            if info_sent_at and not info_timeout_reported:
+                if Command.CMD_ID_INFO[0] not in dv.config_cmd:
+                    logging.warning('INFO during scan acknowledged')
+                    info_timeout_reported = True
+                elif now - info_sent_at >= 2.0:
+                    logging.warning('INFO during scan not acknowledged within 2.0 seconds')
+                    info_timeout_reported = True
+            if payload:
+                last_adv_at = time.time()
+                if args.number:
+                    count += 1
+                    if count == args.number:
+                        break
+            if dv.config_still_running() > 3:
+                logging.warning(
+                    "Commands not answered in time: %s. Retrying...", dv.config_cmd
                 )
-            dv.config_start()
-            dv.black_white_list()
-    dv.command(Command.STOP_SCAN)
-    dv.read_adv()
-    dv.close()  # close the connection
+                dv.config_start()
+                dv.black_white_list(start_cmd=start_scan_cmd)
+    except KeyboardInterrupt:
+        logging.warning('Interrupted')
+    finally:
+        if dv:
+            if scan_started:
+                dv.stop_scan()
+            dv.close()  # close the connection
     sys.exit(0)
 
 

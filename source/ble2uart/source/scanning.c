@@ -280,7 +280,7 @@ void scan_task(void) {
 		}
 #endif
 	}
-	uint8_t buf[16];
+	u8 buf[16];
 	int len = uart_read(buf, sizeof(buf));
 	if(len > 2 && crcFast(buf, len) == 0) {
 #ifdef 	TIMER_LED_W

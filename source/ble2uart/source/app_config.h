@@ -107,8 +107,4 @@
 	#define CLOCK_SYS_CLOCK_HZ  							48000000
 #endif
 
-enum{
-	CLOCK_SYS_CLOCK_1S = CLOCK_SYS_CLOCK_HZ,
-	CLOCK_SYS_CLOCK_1MS = (CLOCK_SYS_CLOCK_1S / 1000),
-	CLOCK_SYS_CLOCK_1US = (CLOCK_SYS_CLOCK_1S / 1000000),
-};
+/* CLOCK_SYS_CLOCK_1S/1MS/1US provided by SDK vendor/common/app_common.h */

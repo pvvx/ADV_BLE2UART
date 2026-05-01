@@ -9,7 +9,7 @@ PROJECT_NAME := TLSR825xScanner
 PROJECT_PATH := ./source
 OUT_PATH :=./out
 
-ifneq ($(TEL_PATH)/drivers/8258/gpio_8258.c, $(wildcard $(TEL_PATH)/drivers/8258/gpio_8258.c))
+ifneq ($(TEL_PATH)/drivers/B85/gpio.c, $(wildcard $(TEL_PATH)/drivers/B85/gpio.c))
 $(error "Please check SDK Path and set TEL_PATH.")
 endif
 
@@ -57,7 +57,7 @@ GCC_FLAGS := \
 -fshort-wchar \
 -fms-extensions
 
-INCLUDE_PATHS := -I$(PROJECT_PATH) -I$(TEL_PATH)
+INCLUDE_PATHS := -I$(PROJECT_PATH) -I$(TEL_PATH) -I$(TEL_PATH)/drivers/B85 -I$(TEL_PATH)/drivers/B85/lib/include -I$(TEL_PATH)/common
 
 GCC_FLAGS += $(TEL_CHIP)
 

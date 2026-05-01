@@ -2,7 +2,6 @@
 #include "tl_common.h"
 #include "app_buffer.h"
 #include "drivers.h"
-#include "drivers/8258/gpio_8258.h"
 #include "ble.h"
 #include "app.h"
 #include "stack/ble/ble.h"
@@ -140,7 +139,9 @@ void init_ble(void) {
 	////////////////// BLE stack initialization Begin //////////////////////
 #if 1
 	u8 mac_random_static[6];
-	blc_initMacAddress(CFG_ADR_MAC, mac_public, mac_random_static);
+	blc_readFlashSize_autoConfigCustomFlashSector();
+	blc_app_loadCustomizedParameters_normal();
+	blc_initMacAddress(flash_sector_mac_address, mac_public, mac_random_static);
 #else
 	generateRandomNum(5, mac_public);
 	mac_public[5] = 0xC0; 			// for random static

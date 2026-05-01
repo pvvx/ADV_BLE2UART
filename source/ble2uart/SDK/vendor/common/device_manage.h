@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	device_manage.h
+ * @file    device_manage.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    2020.06
  *
  * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef APP_DEVICE_H_
@@ -51,12 +29,12 @@
 #include "stack/ble/ble_common.h"
 #include "stack/ble/hci/hci_event.h"
 
-#ifndef MASTER_MAX_NUM
-#define MASTER_MAX_NUM         						4
+#ifndef ACL_CENTRAL_MAX_NUM
+#define ACL_CENTRAL_MAX_NUM         				4 // ACL central maximum number
 #endif
 
-#ifndef SLAVE_MAX_NUM
-#define SLAVE_MAX_NUM     							4
+#ifndef ACL_PERIPHR_MAX_NUM
+#define ACL_PERIPHR_MAX_NUM     					4 // ACL peripheral maximum number
 #endif
 
 
@@ -65,7 +43,7 @@
 
 
 
-#define DEVICE_CHAR_INFO_MAX_NUM		(MASTER_MAX_NUM + SLAVE_MAX_NUM)    //4 master, 3 slave most
+#define DEVICE_CHAR_INFO_MAX_NUM		(ACL_CENTRAL_MAX_NUM + ACL_PERIPHR_MAX_NUM)    //4 master, 3 slave most
 
 
 
@@ -93,7 +71,7 @@ typedef struct {
 
 
 //Attention: manual set 4 byte aligned
-typedef struct
+typedef struct _attribute_aligned_(4)
 {
 	u16 	conn_handle;
 	u8		conn_role;				// 0: master; 1: slave
@@ -116,8 +94,8 @@ typedef struct
 extern dev_char_info_t	conn_dev_list[];
 
 
-extern int	conn_master_num;
-extern int	conn_slave_num;
+extern int	acl_conn_central_num;
+extern int	acl_conn_periphr_num;
 
 /**
  * @brief       Used for add device information to conn_dev_list.
@@ -196,8 +174,8 @@ bool	dev_char_info_is_connection_state_by_conn_handle(u16 connhandle);
 /**
  * @brief       Get ACL connection role by connection handle.
  * @param[in]   connhandle       - connection handle.
- * @return      0: LL_ROLE_MASTER
- * 				1: LL_ROLE_SLAVE
+ * @return      0: ACL_ROLE_CENTRAL
+ * 				1: ACL_ROLE_PERIPHERAL
  * 				2: connection handle invalid
  */
 int dev_char_get_conn_role_by_connhandle (u16 connhandle);
@@ -216,6 +194,9 @@ int dev_char_get_conn_index_by_connhandle (u16 connhandle);
 
 
 
+/* compatible with previous released SDK */
+#define conn_master_num acl_conn_central_num
+#define conn_slave_num  acl_conn_periphr_num
 
 
 #endif /* APP_DEVICE_H_ */

@@ -1,66 +1,78 @@
-/*
- * uart.c
- *
- *  Created on: 04.03.2024
- *      Author: pvvx
- */
 #include "app_config.h"
 #include "tl_common.h"
-#include "drivers/8258/register_8258.h"
+#include "drivers.h"
+
 #include "drv_uart.h"
 
-//--- UART DMA buffers ----------------------------
-
-typedef struct _dma_uart_buf_t {
+typedef struct {
 	volatile u32 len;
-	union __attribute__((packed)) {
-		u8 uc[UART_DMA_BUFF_SIZE];
-		u16 uw[UART_DMA_BUFF_SIZE>>1];
-		u32 ud[UART_DMA_BUFF_SIZE>>2];
-	};
-}dma_uart_buf_t;
+	u8 data[UART_DMA_BUFF_SIZE];
+} __attribute__((aligned(4))) dma_uart_buf_t;
 
-dma_uart_buf_t urxb;
-dma_uart_buf_t utxb;
+static dma_uart_buf_t uart_rx_buffer;
+static dma_uart_buf_t uart_tx_buffer;
 
+#ifndef UART_CH340_TX_PIN
+#define UART_CH340_TX_PIN UART_TX_PB1
+#endif
 
-//-------------------------------
+#ifndef UART_CH340_RX_PIN
+#define UART_CH340_RX_PIN UART_RX_PA0
+#endif
 
-//_attribute_ram_code_
-void init_uart(int uart_baud) {
-	uart_reset();  //uart module power-on again.
+void init_uart(int uart_baud)
+{
+	uart_gpio_set(UART_CH340_TX_PIN, UART_CH340_RX_PIN);
+	uart_reset();
 	uart_init_baudrate(uart_baud, CLOCK_SYS_CLOCK_HZ, PARITY_NONE, STOP_BIT_ONE);
-	uart_recbuff_init((unsigned char *)&urxb, DATA_BUFF_SIZE);
-	uart_dma_enable(1, 1); 	//uart data in hardware buffer moved by dma, so we need enable them first
-	dma_chn_irq_enable(FLD_DMA_CHN_UART_RX | FLD_DMA_CHN_UART_TX, 1);   	//uart Tx & Rx dma irq enable
+	uart_recbuff_init((u8 *)&uart_rx_buffer, DATA_BUFF_SIZE);
+	uart_dma_enable(1, 1);
+	irq_set_mask(FLD_IRQ_DMA_EN);
+	dma_chn_irq_enable(FLD_DMA_CHN_UART_RX, 1);
 	uart_irq_enable(0, 0);
-	uart_gpio_set(GPIO_TX, GPIO_RX);
-	reg_dma_rx_rdy0 = FLD_DMA_IRQ_UART_RX;
+	dma_chn_enable(FLD_DMA_CHN_UART_RX | FLD_DMA_CHN_UART_TX, 1);
+	dma_chn_irq_status_clr(FLD_DMA_CHN_UART_RX | FLD_DMA_CHN_UART_TX);
+	reg_uart_status0 |= FLD_UART_CLEAR_RX_FLAG | FLD_UART_RX_ERR_FLAG;
 }
 
-int uart_send(u8 * src, u32 len) {
-	int ret = -1; // busy
-	 if (reg_uart_status1 & FLD_UART_TX_DONE ) {
-//		reg_dma_rx_rdy0 = FLD_DMA_IRQ_UART_TX;
-		memcpy(utxb.uc, src, len);
-		utxb.len = len;
-		reg_dma1_addr = (unsigned short)((unsigned int)&utxb);
-		reg_dma_tx_rdy0 |= FLD_DMA_CHN_UART_TX; // start tx
-		ret = len;
+int uart_send(u8 *src, u32 len)
+{
+	if (!len || len > UART_DMA_BUFF_SIZE) {
+		return -1;
 	}
-	return ret;
+
+	if (!(reg_uart_status1 & FLD_UART_TX_DONE)) {
+		return -1;
+	}
+
+	memcpy(uart_tx_buffer.data, src, len);
+	uart_tx_buffer.len = len;
+	uart_send_dma((u8 *)&uart_tx_buffer);
+
+	return (int)len;
 }
 
-int uart_read(u8 * des, u32 maxlen) {
-	int rxlen = 0;
-//	if (reg_uart_status1 & FLD_UART_RX_DONE ) {
-	if(reg_dma_rx_rdy0 & FLD_DMA_IRQ_UART_RX) { // new command?
-		reg_uart_status0 |= FLD_UART_CLEAR_RX_FLAG | FLD_UART_RX_ERR_FLAG;
-		rxlen = urxb.len;
-		if(rxlen)
-			memcpy(des, urxb.uc, (rxlen > maxlen)? maxlen : rxlen);
-		reg_dma_rx_rdy0 = FLD_DMA_IRQ_UART_RX;
+int uart_read(u8 *des, u32 maxlen)
+{
+	u32 rxlen;
+
+	if (!(dma_chn_irq_status_get() & FLD_DMA_CHN_UART_RX)) {
+		return 0;
 	}
-	return rxlen;
+
+	dma_chn_irq_status_clr(FLD_DMA_CHN_UART_RX);
+	reg_uart_status0 |= FLD_UART_CLEAR_RX_FLAG | FLD_UART_RX_ERR_FLAG;
+
+	rxlen = uart_rx_buffer.len;
+	if (!rxlen) {
+		return 0;
+	}
+
+	if (rxlen > maxlen) {
+		rxlen = maxlen;
+	}
+
+	memcpy(des, uart_rx_buffer.data, rxlen);
+	return (int)rxlen;
 }
 

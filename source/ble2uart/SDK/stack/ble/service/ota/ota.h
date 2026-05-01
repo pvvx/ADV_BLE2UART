@@ -1,46 +1,24 @@
 /********************************************************************************************************
- * @file	ota.h
+ * @file    ota.h
  *
- * @brief	This is the header file for BLE SDK
+ * @brief   This is the header file for BLE SDK
  *
- * @author	BLE GROUP
- * @date	2020.06
+ * @author  BLE GROUP
+ * @date    06,2022
  *
- * @par     Copyright (c) 2020, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
- *          All rights reserved.
+ * @par     Copyright (c) 2022, Telink Semiconductor (Shanghai) Co., Ltd. ("TELINK")
  *
- *          Redistribution and use in source and binary forms, with or without
- *          modification, are permitted provided that the following conditions are met:
+ *          Licensed under the Apache License, Version 2.0 (the "License");
+ *          you may not use this file except in compliance with the License.
+ *          You may obtain a copy of the License at
  *
- *              1. Redistributions of source code must retain the above copyright
- *              notice, this list of conditions and the following disclaimer.
+ *              http://www.apache.org/licenses/LICENSE-2.0
  *
- *              2. Unless for usage inside a TELINK integrated circuit, redistributions
- *              in binary form must reproduce the above copyright notice, this list of
- *              conditions and the following disclaimer in the documentation and/or other
- *              materials provided with the distribution.
- *
- *              3. Neither the name of TELINK, nor the names of its contributors may be
- *              used to endorse or promote products derived from this software without
- *              specific prior written permission.
- *
- *              4. This software, with or without modification, must only be used with a
- *              TELINK integrated circuit. All other usages are subject to written permission
- *              from TELINK and different commercial license may apply.
- *
- *              5. Licensee shall be solely responsible for any claim to the extent arising out of or
- *              relating to such deletion(s), modification(s) or alteration(s).
- *
- *          THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- *          ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- *          WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *          DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDER BE LIABLE FOR ANY
- *          DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- *          (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *          LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- *          ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *          (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *          Unless required by applicable law or agreed to in writing, software
+ *          distributed under the License is distributed on an "AS IS" BASIS,
+ *          WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *          See the License for the specific language governing permissions and
+ *          limitations under the License.
  *
  *******************************************************************************************************/
 #ifndef OTA_H_
@@ -55,31 +33,14 @@
 #define CMD_OTA_END							0xFF02	//client -> server
 
 /**
- * @brief 	Extended OTA command, optional
+ * @brief 	Extended OTA command
  */
 #define CMD_OTA_START_EXT					0xFF03	//client -> server
 #define CMD_OTA_FW_VERSION_REQ				0xFF04	//client -> server
 #define CMD_OTA_FW_VERSION_RSP				0xFF05	//server -> client
 #define CMD_OTA_RESULT						0xFF06	//server -> client
-
-
-#if(MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
-	extern int	ota_program_bootAddr;
-	int	ota_program_offset;
-#endif
-
-
-/**
- * @brief 	Multiple boot address enumeration
- */
-typedef enum{
-	MULTI_BOOT_ADDR_0x20000 	= 0x20000,	//128 K
-	MULTI_BOOT_ADDR_0x40000		= 0x40000,  //256 K
-
-#if (MCU_CORE_TYPE == MCU_CORE_9518)
-	MULTI_BOOT_ADDR_0x80000	    = 0x80000,  //512 K
-#endif
-}multi_boot_addr_e;
+#define CMD_OTA_SCHEDULE_PDU_NUM			0xFF08	//server -> client
+#define CMD_OTA_SCHEDULE_FW_SIZE			0xFF09	//server -> client
 
 
 
@@ -95,7 +56,7 @@ enum{
 
 	//0x04
 	OTA_WRITE_FLASH_ERR,					//write OTA data to flash ERR
- 	OTA_DATA_UNCOMPLETE,					//lost last one or more OTA PDU
+ 	OTA_DATA_INCOMPLETE,					//lost last one or more OTA PDU
  	OTA_FLOW_ERR,		    				//peer device send OTA command or OTA data not in correct flow
  	OTA_FW_CHECK_ERR,						//firmware CRC check error
 
@@ -106,10 +67,13 @@ enum{
 	OTA_FW_SIZE_ERR,						//firmware size error: no firmware_size; firmware size too small or too big
 
 	//0x0C
-	OTA_DATA_PACKET_TIMEOUT,	   			//time interval between two consequent packet exceed a value(user can adjust this value)
- 	OTA_TIMEOUT,							//OTA flow total timeout
- 	OTA_FAIL_DUE_TO_CONNECTION_TERMIANTE,	//OTA fail due to current connection terminate(maybe connection timeout or local/peer device terminate connection)
+	OTA_DATA_PACKET_TIMEOUT,	   			//time interval between two consequent data packet exceed, time out value can be set by API "blc_ota_setOtaDataPacketTimeout"
+ 	OTA_TIMEOUT,							//OTA flow total timeout, time out value can be set by API "blc_ota_setOtaProcessTimeout"
+ 	OTA_FAIL_DUE_TO_CONNECTION_TERMINATE,	//OTA fail due to current connection terminate(maybe connection timeout or local/peer device terminate connection)
 	OTA_MCU_NOT_SUPPORTED,					//MCU does not support this OTA mode
+
+	//0x10
+	OTA_LOGIC_ERR,							//software logic error, please contact FAE of TeLink
 };
 
 
@@ -121,15 +85,6 @@ enum{
 typedef struct {
 	u16  	ota_cmd;
 } ota_start_t;
-
-/**
- *  @brief data structure of OTA command "CMD_OTA_START_EXT"
- */
-typedef struct {
-	u16  	ota_cmd;
-	u8		pdu_length;			//must be: 16*n(n is in range of 1 ~ 15); pdu_length: 16,32,48,...240
-	u8		version_compare;	//0: no version compare; 1: only higher version can replace lower version
-} ota_startExt_t;
 
 
 /**
@@ -143,11 +98,23 @@ typedef struct {
 
 
 /**
+ *  @brief data structure of OTA command "CMD_OTA_START_EXT"
+ */
+typedef struct {
+	u16  	ota_cmd;
+	u8		pdu_length;			//must be: 16*n(n is in range of 1 ~ 15); pdu_length: 16,32,48,...240
+	u8		version_compare;	//0: no version compare; 1: only higher version can replace lower version
+	u8		rsvd[16];			//reserved for future use
+} ota_startExt_t;
+
+
+/**
  *  @brief data structure of OTA command "CMD_OTA_RESULT"
  */
 typedef struct {
 	u16  	ota_cmd;
 	u8		result;
+	u8		rsvd;
 } ota_result_t;
 
 
@@ -172,17 +139,51 @@ typedef struct {
 } ota_versionRsp_t;
 
 
+/**
+ *  @brief data structure of OTA command "CMD_OTA_SCHEDULE_PDU_NUM"
+ */
+typedef struct {
+	u16  	ota_cmd;
+	u16  	success_pdu_cnt;	// successful OTA PDU number
+} ota_sche_pdu_num_t;
 
-typedef struct{
-	u16 adr_index;
-	u8	data[16];
-	u16 crc_16;
-}ota_pdu16_t;
+/**
+ *  @brief data structure of OTA command "CMD_OTA_SCHEDULE_FW_SIZE"
+ */
+typedef struct {
+	u16  	ota_cmd;
+	u32		success_fw_size;	// successful OTA firmware size (unit: Byte)
+} ota_sche_fw_size_t;
 
 
+
+/**
+ * @brief      ota crc32 related function.
+ * @param[in]  crc: initial crc value.
+ * @param[in]  input: input data.
+ * @param[in]  table: crc calculate table.
+ * @param[in]  len: data length.
+ * @return     crc result.
+ */
 unsigned long crc32_half_cal(unsigned long crc, unsigned char* input, unsigned long* table, int len);
+
+/**
+ * @brief      ota crc32 related function.
+ * @param[in]  crc: initial crc value.
+ * @param[in]  input: input data.
+ * @param[in]  table: crc calculate table.
+ * @param[in]  len: data length.
+ * @return     crc result.
+ */
 unsigned long crc32_cal(unsigned long crc, unsigned char* input, unsigned long* table, int len);
 
+/**
+ * @brief      ota crc16 related function.
+ * @param[in]  pD: input data.
+ * @param[in]  len: data length.
+ * @return     crc result.
+ */
+unsigned short crc16 (unsigned char *pD, int len);
 
 
 #endif /* OTA_H_ */

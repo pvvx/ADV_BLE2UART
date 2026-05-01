@@ -15,7 +15,6 @@ $(OUT_PATH)/source/ble.o \
 $(OUT_PATH)/source/drv_uart.o \
 $(OUT_PATH)/source/tinyFlash.o \
 $(OUT_PATH)/source/app_printf.o \
-$(OUT_PATH)/source/debug_ble_functions.o \
 $(OUT_PATH)/source/main.o
 
 # Each subdirectory must supply rules for building sources it contributes
