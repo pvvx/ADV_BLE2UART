@@ -129,7 +129,7 @@
 #define HCI_EVT_MASK_READ_REMOTE_SUPPORTED_FEATURES_COMPLETE     	 0x0000000400
 #define HCI_EVT_MASK_READ_REMOTE_VERSION_INFORMATION_COMPLETE    	 0x0000000800     //
 
-#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C
 //Event mask page 2
 #define HCI_EVT_MASK_AUTH_PAYLOAD_TIMEOUT_EXPIRED                     (((unsigned long long)1)<<23)
 #endif
@@ -241,7 +241,7 @@
 #define HCI_CMD_WRITE_INQUIRY_MODE									 0x45
 #define HCI_CMD_WRITE_PAGE_SCAN_TYPE								 0x47
 #define HCI_CMD_SET_EVT_MASK_PAGE_2                                  0x63
-#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C
 	#define HCI_CMD_READ_AUTH_PAYLOAD_TIMEOUT                            0x7B
 	#define HCI_CMD_WRITE_AUTH_PAYLOAD_TIMEOUT                           0x7C
 #endif

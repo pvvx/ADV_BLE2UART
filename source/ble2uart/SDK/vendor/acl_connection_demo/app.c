@@ -58,7 +58,17 @@ const u8	tbl_scanRsp [] = {
 
 
 
+#if (FLASH_ERASE_IN_CONNECT_STATE)
+void flash_erase_complete_callback(u8 e, u32 p, u32 n){
 
+	(void)e;
+	(void)p;
+	(void)n;
+	//just tell APP that flash erase has finished.
+	gpio_toggle(GPIO_LED_BLUE);
+	DBG_CHN13_TOGGLE;
+}
+#endif
 
 /**
  * @brief      BLE Adv report event handler
@@ -826,6 +836,11 @@ _attribute_no_inline_ void user_init_normal(void)
 
 	#if (BLE_OTA_SERVER_ENABLE)
 		blc_ota_initOtaServer_module();
+	#endif
+
+	#if (FLASH_ERASE_IN_CONNECT_STATE)
+		flash_erase_forBleStateInit();
+		blc_appRegisterStackFlashEraseCallback(flash_erase_complete_callback);
 	#endif
 
 	tlkapi_send_string_data(APP_LOG_EN, "[APP][INI] b85m demo init", 0, 0);

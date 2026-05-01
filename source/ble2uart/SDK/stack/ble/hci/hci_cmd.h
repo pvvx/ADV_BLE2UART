@@ -76,7 +76,7 @@ typedef struct
 	hostNumOfCompletedPkt_cfg_t completePktCfg[ACL_CENTRAL_MAX_NUM + ACL_PERIPHR_MAX_NUM];
 } hci_hostNumOfCompletedPkt_cmdParam_t;
 
-#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C
 /**
  *  @brief  Return Parameters for "7.3.93 Read Authenticated Payload Timeout command"
  */
@@ -1197,7 +1197,7 @@ typedef struct{
 	u8		rsp_enable;
 }hci_le_cteRspEn_t;
 
-#if BQB_TEST_EN		//LL/DDI/ADV/BV-69-C	//Add by wenjing
+#if BQB_TEST_EN		//LL/DDI/ADV/BV-69-C
 /**
  * @brief Command for "7.8.122 LE Set Data Related Address Changes command"
  */

@@ -58,7 +58,7 @@ typedef int (*blc_hci_user_handler_t)(u8 *p, u32 len);
 extern	blc_hci_rx_handler_t	blc_hci_rx_handler;
 extern	blc_hci_tx_handler_t	blc_hci_tx_handler;
 
-#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C	//Add by wenjing
+#if BQB_TEST_EN	//LL/SEC/PER/BV-10-C
 extern u32		hci_eventMask_2;
 #endif
 
@@ -120,7 +120,7 @@ typedef enum{
 	HCI_ISO_LOST_DATA				=	0x02, //Part(s) of the ISO_SDU were not received correctly. This is reported as "lost data"
 } iso_ps_flag_t;
 
-#if BQB_TEST_EN //HCI//CIN//BV-14-C Add by Jingying
+#if BQB_TEST_EN //HCI//CIN//BV-14-C
 
 typedef struct __attribute__((packed))
 {

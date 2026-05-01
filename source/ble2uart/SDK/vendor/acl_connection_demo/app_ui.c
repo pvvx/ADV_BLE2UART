@@ -75,8 +75,13 @@ void key_change_proc(void)
 		{
 			key_type = CONSUMER_KEY;
 			u16 consumer_key;
-			if(key0 == CR_VOL_UP){  	//volume up
+			if(key0 == CR_VOL_UP){  	//volume up //SW6 in the board C1T357A20
 				consumer_key = MKEY_VOL_UP;
+
+				#if (FLASH_ERASE_IN_CONNECT_STATE)
+				flash_erase_forBleState(flash_sector_mac_address, 4);
+				#endif
+
 				tlkapi_send_string_data(APP_LOG_EN, "[APP][EVT]UI send Vol+", 0, 0);
 			}
 			else if(key0 == CR_VOL_DN){ //volume down

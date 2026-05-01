@@ -66,7 +66,7 @@
 #define	APP_BATT_CHECK_LOG_EN			    1
 
 
-#define USED_DEEP_ANA_REG				PM_ANA_REG_WD_CLR_BUF1
+#define USED_DEEP_ANA_REG				PM_ANA_REG_POWER_ON_CLR_BUF1
 #define IR_MODE_DEEP_FLG	 			BIT(5) //if 1: IR mode, 0: BLE mode
 #define	LOW_BATT_FLG					BIT(0) //if 1: low battery
 /////////////////////// Board Select Configuration ///////////////////////////////
@@ -243,16 +243,6 @@
 
 /////////////////// Clock  /////////////////////////////////
 #define CLOCK_SYS_CLOCK_HZ  							32000000
-
-
-
-/////////////////////////////////////// PRINT DEBUG INFO ///////////////////////////////////////
-#if (UART_PRINT_DEBUG_ENABLE)
-	#define DEBUG_INFO_TX_PIN           		GPIO_PD2
-	#define PULL_WAKEUP_SRC_PD2         		PM_PIN_PULLUP_10K
-	#define PD2_OUTPUT_ENABLE         			1
-	#define PD2_DATA_OUT                     	1 //must
-#endif
 
 
 

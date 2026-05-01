@@ -459,11 +459,8 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
 			of Flash may have the risk of error, causing the program firmware and user data to be modified abnormally,
 			and eventually causing the product to fail. */
 	u8 battery_check_returnValue=0;
-#if (MCU_CORE_TYPE == MCU_CORE_TC321X)
-	if(!(analog_read(USED_DEEP_ANA_REG) & LOW_BATT_FLG))
-#elif (MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
+
 	if(analog_read(USED_DEEP_ANA_REG) & LOW_BATT_FLG)
-#endif
 	{
 		battery_check_returnValue=app_battery_power_check(alarm_vol_mv+200);
 	}
@@ -472,17 +469,19 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
 	}
 	if(battery_check_returnValue)
 	{
-#if (MCU_CORE_TYPE == MCU_CORE_TC321X)
-		analog_write(USED_DEEP_ANA_REG,  analog_read(USED_DEEP_ANA_REG) | LOW_BATT_FLG);  //mark
-#elif (MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
 		analog_write(USED_DEEP_ANA_REG,  analog_read(USED_DEEP_ANA_REG) & (~LOW_BATT_FLG));  //clr
-#endif
 	}
 	else
 	{
 		#if (UI_LED_ENABLE)  //led indicate
 			for(int k=0;k<3;k++){
-				wd_clear();
+			#if (MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
+				wd_clear(); //clear watch dog, in case that some user callBack function take too much time.
+			#elif (MCU_CORE_TYPE == MCU_CORE_TC321X)
+				if (g_chip_version != CHIP_VERSION_A0) {
+					wd_clear(); //clear watch dog, in case that some user callBack function take too much time.
+				}
+			#endif
 			#if (GPIO_LED_BLUE)
 				gpio_write(GPIO_LED_BLUE, LED_ON_LEVEL);
 			#endif
@@ -494,22 +493,14 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
 			}
 		#endif
 
-#if (MCU_CORE_TYPE == MCU_CORE_TC321X)
-		if(!(analog_read(USED_DEEP_ANA_REG) & LOW_BATT_FLG))
-#elif (MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
 		if(analog_read(USED_DEEP_ANA_REG) & LOW_BATT_FLG)
-#endif
 		{
 			tlkapi_printf(APP_BATT_CHECK_LOG_EN || APP_BATT_VOLT_LOW_LOG_EN, "[APP][BAT] The battery voltage is lower than %dmV, shut down!!!\n", (alarm_vol_mv + 200));
 		} else {
 			tlkapi_printf(APP_BATT_CHECK_LOG_EN || APP_BATT_VOLT_LOW_LOG_EN, "[APP][BAT] The battery voltage is lower than %dmV, shut down!!!\n", alarm_vol_mv);
 		}
 
-#if (MCU_CORE_TYPE == MCU_CORE_TC321X)
-		analog_write(USED_DEEP_ANA_REG,  analog_read(USED_DEEP_ANA_REG) & (~LOW_BATT_FLG));  //clr
-#elif (MCU_CORE_TYPE == MCU_CORE_825x || MCU_CORE_TYPE == MCU_CORE_827x)
 		analog_write(USED_DEEP_ANA_REG,  analog_read(USED_DEEP_ANA_REG) | LOW_BATT_FLG);  //mark
-#endif
 
 		#if (UI_KEYBOARD_ENABLE)
 		u32 pin[] = KB_DRIVE_PINS;

@@ -113,11 +113,7 @@
 
 #endif
 
-#if(DEBUG_GPIO_ENABLE || \
-		DEBUG_COMMON_GPIO_ENABLE || DEBUG_SIMULATE_GPIO_ENABLE || DEBUG_SIHUI_GPIO_ENABLE || \
-		DEBUG_QIUWEI_GPIO_ENABLE || DEBUG_RONGLU_GPIO_ENABLE || DEBUG_HAOJIE_GPIO_ENABLE || \
-		DEBUG_ZHIHAN_GPIO_ENABLE || DEBUG_LIJING_GPIO_ENABLE || DEBUG_XIAOHU_GPIO_ENABLE || \
-		DEBUG_JIAPENG_GPIO_ENABLE || DEBUG_JIAKAI_GPIO_ENABLE)
+#if(DEBUG_GPIO_ENABLE)
 
 	#define GPIO_CHN0							GPIO_PD0
 	#define GPIO_CHN1							GPIO_PD1
@@ -154,6 +150,16 @@
 	#define PC7_OUTPUT_ENABLE					1
 
 #endif  //end of DEBUG_GPIO_ENABLE
+
+/**
+ *  @brief  PRINT DEBUG INFO
+ */
+#if (UART_PRINT_DEBUG_ENABLE)
+    #define DEBUG_INFO_TX_PIN               GPIO_PB2
+    #define PULL_WAKEUP_SRC_PB2             PM_PIN_PULLUP_10K
+    #define PB2_OUTPUT_ENABLE               1
+    #define PB2_DATA_OUT                    1
+#endif
 
 /**
  *  @brief  Battery_check Configuration

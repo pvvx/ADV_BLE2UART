@@ -63,6 +63,10 @@ int main(void)
 		cpu_wakeup_init(DCDC_LDO_MODE, INTERNAL_CAP_XTAL24M);
 	#endif
 
+	#if(MCU_CORE_TYPE == MCU_CORE_TC321X)
+		wd_32k_stop();
+	#endif
+
 	/* detect if MCU is wake_up from deep retention mode */
 	int deepRetWakeUp = pm_is_MCU_deepRetentionWakeup();  //MCU deep retention wakeUp
 

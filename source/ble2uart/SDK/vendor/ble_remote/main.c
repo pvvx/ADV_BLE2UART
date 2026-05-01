@@ -64,6 +64,8 @@ int main(void)
 	#endif
 	cpu_wakeup_init(DCDC_LDO_MODE, INTERNAL_CAP_XTAL24M);
 
+	wd_32k_stop();
+
 	/* detect if MCU is wake_up from deep retention mode */
 	int deepRetWakeUp = pm_is_MCU_deepRetentionWakeup();  //MCU deep retention wakeUp
 

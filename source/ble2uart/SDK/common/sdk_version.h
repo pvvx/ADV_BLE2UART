@@ -31,7 +31,7 @@
 #define	CERTIFICATION_MARK			4
 #define	SOFT_STRUCTURE				0
 #define	MAJOR_VERSION				2
-#define	MINOR_VERSION				2
+#define	MINOR_VERSION				3
 #define	PATCH_NUM					0
 
 #define CUSTOM_MAJOR_VERSION		0

@@ -61,8 +61,8 @@
 	//Only support BOARD_827X_EVK_C1T197A30
 	#define BOARD_SELECT							BOARD_827X_EVK_C1T197A30
 #elif (CHIP_TYPE == CHIP_TYPE_TC321X)
-	//Only support BOARD_TC321X_EVK_C1T357A20
-#define BOARD_SELECT								BOARD_TC321X_EVK_C1T357A20
+	//Only support BOARD_TC321X_EVK_C1T357A20 & BOARD_TC321X_EVK_C1T357A20_V2_1
+	#define BOARD_SELECT							BOARD_TC321X_EVK_C1T357A20_V2_1
 #endif
 
 
@@ -73,16 +73,6 @@
 
 /////////////////// Clock  /////////////////////////////////
 #define CLOCK_SYS_CLOCK_HZ  							32000000
-
-
-
-/////////////////////////////////////// PRINT DEBUG INFO ///////////////////////////////////////
-#if (UART_PRINT_DEBUG_ENABLE)
-	#define DEBUG_INFO_TX_PIN           		GPIO_PA2
-	#define PULL_WAKEUP_SRC_PA2         		PM_PIN_PULLUP_10K
-	#define PA2_OUTPUT_ENABLE         			1
-	#define PA2_DATA_OUT                     	1 //must
-#endif
 
 
 

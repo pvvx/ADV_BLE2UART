@@ -166,4 +166,42 @@ void blc_ll_acl_write_flash_status(flash_status_typedef_e type , unsigned short 
  */
 void 		blc_ll_setCustomizedPrimaryChannel (u8 chn0, u8 chn1, u8 chn2);
 
+
+#if (FLASH_ERASE_IN_CONNECT_STATE)
+
+	#define FLASH_ERASE_SECTOR_INTVL_US  (1*1000*1000) //3s
+
+	typedef enum {
+		BLE_FLASH_ERASE_SUCCESS,
+		BLE_FLASH_ERASE_FAIL,
+		BLE_FLASH_ERASE_ADDR_ERR,
+		BLE_FLASH_ERASE_PENDING,
+	}flash_op_status;
+
+
+	typedef struct{
+		u8 flash_erase_pending;
+		u8 erase_sector_num;
+		u8 erase_sector_idx;
+		u8 rsvd;
+
+		int flash_erase_addr;
+
+		u32 flash_erase_startTick;
+		u32 flash_erase_sectorEraseIntvl;
+	}flash_erase_t;
+
+	typedef void  (*flash_erase_op_callback_t)(u8, u32, u32);
+	extern	flash_erase_op_callback_t 		flash_erase_op_cb;
+
+	void flash_erase_forBleStateInit(void);
+	void flash_erase_forBleStateMainloop(void);
+	void blc_appRegisterStackFlashEraseCallback(flash_erase_op_callback_t cb);
+	void flash_erase_setSectorEraseIntvl(u32 intvl_us);
+	flash_op_status flash_erase_forBleState(unsigned long addr, unsigned char sector_num);
+
+#endif //FLASH_ERASE_IN_CONNECT_STATE
+
+
+
 #endif /* LL_H_ */
