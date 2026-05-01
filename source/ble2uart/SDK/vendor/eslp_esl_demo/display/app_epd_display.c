@@ -103,7 +103,8 @@ static app_epd_display_state_t state;
 #if (CHIP_TYPE == CHIP_TYPE_TC321X)
 static void delay_us(int a)
 {
-	sleep_us(a);
+	// TODO
+	(void) a;
 }
 #endif
 
