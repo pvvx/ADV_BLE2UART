@@ -86,7 +86,7 @@
  * 2. at least 4; recommended value: 8, 16
  */
 #define ACL_RX_FIFO_SIZE				CAL_LL_ACL_RX_FIFO_SIZE(ACL_CONN_MAX_RX_OCTETS)
-#define ACL_RX_FIFO_NUM					8	// must be: 2^n
+#define ACL_RX_FIFO_NUM					4	// SDK minimum (2^n, ≥4); reduced from 8 to save 256 B for advertising scanner
 
 
 /**

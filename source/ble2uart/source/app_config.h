@@ -7,7 +7,7 @@
 #define DEBUG_MSG           0  // Set to 0 to disable debug mode; set to 1 to print UART debug messages as uart_printf
 
 #define BLE_DEVICE_ENABLE	0
-#define BLE_MASTER_ENABLE	0
+#define BLE_MASTER_ENABLE	1  // enable central/master role for CMD_ID_CONN
 
 #define MODULE_WATCHDOG_ENABLE		0	// WDT not use!
 #define WATCHDOG_INIT_TIMEOUT		250  // ms
@@ -67,11 +67,17 @@
 #define PB5_FUNC			AS_GPIO
 
 #define GPIO_TX			GPIO_PB1  // UART_TX_PB1, TXD
+// PB1        - UART TX to CH340C RXD
 
 #define GPIO_RX			GPIO_PA0  // UART_RX_PA0, RXD
+// PA0  - UART RX from CH340C TXD
 #define PA0_OUTPUT_ENABLE	0
+#define PA0_INPUT_ENABLE	1
 #define PULL_WAKEUP_SRC_PA0 PM_PIN_PULLUP_1M
 #define PA0_FUNC		AS_GPIO
+
+#define UART_CH340_TX_PIN	UART_TX_PB1
+#define UART_CH340_RX_PIN	UART_RX_PA0
 
 #if UART_PRINT_DEBUG_ENABLE
 #define PRINT_BAUD_RATE 1500000 // real 1000000
@@ -96,12 +102,8 @@
 
 #define ATT_LEGACY_MTU_SIZE  23
 
-#define MASTER_MAX_NUM  1
-#define SLAVE_MAX_NUM   1
-
-#define MASTER_MAX_NUM  1
-#define SLAVE_MAX_NUM   1
-
+#define MASTER_MAX_NUM	1
+#define SLAVE_MAX_NUM	0   // scanner-only: no peripheral role
 #define RAM _attribute_data_retention_ // short version, this is needed to keep the values in ram after sleep
 
 /////////////////// Clock  /////////////////////////////////

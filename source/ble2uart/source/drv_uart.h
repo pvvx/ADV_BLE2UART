@@ -17,5 +17,6 @@
 void init_uart(int uart_baud);
 int uart_send(u8 * src, u32 len);
 int uart_read(u8 * des, u32 maxlen);
+int uart_is_tx_done(void);
 
 #endif /* _DRV_UART_H_ */

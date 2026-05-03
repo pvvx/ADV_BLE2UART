@@ -14,7 +14,16 @@ enum {
 	CMD_ID_WMAC		= 0x02, // add white mac
 	CMD_ID_BMAC 	= 0x03, // add black mac
 	CMD_ID_CLRM		= 0x04, // clear mac list
-	CMD_ID_PRNT		= 0x05  // print debug message
+	CMD_ID_PRNT		= 0x05, // print debug message
+	CMD_ID_GPIO		= 0x06, // TB-03F-KIT GPIO read/write/config
+	CMD_ID_LED		= 0x07, // TB-03F-KIT LED test
+	CMD_ID_UART		= 0x08, // UART test/config
+	CMD_ID_RFSDK	= 0x09, // RF/SDK runtime tuning
+	CMD_ID_VERSION	= 0x0a, // HW/FW/SDK version tuple
+	CMD_ID_TXADV	= 0x0b, // transmit custom advertisement
+	CMD_ID_CONN		= 0x0c, // BLE ACL connection (central role): connect/disconnect/status
+	CMD_ID_TXDATA	= 0x0d, // send ATT Write Command to connected peer
+	CMD_ID_RXDATA	= 0x0e  // (async) ATT data received from connected peer
 } CMD_ID_KEYS;
 
 #define MAC_MAX_SCAN_LIST	64

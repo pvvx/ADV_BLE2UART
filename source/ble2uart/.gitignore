@@ -4,6 +4,7 @@ out/*
 out_scanner
 pycache
 *.pyc
+__pycache__/
 build/
 dist/
 *.egg-info/

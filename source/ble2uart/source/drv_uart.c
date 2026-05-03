@@ -45,11 +45,16 @@ int uart_send(u8 *src, u32 len)
 		return -1;
 	}
 
+
 	memcpy(uart_tx_buffer.data, src, len);
 	uart_tx_buffer.len = len;
 	uart_send_dma((u8 *)&uart_tx_buffer);
 
 	return (int)len;
+}
+
+int uart_is_tx_done(void) {
+	return (reg_uart_status1 & FLD_UART_TX_DONE) != 0;
 }
 
 int uart_read(u8 *des, u32 maxlen)

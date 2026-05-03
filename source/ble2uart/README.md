@@ -37,7 +37,7 @@ Characteristics of this BLE receiver firmware:
 - LEDs to monitor the BLE advertising interface;
 - the software exploits the latest version of the [Telink SDK](https://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/#software-development-kit) for [Bluetooth LE Multi Connection](https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip);
 - ready-to-compile makefile;
-- Compared to implementations based on variants of the Hayes/AT command set, this software employs a very compact bidirectional protocol to optimize UART traffic;
+- compact bidirectional byte-oriented protocol with CRC16-protected UART transport;
 - the BLE device can be fully controlled by the hosts via commands;
 - Available commands can be extended.
 
@@ -194,9 +194,258 @@ Similarly, you can also run *adv2uart.py*:
 cmd.exe /c 'python3 ADV_BLE2UART\source\ble2uart\adv2uart.py -p com10 -i'
 ```
 
-## Persistent user data storage
+## Binary command protocol
 
-Flash user data storage starts from 0x70020 (458784) if the first byte 0x70000 (458752) is not FF, or from 0x71020 (462880). Each update of a value (e.g., "bitrate" value) takes 4 sequential bytes. One buffer is 256 bytes.
+All host↔firmware communication uses a unified binary framing with CRC-16 error detection. The protocol is described in the **API** section. This section documents all commands currently supported by the firmware.
+
+### Frame format
+
+Every frame (command and response alike) has the same structure:
+
+```
+[payload_len: 1B] [cmd/rssi: 1B] [id/evtype: 1B] [data_len/adtype: 1B] [marker/phys: 1B] [mac/data: 6B] [optional payload] [CRC16-lo: 1B] [CRC16-hi: 1B]
+```
+
+For **command responses**, byte[4] (marker/phys) is always `0xFF`. The `id` byte carries a sub-result or state value; `data_len` is the number of valid bytes in the 6-byte data field.
+
+### Command status codes
+
+All commands that include an operation byte return a status in the `id` field of the response:
+
+| Code | Name | Meaning |
+|------|------|---------|
+| 0 | `CMD_STATUS_OK` | Operation succeeded |
+| 1 | `CMD_STATUS_ARGS` | Wrong number or invalid arguments |
+| 2 | `CMD_STATUS_PIN` | Invalid or unsupported GPIO pin |
+| 3 | `CMD_STATUS_DENIED` | Operation refused (e.g. not connected) |
+| 4 | `CMD_STATUS_VALUE` | Argument value out of range |
+
+### Commands reference
+
+#### `0x00` CMD_ID_INFO — device information
+
+Sent by firmware on startup or in response to a `CMD_ID_INFO` request.
+
+| Field | Response value |
+|-------|----------------|
+| `id` | SW version (BCD, e.g. `0x01` = "0.1") |
+| `data_len` | 6 |
+| `data[0..5]` | Public MAC address (little-endian) |
+
+The `adv2uart_gui.py` GUI sends this command at connect time and displays the firmware version and local MAC.
+
+---
+
+#### `0x01` CMD_ID_SCAN — start / stop BLE scanning
+
+Request format: `[0x01] [scan_mode: 1B] [interval_lo: 1B] [interval_hi: 1B]`
+
+- `scan_mode` bit-field: PHY selection, filter flags (public/random/private addresses, duplicate filter, active/passive scan).
+- `interval` is the *scan interval* in units of 0.625 ms.
+
+Response `data[0..2]` echoes the accepted parameters.
+
+---
+
+#### `0x02` CMD_ID_WMAC — add MAC to white list
+#### `0x03` CMD_ID_BMAC — add MAC to black list
+
+Request format: `[0x02/0x03] [mac: 6B]`
+
+Response `id` = current list count; `data[0..5]` = accepted MAC.
+
+---
+
+#### `0x04` CMD_ID_CLRM — clear MAC filter list
+
+Request format: `[0x04]`
+
+Response `id` = maximum list capacity.
+
+---
+
+#### `0x05` CMD_ID_PRNT — debug print (firmware → host only)
+
+Never sent by the host. The firmware uses this command ID to push `uart_printf()` messages as framed packets into the FIFO. The payload is the raw ASCII text.
+
+---
+
+#### `0x06` CMD_ID_GPIO — GPIO / LED control
+
+Request format: `[0x06] [op: 1B] [pin_code: 1B] [...]`
+
+`pin_code` is derived from the GPIO mnemonic: high nibble = port group (`A=0`, `B=1`, `C=2`, `D=3`), low nibble = pin number. Examples: `PA7 = 0x07`, `PB4 = 0x14`, `PC2 = 0x22`.
+
+Operations (`op`):
+- `0` — query pin state and board mask
+- `1` — read single pin value: `[0x06, 1, pin_code]`
+- `2` — write single pin value: `[0x06, 2, pin_code, value]` *(LED pins only)*
+- `3` — toggle single pin: `[0x06, 3, pin_code]` *(LED pins only)*
+- `4` — configure GPIO: `[0x06, 4, pin_code, input_en, output_en, pull]`
+
+`pull`: `0` = floating, `1` = pull-up 1M, `2` = pull-down 100K, `3` = pull-up 10K.
+
+Supported TB-03F-KIT pin codes:
+
+| pin_code | GPIO | Function | Capabilities |
+|----------|------|----------|--------------|
+| `0x07` | PA7 | KEY_USER / SWS | read/config (input only) |
+| `0x14` | PB4 | Yellow LED | read/write/toggle/config |
+| `0x15` | PB5 | White LED | read/write/toggle/config |
+| `0x22` | PC2 | RGB Blue LED | read/write/toggle/config |
+| `0x23` | PC3 | RGB Red LED | read/write/toggle/config |
+| `0x24` | PC4 | RGB Green LED | read/write/toggle/config |
+
+UART transport pins `PA0` (RX) and `PB1` (TX) are not accepted to avoid breaking the serial link.
+
+Response `data`: `[op, pin_code, value, led_mask, board_mask_lo, board_mask_hi]`.
+
+`board_mask` bit positions: bit 0 = KEY PA7, bit 1 = Blue PC2, bit 2 = Red PC3, bit 3 = Green PC4, bit 4 = Yellow PB4, bit 5 = White PB5.
+
+---
+
+#### `0x08` CMD_ID_UART — UART ping / baud rate configuration
+
+Request format: `[0x08] [op: 1B] [...]`
+
+Operations:
+- `0` — query current baud rate configuration
+- `1` — send ping: `[0x08, 1, seq_lo, seq_hi, pattern]` — echoes back the sequence number and pattern
+- `2` — change baud rate: `[0x08, 2, baud_index]`
+
+Available baud rate indices: `0` = 2 000 000, `1` = 921 600, `2` = 115 200.
+
+Response `data`: `[op, baud_index, count, baud_lo, baud_mid, baud_hi]`.
+
+**Note**: after a `CMD_STATUS_OK` response to baud-rate change op=2, the firmware switches to the new baud rate within ~600 ms. The host must reconnect at the new rate.
+
+---
+
+#### `0x09` CMD_ID_RFSDK — RF and scan runtime tuning
+
+Request format: `[0x09] [op: 1B] [...]`
+
+Operations:
+- `0` — query current RF settings
+- `1` — set TX power: `[0x09, 1, power_index]`
+- `2` — set crystal capacitance override: `[0x09, 2, cap_value]` (`0xFF` = use calibrated value)
+- `3` — set primary scan channels: `[0x09, 3, ch0, ch1, ch2]` (default: 37, 38, 39)
+- `4` — set Coded PHY minimum scan window: `[0x09, 4, min_10ms]` (units: 10 ms)
+
+Response `data`: `[power, cap, ch0, ch1, ch2, coded_min_units]`.
+
+---
+
+#### `0x0A` CMD_ID_VERSION — hardware / firmware / SDK version
+
+Request format: `[0x0A]`
+
+| Response field | Value |
+|----------------|-------|
+| `id` | SW version (BCD) |
+| `data[0]` | HW version (`0x10` = TB-03F-KIT) |
+| `data[1]` | SDK certification mark |
+| `data[2]` | SDK structure version |
+| `data[3]` | SDK major version |
+| `data[4]` | SDK minor version |
+| `data[5]` | SDK patch number |
+
+---
+
+#### `0x0B` CMD_ID_TXADV — transmit custom advertisement *(currently disabled)*
+
+Start, stop or query a custom advertisement set transmitted by the device itself.
+
+Request format:
+- **Stop**: `[0x0B, 0]`
+- **Start**: `[0x0B, 1, phy, interval_lo, interval_hi, adv_len, adv_data...]`
+- **Query**: `[0x0B, 0x0F]`
+
+`phy` values:
+
+| Value | Description |
+|-------|-------------|
+| 0 | Legacy 1M (`ADV_NONCONN_IND`) |
+| 1 | Extended 1M |
+| 2 | Extended Coded PHY |
+
+`interval` is in units of 0.625 ms (minimum 20 ms = value 32). `adv_data` is the raw AD payload (max 31 bytes).
+
+Response `data`: `[running_phy, interval_lo, interval_hi, adv_len, 0, 0]`.  
+`running_phy` = 0 when stopped; 1/2/3 when active (value = `phy + 1`).
+
+Currently returns `CMD_STATUS_DENIED` (see RAM note below).
+
+The **TX Adv** tab of `adv2uart_gui.py` provides a graphical interface for this command.
+
+---
+
+#### `0x0C` CMD_ID_CONN — BLE ACL connection (central role) *(connect/cancel currently disabled)*
+
+Establishes, terminates or queries a BLE connection to a peripheral device. The firmware operates as a BLE central (master) with a maximum of one simultaneous connection.
+
+Request format:
+
+| op | Description | Additional bytes |
+|----|-------------|-----------------|
+| `0` | Query connection state | — |
+| `1` | Connect via 1M PHY | `[addr_type, addr[0..5]]` |
+| `2` | Connect via Coded PHY | `[addr_type, addr[0..5]]` |
+| `3` | Disconnect | — |
+| `4` | Cancel pending connection attempt | — |
+
+`addr_type`: `0` = Public, `1` = Random.  
+`addr[0..5]`: peer MAC address in little-endian (LSB first) wire order.
+
+Response `data`: `[state, peer_addr_type, peer_addr[0..3], 0]`.
+
+**Async notifications**: when a connection is established or dropped by either side, the firmware would push a `CMD_ID_CONN` response with the new state.
+
+`state` values:
+
+| Value | Meaning |
+|-------|---------|
+| 0 | Idle |
+| 1 | Connecting |
+| 2 | Connected |
+
+Op=0 (status query) always works. Op=1/2/3/4 (connect/disconnect/cancel) return `CMD_STATUS_DENIED` (see RAM note below).
+
+The **BLE Conn** tab of `adv2uart_gui.py` provides a graphical interface for connection management.
+
+---
+
+#### `0x0D` CMD_ID_TXDATA — ATT Write to connected peer *(currently disabled)*
+
+Request format: `[0x0D, att_handle_lo, att_handle_hi, data_len, data...]`
+
+Sends an ATT Write Without Response (Write Command) to the given ATT handle of the connected peer. `data_len` ≤ 20 bytes.
+
+Response `data`: `[att_handle_lo, att_handle_hi, data_len, ble_status, 0, 0]`.
+
+Currently returns `CMD_STATUS_DENIED` (see RAM note below).
+
+---
+
+#### `0x0E` CMD_ID_RXDATA — ATT notification / indication from peer *(currently disabled)*
+
+Firmware → host async push. Never sent by the host.
+
+When the connected peer sends an ATT Handle Value Notification (opcode `0x1B`) or Indication (opcode `0x1D`), the firmware would push a frame with:
+- `id` = ATT opcode (`0x1B` = notification, `0x1D` = indication)
+- `data[0..1]` = ATT handle (little-endian)
+- `data[2]` = value length
+- `data[3..5]` = first 3 bytes of the ATT value
+
+Currently disabled (see RAM note below).
+
+---
+
+> **RAM constraint — disabled commands**: Each BLE SDK module in `liblt_8258.a` carries large hidden BSS (the extended advertising module alone adds ~7.8 KB; the ACL central role module adds a similar amount). The TLSR8253F512 has only 64 KB of SRAM, with ~55 KB already used by the scanner stack. Initializing any of these modules leaves less than 1 KB of stack space, causing a hard crash. Until a device with more SRAM is used, commands `0x0B` CMD_ID_TXADV, `0x0C` CMD_ID_CONN (connect/disconnect/cancel), `0x0D` CMD_ID_TXDATA, and `0x0E` CMD_ID_RXDATA all return `CMD_STATUS_DENIED`.
+
+---
+
+## Persistent user data storage
 
 After erasing a buffer, data can be written only once (not twice). A rewrite needs erasing data first. To avoid too many rewrites (that wear the storage), data are organized in an array where each segment is progressively updated in sequence so that the last value is the actual one.
 
@@ -237,14 +486,19 @@ make
 
 If the compiler is not included in the SDK, the makefile downloads it.
 
-The *install_sdk.sh* script is tested with [telink_b85m_ble_sdk_V4.0.1.3_Patch]((https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip)) including patch_0001_20231201 and patch_0002_20240402; it allows to download the latest SDK from Telink, patch it and install it to the target directory.
+Two install scripts are provided:
+
+- *install_sdk_v4023.sh* — **recommended**: clones [Telink BLE SDK V4.0.2.3](https://github.com/telink-semi/tc_ble_sdk) directly from GitHub (tag `V4.0.2.3`) and applies a `liblt_8258.a` fix (see note below).
+- *install_sdk_v4013.sh* — legacy: downloads `telink_b85m_ble_sdk_V4.0.1.3_Patch` from the Telink website and applies patch_0001_20231201 and patch_0002_20240402.
+
+> **Note — Coded PHY bug in V4.0.2.2 / V4.0.2.3**: `liblt_8258.a` shipped in SDK tags V4.0.2.2 and V4.0.2.3 contains a bug that crashes the BLE stack when receiving Coded PHY advertisements. *install_sdk_v4023.sh* automatically replaces that library with the V4.0.2.1 version as a workaround.
 
 Reinstall the SDK and compile:
 
 ```bash
 cd ADV_BLE2UART/source/ble2uart
 rm -r SDK
-./install_sdk.sh
+./install_sdk_v4023.sh
 make
 ```
 
@@ -254,10 +508,14 @@ Documentation on using the API can be found in the header comments of the SDK fi
 
 ## adv2uart.py Usage
 
-This program reads the advertisement messages produced by the device. It supports both Python3 and Python2.
+This program reads the advertisement messages produced by the device (Python 3).
 
 ```
 usage: adv2uart.py [-h] [-d] [-v] [-i] [-s SLEEP] [-b BAUDRATE] [-p PORT] [-t TIMEOUT] [-n NUMBER]
+                   [--duration DURATION] [--idle-timeout IDLE_TIMEOUT] [--status-interval STATUS_INTERVAL]
+                   [--phy {1m,coded,both}] [--scan-window-ms SCAN_WINDOW_MS]
+                   [--filter-random | --accept-random] [--filter-private | --accept-private]
+                   [--info-after INFO_AFTER]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -273,6 +531,21 @@ optional arguments:
                         serial port read timeout in seconds (default: 0.3)
   -n NUMBER, --number NUMBER
                         Number of advertisements to process (default is 0 = infinite)
+  --duration DURATION   stop scanning after this many seconds (default: 0 = infinite)
+  --idle-timeout IDLE_TIMEOUT
+                        stop scanning after this many seconds without advertisements (default: 0 = disabled)
+  --status-interval STATUS_INTERVAL
+                        print an idle status every N seconds while listening (default: 10, 0 = disabled)
+  --phy {1m,coded,both}
+                        scan PHY selection (default: both)
+  --scan-window-ms SCAN_WINDOW_MS
+                        scan window in milliseconds (default: 30)
+  --filter-random       discard random-address advertisements
+  --accept-random       accept random-address advertisements (default)
+  --filter-private      discard private-address advertisements
+  --accept-private      accept private-address advertisements (default)
+  --info-after INFO_AFTER
+                        send INFO this many seconds after scan start and report whether it is acknowledged
 
 BLE ADV_BLE2UART scanner
 ```
@@ -545,8 +818,16 @@ classDiagram
         %% Functions:
         init_ble [BLE configuration]
         start_adv_scanning
+        conn_start
+        conn_stop
+        conn_state_get
+        conn_handle_get
+        conn_peer_addr_get
+        conn_interval_get
+        txadv_start
+        txadv_stop
 
-        %% Invoked functions:
+        %% Invoked functions in init_ble:
         blc_initMacAddress() [in blt_common.c]
         blc_ll_initBasicMCU();
         init_uart(port_speed);
@@ -558,21 +839,23 @@ classDiagram
 
         blc_ll_initPeriodicAdvertisingSynchronization_module();
         blc_ll_initAclConnection_module();
+        blc_ll_initAclCentralRole_module();
         blc_ll_setMaxConnectionNumber(MASTER_MAX_NUM, SLAVE_MAX_NUM);
         blc_ll_setAclConnMaxOctetsNumber(...);
         blc_ll_initAclConnRxFifo(...);
-        blc_ll_initAclConnMasterTxFifo(...);
-        blc_ll_setAclMasterConnectionInterval(CONN_INTERVAL_31P25MS);
+        blc_ll_initAclCentralTxFifo(...);
         blc_hci_registerControllerEventHandler(app_controller_event_callback);
         blc_hci_le_setEventMask_cmd(...);
+        blc_hci_setEventMask_cmd(HCI_EVT_MASK_DISCONNECTION_COMPLETE);
         blc_controller_check_appBufferInitialization();
-        blc_hci_registerControllerDataHandler (blc_l2cap_pktHandler);
-        blc_l2cap_initAclConnMasterMtuBuffer(mtu_m_rx_fifo, MTU_M_BUFF_SIZE_MAX, 0, 0);
-        blc_att_setMasterRxMTUSize(ATT_MTU_MASTER_RX_MAX_SIZE);
+        %% Note: L2CAP/GATT/SMP not initialized (saves ~1180 B library BSS)
         rf_set_power_level_index(MY_RF_POWER);
 
         blc_ll_setExtScanParam() [in start_adv_scanning]
-        blc_ll_setExtScanEnable() [in start_adv_scanning]   
+        blc_ll_setExtScanEnable() [in start_adv_scanning]
+        blc_ll_createConnection() [in conn_start]
+        blc_ll_disconnect() [in conn_stop]
+        blc_ll_createConnectionCancel() [in conn_stop]
     }
 
     class app_buffer["app_buffer.c"]{
@@ -602,13 +885,27 @@ classDiagram
         ble_adv_callback
         ble_ext_adv_callback
         ble_le_periodic_adv_callback
+        scanning_conn_event_cb
+        handle_conn_command
+        handle_txdata_command
+
+        %% Commands dispatched in scan_task:
+        %% 0x00 CMD_ID_INFO  0x01 CMD_ID_SCAN
+        %% 0x02 CMD_ID_WMAC  0x03 CMD_ID_BMAC  0x04 CMD_ID_CLRM
+        %% 0x05 CMD_ID_PRNT  0x06 CMD_ID_GPIO (ops 0-4)
+        %% 0x07 CMD_ID_LED   0x08 CMD_ID_UART  0x09 CMD_ID_RFSDK  0x0A CMD_ID_VERSION
 
         %% Invoked functions:
-        my_fifo_get() [ in utils.c]
+        my_fifo_get() [in utils.c]
         uart_send() [in drv_uart.c]
         uart_read() [in drv_uart.c]
         gpio_write()
         start_adv_scanning() [in ble.c]
+        txadv_start() [in ble.c]
+        txadv_stop() [in ble.c]
+        conn_start() [in ble.c]
+        conn_stop() [in ble.c]
+        conn_state_get() [in ble.c]
         send_resp()
     }
 
@@ -707,6 +1004,7 @@ subgraph scanning_c["scanning.c"]
     ble_le_periodic_adv_callback["ble_le_periodic_adv_callback()"]
     ble_le_periodic_adv_sync_established_callback["ble_le_periodic_adv_sync_established_callback()"]
     ble_le_periodic_adv_sync_lost_callback["ble_le_periodic_adv_sync_lost_callback()"]
+    scanning_conn_event_cb["scanning_conn_event_cb()"]
 
     FIFO{{"`Push event to FIFO`"}}        
 end
@@ -718,10 +1016,12 @@ app_controller_event_callback --> ble_ext_adv_callback
 app_controller_event_callback --> ble_le_periodic_adv_callback
 app_controller_event_callback --> ble_le_periodic_adv_sync_established_callback
 app_controller_event_callback --> ble_le_periodic_adv_sync_lost_callback
+app_controller_event_callback --> scanning_conn_event_cb
 
 ble_adv_callback --- FIFO
 ble_ext_adv_callback --- FIFO
 ble_le_periodic_adv_callback --- FIFO
 ble_le_periodic_adv_sync_established_callback --- FIFO
 ble_le_periodic_adv_sync_lost_callback --- FIFO
+scanning_conn_event_cb --- FIFO
 ```
