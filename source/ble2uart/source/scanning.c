@@ -650,7 +650,10 @@ int chk_mac(u8 *pmac) {
 	int ret = 0;
 	if(mac_list.count) {
 		for(int i = 0; i < mac_list.count; i++) {
-			if(memcmp(&mac_list.mac[i], pmac, 6) == 0) {
+			u8 n = mac_list.mac_len[i];
+			if(n == 0 || n > 6) n = 6;
+			// BLE MACs are stored little-endian; compare from the MSB (OUI) end
+			if(memcmp(&mac_list.mac[i], pmac + (6 - n), n) == 0) {
 				ret = 1;
 				break;
 			}
@@ -898,22 +901,19 @@ void scan_task(void) {
 			handle_conn_command(buf, cmd_len);
 		} else if(cmd == CMD_ID_TXDATA) {
 			handle_txdata_command(buf, cmd_len);
-		} else if(len == 6 + 3) {
-			if(buf[0] == CMD_ID_WMAC) {
+		} else if((cmd == CMD_ID_WMAC || cmd == CMD_ID_BMAC) && len >= 1 + 3 && len <= 6 + 3) {
+			u8 mac_data_len = (u8)(len - 3);
+			if(cmd == CMD_ID_WMAC)
 				mac_list.mode = WHITE_LIST;
-				if(mac_list.count < MAC_MAX_SCAN_LIST) {
-					memcpy(&mac_list.mac[mac_list.count], &buf[1], 6);
-					mac_list.count++;
-				}
-				send_resp(cmd, mac_list.count, &buf[1], 6);
-			} else if(buf[0] == CMD_ID_BMAC) {
+			else
 				mac_list.mode = BALCK_LIST;
-				if(mac_list.count < MAC_MAX_SCAN_LIST) {
-					memcpy(&mac_list.mac[mac_list.count], &buf[1], 6);
-					mac_list.count++;
-				}
-				send_resp(cmd, mac_list.count, &buf[1], 6);
+			if(mac_list.count < MAC_MAX_SCAN_LIST) {
+				memset(&mac_list.mac[mac_list.count], 0, 6);
+				memcpy(&mac_list.mac[mac_list.count], &buf[1], mac_data_len);
+				mac_list.mac_len[mac_list.count] = mac_data_len;
+				mac_list.count++;
 			}
+			send_resp(cmd, mac_list.count, &buf[1], mac_data_len);
 		} else if(len == 3) {
 			if(buf[0] == CMD_ID_CLRM)  {
 				mac_list.count = 0;

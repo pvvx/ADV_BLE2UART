@@ -182,8 +182,9 @@ def signed_u8(value: int) -> int:
 
 def normalize_mac(text: str) -> str:
     normalized = re.sub(r"[^0-9a-fA-F]", "", text).upper()
-    if len(normalized) != 12 or not re.fullmatch(r"[0-9A-F]{12}", normalized):
-        raise ValueError("MAC address must contain exactly 12 hexadecimal digits")
+    n = len(normalized)
+    if n == 0 or n % 2 != 0 or n > 12:
+        raise ValueError("MAC address must contain 2–12 even-count hexadecimal digits (1–6 bytes)")
     return normalized
 
 
@@ -219,9 +220,12 @@ def describe_tx_payload(payload: bytes) -> str:
                 return f"SCAN start {ScanConfig.from_payload(payload[1:4]).describe()}"
             except ValueError:
                 return "SCAN request"
-    if command in (CMD_ID_WMAC, CMD_ID_BMAC) and len(payload) == 7:
+    if command in (CMD_ID_WMAC, CMD_ID_BMAC) and 2 <= len(payload) <= 7:
         mode = "white" if command == CMD_ID_WMAC else "black"
-        return f"{command_name(command)} add {mode} MAC {mac_from_wire(payload[1:7])}"
+        mac_bytes = payload[1:]
+        mac_str = mac_from_wire(mac_bytes)
+        label = "MAC" if len(mac_bytes) == 6 else f"MAC prefix ({len(mac_bytes)}B)"
+        return f"{command_name(command)} add {mode} {label} {mac_str}"
     if command == CMD_ID_CLRM and len(payload) == 1:
         return "CLRM clear MAC list"
     if command == CMD_ID_GPIO:

@@ -39,6 +39,7 @@ typedef struct _mac_list_t {
 	u8	filtr;
 	u8	res;
 	u8	mac[MAC_MAX_SCAN_LIST][6];
+	u8	mac_len[MAC_MAX_SCAN_LIST]; // significant bytes per entry: 1..6 (0 treated as 6)
 } mac_list_t;
 
 extern mac_list_t mac_list;
