@@ -29,7 +29,6 @@
 
  #define putchar(c) outbyte(c)
  */
-#if 1
 #include <stdarg.h>
 
 #include "tl_common.h"
@@ -218,20 +217,6 @@ int u_printf(const char *format, ...) {
 	return print(0, format, args);
 }
 
-int u_sprintf(char *out, const char *format, ...) {
-	va_list args;
-	va_start( args, format );
-	return print(&out, format, args);
-}
-
-void u_array_printf(unsigned char*data, unsigned int len) {
-	u_printf("{");
-	for(int i = 0; i < len; ++i){
-		u_printf("%X%s", data[i], i<(len)-1? ":":" ");
-	}
-	u_printf("}\n");
-}
-
 // Write a Command.DEBUG_PRINT packet to the USB UART and uses the FIFO.
 void uart_printf(const char *format, ...) {
     u8 ret;
@@ -252,48 +237,3 @@ void uart_printf(const char *format, ...) {
 	}
     va_end(args);
 }
-
-#define MYFIFO_BLK_SIZE		(EXTADV_RPT_DATA_LEN_MAX + HEAD_CRC_ADD_LEN) // 229+12 = 241 bytes
-
-// Write raw data to the USB UART directly calling uart_send(), without using FIFO/headers/crc.
-// The length of the message is returned, or -1 if busy.
-int raw_printf(const char *format, ...) {
-    u8 out[MYFIFO_BLK_SIZE];
-    u8 length;
-	va_list args;
-    char * p = (char *) out;
-
-	va_start(args, format);
-    length = print(&p, format, args);
-    va_end(args);
-    return(uart_send(out, length));
-}
-
-// Write a Command.DEBUG_PRINT packet to the USB UART without using the FIFO.
-// The length of the message is returned, or -1 if busy.
-int p_printf(const char *format, ...) {
-    u8 out[MYFIFO_BLK_SIZE];
-    u8 length;
-	va_list args;
-    crc_t crc;
-    int len;
-    char * p = (char *) out + HEAD_CRC_ADD_LEN - 2;  // 2 is the CRC
-
-	va_start(args, format);
-    length = print(&p, format, args);  // message
-    va_end(args);
-    memset(out, 0, HEAD_CRC_ADD_LEN);  // MAC (last 6 bytes) is set to 0
-    out[0] = length; // length of the message
-    out[1] = CMD_ID_PRNT;  // position of the rssi
-    out[2] = 0xff;
-    out[3] = 0xff;
-    out[4] = 0xff;
-    len = length + HEAD_CRC_ADD_LEN - 2;
-    crc = crcFast(out, len);
-    out[len] = crc;
-    out[len+1] = crc >> 8;
-
-    return(uart_send(out, length + HEAD_CRC_ADD_LEN));
-}
-
-#endif

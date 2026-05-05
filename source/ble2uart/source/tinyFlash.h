@@ -9,9 +9,6 @@ int tinyFlash_Write(unsigned char KEY, unsigned char * buf, unsigned char len);
 
 void tinyFlash_Swap(void);
 
-void tinyFlash_Format(void);
-
-void tinyFlash_Debug(unsigned long addr);
-
 void flash_write(unsigned int addr, unsigned int len, unsigned char *buf);
+
 #endif

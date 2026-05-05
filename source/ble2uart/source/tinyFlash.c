@@ -16,28 +16,6 @@ static unsigned long tinyFlash_End_Addr   = 0;
 static unsigned long tinyFlash_Used_Addr = 0;  // Currently used sector address
 static unsigned long tinyFlash_Swap_Addr = 0;  // Currently unused sector address
 
-void flash_write_org(unsigned long addr, unsigned long len, unsigned char *buf)
-{
-    unsigned long tmp = addr & 0xff;
-
-    if(tmp + len > 0x100)  // Write across sectors
-    {
-        flash_write_page(addr, 0x100 - tmp, buf);
-
-        tmp = (0x100 - tmp);
-
-        len -= tmp;
-
-        buf += tmp;
-
-        addr &= 0xffffff00;
-
-        addr += 0x100;
-    }
-
-    flash_write_page(addr, len, buf);
-}
-
 // flash_erase_sector(addr);
 // flash_write_page(addr, 256, buf);
 // flash_read_page(unsigned long addr, unsigned long len, unsigned char *buf){
@@ -234,19 +212,6 @@ void tinyFlash_Swap()  // The sector is used up and the data needs to be cleared
     tinyFlash_Swap_Addr = tinyFlash_Used_Addr;
     tinyFlash_Used_Addr = _new_addr_start;
 }
-
-/* Erase all sectors */
-void tinyFlash_Format(void)
-{
-    flash_erase_sector(tinyFlash_Used_Addr);  // Erase old sectors
-    flash_erase_sector(tinyFlash_Swap_Addr);  // Erase old sectors
-} 
-
-/* Read data from a certain area and store it in global variables, mainly used for debugging */
-void tinyFlash_Debug(unsigned long addr)
-{
-    flash_read_page(addr, TINY_BUFFER_SIZE, _buf);
-} 
 
 /**
  * @brief This function write flash.

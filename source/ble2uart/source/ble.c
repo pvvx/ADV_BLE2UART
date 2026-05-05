@@ -6,7 +6,6 @@
 #include "ble.h"
 #include "app.h"
 #include "stack/ble/ble.h"
-#include "app.h"
 #include "scanning.h"
 #include "drv_uart.h"
 #include "crc.h"
@@ -23,8 +22,6 @@ RAM u16 acl_conn_handle;   // valid when state==2
 RAM u8  acl_conn_interval; // conn interval x 1.25ms
 RAM u8  acl_peer_addr_type;
 RAM u8  acl_peer_addr[6];  // last connected peer MAC
-// u8 mac_random_static[6];
-
 unsigned int baudrate_list[] = { 2000000, 921600, 115200 };  // List of available UART baudrates in bit-per-second
 
 static u16 coded_min_scan_window = SCAN_INTERVAL_100MS;
@@ -206,7 +203,6 @@ int app_controller_event_callback(u32 h, u8 *p, int n) {
 u8 conn_state_get(void)          { return acl_conn_state; }
 u16 conn_handle_get(void)        { return acl_conn_handle; }
 void conn_peer_addr_get(u8 *out) { memcpy(out, acl_peer_addr, 6); }
-u8 conn_peer_addr_type_get(void) { return acl_peer_addr_type; }
 u16 conn_interval_get(void)      { return acl_conn_interval; }
 
 ble_sts_t conn_start(u8 peer_addr_type, u8 *peer_addr, u8 init_phy) {
@@ -275,10 +271,6 @@ void set_coded_min_scan_window(u16 tdw) {
 	coded_min_scan_window = tdw;
 }
 
-u16 get_coded_min_scan_window(void) {
-	return coded_min_scan_window;
-}
-
 void set_primary_scan_channels(u8 chn0, u8 chn1, u8 chn2) {
 	primary_scan_channels[0] = chn0;
 	primary_scan_channels[1] = chn1;
@@ -286,28 +278,14 @@ void set_primary_scan_channels(u8 chn0, u8 chn1, u8 chn2) {
 	blc_ll_setCustomizedPrimaryChannel(chn0, chn1, chn2);
 }
 
-void get_primary_scan_channels(u8 *chn0, u8 *chn1, u8 *chn2) {
-	*chn0 = primary_scan_channels[0];
-	*chn1 = primary_scan_channels[1];
-	*chn2 = primary_scan_channels[2];
-}
-
 void set_runtime_rf_power(u8 power) {
 	runtime_rf_power = power;
 	rf_set_power_level_index((RF_PowerTypeDef)power);
 }
 
-u8 get_runtime_rf_power(void) {
-	return runtime_rf_power;
-}
-
 void set_runtime_rf_cap(u8 cap) {
 	runtime_rf_cap = cap;
 	rf_update_internal_cap(cap);
-}
-
-u8 get_runtime_rf_cap(void) {
-	return runtime_rf_cap;
 }
 
 ble_sts_t txadv_start(u8 phy, u16 interval_units, const u8 *adv_data, u8 adv_len) {

@@ -9,7 +9,6 @@
 #include "tl_common.h"
 #include "ble.h"
 #include "stack/ble/ble.h"
-//#include "app.h"
 #include "drv_uart.h"
 #include "crc.h"
 #include "utils.h"
@@ -638,11 +637,6 @@ void scanning_conn_event_cb(u8 state, u16 handle, u16 interval_125us, u8 peer_ad
 	// Use handle as the id field and encode interval in data[4..5]
 	send_resp(CMD_ID_CONN, state, data, sizeof(data));
 	(void)handle; (void)interval_125us;
-}
-
-// CMD_ID_RXDATA notifications disabled (L2CAP/GATT not initialized)
-void scanning_rxdata_event_cb(u8 opcode, u16 att_handle, u8 *value, u8 value_len) {
-	(void)opcode; (void)att_handle; (void)value; (void)value_len;
 }
 
 _attribute_ram_code_
