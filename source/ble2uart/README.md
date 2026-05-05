@@ -238,21 +238,38 @@ The `adv2uart_gui.py` GUI sends this command at connect time and displays the fi
 
 #### `0x01` CMD_ID_SCAN — start / stop BLE scanning
 
-Request format: `[0x01] [scan_mode: 1B] [interval_lo: 1B] [interval_hi: 1B]`
+Two request formats are supported (both backward-compatible with each other):
+
+**Short format — shared window (3-byte payload):**
+
+`[0x01] [scan_mode: 1B] [window_lo: 1B] [window_hi: 1B]`
 
 - `scan_mode` bit-field: PHY selection, filter flags (public/random/private addresses, duplicate filter, active/passive scan).
-- `interval` is the *scan interval* in units of 0.625 ms.
+- `window` is the *scan interval / window* in units of 0.625 ms, applied equally to both 1M and Coded PHY.
 
-Response `data[0..2]` echoes the accepted parameters.
+**Extended format — independent windows (5-byte payload):**
+
+`[0x01] [scan_mode: 1B] [window_1m_lo: 1B] [window_1m_hi: 1B] [window_coded_lo: 1B] [window_coded_hi: 1B]`
+
+- `window_1m` applies to the 1M PHY scan.
+- `window_coded` applies to the Coded PHY scan. If the Coded PHY minimum window (see `CMD_ID_RFSDK` op=4) is larger than `window_coded`, the minimum is used as a floor.
+
+Sending `window_coded = 0` in the extended format is equivalent to the short format (same as `window_1m` with minimum-window floor applied).
+
+Response `data[0..N-1]` echoes the accepted payload bytes.
+
+The **Scan** tab of `adv2uart_gui.py` exposes two separate spinboxes — *1M window ms* and *Coded window ms* — and sends the extended format automatically when the two values differ; the short format is sent when they are equal (remains compatible with older firmware).
 
 ---
 
 #### `0x02` CMD_ID_WMAC — add MAC to white list
 #### `0x03` CMD_ID_BMAC — add MAC to black list
 
-Request format: `[0x02/0x03] [mac: 6B]`
+Request format: `[0x02/0x03] [mac_bytes: 1..6B]`
 
-Response `id` = current list count; `data[0..5]` = accepted MAC.
+The MAC field accepts **1 to 6 bytes**. When fewer than 6 bytes are supplied, only the most-significant bytes (OUI end) are matched: a 3-byte entry matches any device whose OUI equals those 3 bytes. This allows filtering entire manufacturers without listing individual addresses.
+
+Response `id` = current list count; `data[0..5]` = accepted MAC (zero-padded on the right if partial).
 
 ---
 
@@ -759,7 +776,7 @@ Set to True to filter duplicates (duplicate advertisings)
 
 This parameter can be set as “passive scan” (False) or “active scan” (True). For active scan, when an advertising packet is received, a "scan_req" will be sent to the remote device to obtain more information. For passive scan, the "scan req" won’t be sent. 
 
-### window_ms
+### window_ms / window_coded_ms
 
 *scan_interval* and *scan_window* are internal parameters used within the Telink *blc_ll_setExtScanParam()* SDK system call (invoked by `Command.START_SCAN`).
 
@@ -767,9 +784,11 @@ This parameter can be set as “passive scan” (False) or “active scan” (Tr
 
 *scan_window* is the duration of the scan on the primary advertising physical channel.
 
-`window_ms` = *scan_intervalé * 0.625; unit is in milliseconds.
+`window_ms` = *scan_interval* × 0.625; unit is in milliseconds.
 
 *scan_interval* is set by the firmware with the same value as the *scan_window*.
+
+`window_coded_ms` sets an **independent** scan window for the Coded PHY. When set to `0` (or omitted), the Coded PHY uses the same value as `window_ms`. This allows, for example, using a short 30 ms window for 1M scanning while using a wider 150 ms window for Long Range (Coded PHY) scanning, so both PHYs receive adequate air time.
 
 ## Documentation of the source code of the firmware 
 
@@ -867,13 +886,10 @@ classDiagram
 
     class tinyFlash["tinyFlash.c"]{
         %% Functions:
-        flash_write_org
         tinyFlash_Init
         tinyFlash_Read
         tinyFlash_Write
         tinyFlash_Swap
-        tinyFlash_Format
-        tinyFlash_Debug
         flash_write
     }
 
@@ -896,7 +912,7 @@ classDiagram
         %% 0x07 CMD_ID_LED   0x08 CMD_ID_UART  0x09 CMD_ID_RFSDK  0x0A CMD_ID_VERSION
 
         %% Invoked functions:
-        my_fifo_get() [in utils.c]
+        my_fifo_get() [SDK/common/utility.c]
         uart_send() [in drv_uart.c]
         uart_read() [in drv_uart.c]
         gpio_write()
@@ -917,14 +933,9 @@ classDiagram
     }
 
     class utils["utils.c"]{
-        %% Functions:
-        memset
-        memcpy
-        memcmp
-        my_fifo_init
-        my_fifo_wptr
-        my_fifo_push
-        my_fifo_get
+        %% Stub include file; all utility/memory functions are provided by the SDK:
+        %% memset, memcpy, memcmp  →  SDK/common/string.c
+        %% my_fifo_init, my_fifo_wptr, my_fifo_push, my_fifo_get  →  SDK/common/utility.c
     }
 
     class blt_common["blt_common.c"]{

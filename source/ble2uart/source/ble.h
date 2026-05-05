@@ -7,7 +7,8 @@
 extern u8 mac_public[6];
 
 void init_ble(void);
-void start_adv_scanning(u8 flg, u16 tdw);
+// tdw_coded==0: use tdw_1m as base and apply coded_min_scan_window floor (legacy behaviour)
+void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded);
 
 u8 read_baud_rate(void);
 void change_baud_rate(void);

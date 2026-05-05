@@ -876,9 +876,11 @@ void scan_task(void) {
 #endif
 		int cmd = buf[0];
 		int cmd_len = len - 2;
-		if(cmd == CMD_ID_SCAN && len == 3 + 3) {
-			start_adv_scanning(buf[1], buf[2] | (buf[3]<<8));
-			send_resp(cmd, mac_list.count, &buf[1], 3);
+		if(cmd == CMD_ID_SCAN && (len == 3 + 3 || len == 5 + 3)) {
+			u16 tdw_1m    = buf[2] | (buf[3] << 8);
+			u16 tdw_coded = (len == 5 + 3) ? (buf[4] | (buf[5] << 8)) : 0;
+			start_adv_scanning(buf[1], tdw_1m, tdw_coded);
+			send_resp(cmd, mac_list.count, &buf[1], len - 3);
 		} else if(cmd == CMD_ID_GPIO) {
 			handle_gpio_command(buf, cmd_len);
 		} else if(cmd == CMD_ID_LED) {

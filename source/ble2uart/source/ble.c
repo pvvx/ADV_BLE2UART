@@ -307,7 +307,7 @@ If the scanWindow and the scanInterval parameters are set to the same value
 by the Host, the Link Layer should scan continuously.
 */
 
-void start_adv_scanning(u8 flg, u16 tdw) {
+void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded) {
 #if defined(GPIO_LED_R)
 	gpio_write(GPIO_LED_R, 0);
 #endif
@@ -318,13 +318,18 @@ void start_adv_scanning(u8 flg, u16 tdw) {
 	gpio_write(GPIO_LED_B, 0);
 #endif
 	if(flg & 3) {
-		if(tdw < SCAN_INTERVAL_10MS)
-			tdw = SCAN_INTERVAL_10MS;
+		if(tdw_1m < SCAN_INTERVAL_10MS)
+			tdw_1m = SCAN_INTERVAL_10MS;
 		u32 t1 = 0, t2 = 0;
 		if(flg & 1)
-			t1 = tdw;
+			t1 = tdw_1m;
 		if(flg & 2) {
-			t2 = tdw;
+			if(tdw_coded == 0) {
+				// Legacy behaviour: use tdw_1m as base, apply coded_min floor
+				t2 = tdw_1m;
+			} else {
+				t2 = tdw_coded;
+			}
 			if(t2 < coded_min_scan_window)
 				t2 = coded_min_scan_window;
 		}

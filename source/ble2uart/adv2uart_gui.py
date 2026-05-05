@@ -215,9 +215,9 @@ def describe_tx_payload(payload: bytes) -> str:
     if command == CMD_ID_SCAN:
         if payload == bytes((CMD_ID_SCAN, 0, 0, 0)):
             return "SCAN stop"
-        if len(payload) == 4:
+        if len(payload) in (4, 6):
             try:
-                return f"SCAN start {ScanConfig.from_payload(payload[1:4]).describe()}"
+                return f"SCAN start {ScanConfig.from_payload(payload[1:]).describe()}"
             except ValueError:
                 return "SCAN request"
     if command in (CMD_ID_WMAC, CMD_ID_BMAC) and 2 <= len(payload) <= 7:
@@ -283,6 +283,7 @@ class ScanConfig:
     phy_1m: bool = True
     phy_coded: bool = True
     window_ms: float = 30.0
+    window_coded_ms: float = 0.0  # 0 = same as window_ms (legacy behaviour)
 
     def to_payload(self) -> bytes:
         flag = (self.own_address_type & 0x03) << 6
@@ -298,15 +299,26 @@ class ScanConfig:
             flag |= 1 << 1
         if self.phy_1m:
             flag |= 1
-        units = scan_units_from_ms(self.window_ms)
-        return bytes((flag, units & 0xFF, (units >> 8) & 0xFF))
+        units_1m = scan_units_from_ms(self.window_ms)
+        # Send extended 5-byte payload only when coded window differs from 1M window
+        effective_coded = self.window_coded_ms if self.window_coded_ms > 0.0 else self.window_ms
+        if self.phy_coded and abs(effective_coded - self.window_ms) > 0.1:
+            units_coded = scan_units_from_ms(effective_coded)
+            return bytes((flag,
+                          units_1m & 0xFF, (units_1m >> 8) & 0xFF,
+                          units_coded & 0xFF, (units_coded >> 8) & 0xFF))
+        return bytes((flag, units_1m & 0xFF, (units_1m >> 8) & 0xFF))
 
     @classmethod
     def from_payload(cls, payload: bytes) -> "ScanConfig":
-        if len(payload) != 3:
-            raise ValueError("scan payload must be 3 bytes")
+        if len(payload) not in (3, 5):
+            raise ValueError("scan payload must be 3 or 5 bytes")
         flag = payload[0]
-        units = int.from_bytes(payload[1:3], byteorder="little", signed=True)
+        units_1m = int.from_bytes(payload[1:3], byteorder="little", signed=False)
+        window_coded_ms = 0.0
+        if len(payload) == 5:
+            units_coded = int.from_bytes(payload[3:5], byteorder="little", signed=False)
+            window_coded_ms = scan_ms_from_units(units_coded)
         return cls(
             own_address_type=(flag >> 6) & 0x03,
             filter_random_addresses=bool(flag & (1 << 5)),
@@ -315,7 +327,8 @@ class ScanConfig:
             active_scan=bool(flag & (1 << 2)),
             phy_coded=bool(flag & (1 << 1)),
             phy_1m=bool(flag & 1),
-            window_ms=scan_ms_from_units(units),
+            window_ms=scan_ms_from_units(units_1m),
+            window_coded_ms=window_coded_ms,
         )
 
     def describe(self) -> str:
@@ -326,8 +339,12 @@ class ScanConfig:
             phys.append("Coded")
         if not phys:
             phys.append("disabled")
+        effective_coded = self.window_coded_ms if self.window_coded_ms > 0.0 else self.window_ms
+        window_str = f"{self.window_ms:g} ms"
+        if self.phy_coded and abs(effective_coded - self.window_ms) > 0.1:
+            window_str += f" / Coded {effective_coded:g} ms"
         return (
-            f"PHY={'+'.join(phys)}, window={self.window_ms:g} ms, "
+            f"PHY={'+'.join(phys)}, window={window_str}, "
             f"scan={'active' if self.active_scan else 'passive'}, "
             f"dup={'on' if self.duplicate_filter else 'off'}, "
             f"own={OWN_ADDRESS_TYPES.get(self.own_address_type, self.own_address_type)}"
@@ -721,6 +738,7 @@ class AdvBle2UartGui(tk.Tk):
         self.filter_random_var = tk.BooleanVar(value=False)
         self.filter_private_var = tk.BooleanVar(value=False)
         self.window_ms_var = tk.DoubleVar(value=30.0)
+        self.window_coded_ms_var = tk.DoubleVar(value=0.0)  # 0 = same as 1M window
         self.reapply_lists_var = tk.BooleanVar(value=True)
 
         self.mac_entry_var = tk.StringVar(value="A4C1383406CE")
@@ -882,26 +900,32 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Checkbutton(phy_frame, text="1M", variable=self.phy_1m_var).pack(side=tk.LEFT)
         ttk.Checkbutton(phy_frame, text="Coded", variable=self.phy_coded_var).pack(side=tk.LEFT, padx=(12, 0))
 
-        ttk.Label(frame, text="Window/interval ms").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(frame, text="1M window ms").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         ttk.Spinbox(frame, textvariable=self.window_ms_var, from_=10, to=1000, increment=10, width=12).grid(
             row=2, column=1, sticky="w", padx=8, pady=4
         )
 
+        ttk.Label(frame, text="Coded window ms").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        coded_frame = ttk.Frame(frame)
+        coded_frame.grid(row=3, column=1, sticky="w", padx=8, pady=4)
+        ttk.Spinbox(coded_frame, textvariable=self.window_coded_ms_var, from_=0, to=10000, increment=50, width=12).pack(side=tk.LEFT)
+        ttk.Label(coded_frame, text="(0 = same as 1M)", foreground="gray").pack(side=tk.LEFT, padx=(6, 0))
+
         options = ttk.Frame(frame)
-        options.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
+        options.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
         ttk.Checkbutton(options, text="Active scan", variable=self.active_scan_var).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(options, text="Duplicate filter", variable=self.duplicate_filter_var).grid(row=0, column=1, sticky="w", padx=(16, 0))
         ttk.Checkbutton(options, text="Filter random addresses", variable=self.filter_random_var).grid(row=1, column=0, sticky="w", pady=(4, 0))
         ttk.Checkbutton(options, text="Filter private/identity addresses", variable=self.filter_private_var).grid(row=1, column=1, sticky="w", padx=(16, 0), pady=(4, 0))
 
         presets = ttk.Frame(frame)
-        presets.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 4))
+        presets.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 4))
         ttk.Button(presets, text="Long Range Coded", command=self.apply_long_range_preset).pack(side=tk.LEFT)
         ttk.Button(presets, text="Mixed Fast", command=self.apply_mixed_preset).pack(side=tk.LEFT, padx=6)
         ttk.Button(presets, text="1M Only", command=self.apply_1m_preset).pack(side=tk.LEFT)
 
         actions = ttk.Frame(frame)
-        actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 8))
+        actions.grid(row=6, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 8))
         ttk.Checkbutton(actions, text="Reapply lists", variable=self.reapply_lists_var).pack(side=tk.LEFT)
         ttk.Button(actions, text="Start Scan", command=self.start_scan).pack(side=tk.LEFT, padx=(12, 4))
         ttk.Button(actions, text="Stop Scan", command=self.stop_scan).pack(side=tk.LEFT, padx=4)
@@ -1397,6 +1421,7 @@ class AdvBle2UartGui(tk.Tk):
         self.filter_random_var.set(False)
         self.filter_private_var.set(False)
         self.window_ms_var.set(150.0)
+        self.window_coded_ms_var.set(0.0)
         self.own_addr_var.set(OWN_ADDRESS_TYPES[0])
 
     def apply_mixed_preset(self):
@@ -1407,6 +1432,7 @@ class AdvBle2UartGui(tk.Tk):
         self.filter_random_var.set(False)
         self.filter_private_var.set(False)
         self.window_ms_var.set(150.0)
+        self.window_coded_ms_var.set(0.0)
         self.own_addr_var.set(OWN_ADDRESS_TYPES[0])
 
     def apply_1m_preset(self):
@@ -1417,6 +1443,7 @@ class AdvBle2UartGui(tk.Tk):
         self.filter_random_var.set(False)
         self.filter_private_var.set(False)
         self.window_ms_var.set(30.0)
+        self.window_coded_ms_var.set(0.0)
         self.own_addr_var.set(OWN_ADDRESS_TYPES[0])
 
     def current_scan_config(self) -> ScanConfig:
@@ -1430,6 +1457,7 @@ class AdvBle2UartGui(tk.Tk):
             phy_1m=self.phy_1m_var.get(),
             phy_coded=self.phy_coded_var.get(),
             window_ms=float(self.window_ms_var.get()),
+            window_coded_ms=float(self.window_coded_ms_var.get()),
         )
 
     def start_scan(self):
@@ -1715,7 +1743,7 @@ class AdvBle2UartGui(tk.Tk):
             if response.data_len >= 1 and response.data[0] == 0:
                 self.scan_state_var.set("Stopped")
                 self.log("RX scan disabled")
-            elif response.data_len == 3:
+            elif response.data_len in (3, 5):
                 config = ScanConfig.from_payload(response.data)
                 self.scan_state_var.set(config.describe())
                 self.log(f"RX scan enabled list_count={response.index} {config.describe()}")
