@@ -29,7 +29,7 @@ Characteristics of this BLE receiver firmware:
 
 - compatible with [Telink TLSR825x SoC](http://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/);
 - tested on Ai-Thinker [TB-03F-KIT](https://docs.ai-thinker.com/_media/tb-03f-kit_specification_en.pdf);
-- output to UART, 2000000, 921600 baud (default) or 115200 baud; the bitrate can be changed with the "PROG" key of TB-03F-KIT, toggling between the defined ones (e.g. at the moment 2000000 [one blink], 921600 [two blinks] or 115200 [three blinks], but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
+- output to UART, 2000000 (default), 921600 baud, or 115200 baud; the bitrate can be changed with the "PROG" key of TB-03F-KIT, toggling between the defined ones (e.g. at the moment 2000000 [one blink], 921600 [two blinks] or 115200 [three blinks], but other bitrates can be added); any change in the bitrate performed with the key is permanently stored to the firmware flash;
 - robust datalink with CRC16 for error detection while transitting data;
 - software FIFO sized for 4 packets of 240 bytes;
 - the firmware can scan BLE PHY 1M advertisements and Coded PHY S8 advertisements (125kbps BLE Long Range mode) concurrently;
