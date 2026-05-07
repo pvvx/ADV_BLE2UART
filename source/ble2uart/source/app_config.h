@@ -16,6 +16,14 @@
 
 #define UART_PRINT_DEBUG_ENABLE 	0
 
+#define APP_BATT_CHECK_ENABLE	1
+#if (CHIP_TYPE == CHIP_TYPE_TC321X)
+#define USED_DEEP_ANA_REG	PM_ANA_REG_POWER_ON_CLR_BUF1
+#else
+#define USED_DEEP_ANA_REG	DEEP_ANA_REG0
+#endif
+#define LOW_BATT_FLG		BIT(0)
+
 //// TB-03F-KIT
 #define HW_VERSION 16 // DIY TB-03F-Kit
 // PC2,3,4 - LED_RGB
@@ -69,6 +77,8 @@
 #define GPIO_TX			GPIO_PB1  // UART_TX_PB1, TXD
 // PB1        - UART TX to CH340C RXD
 
+#define GPIO_VBAT_DETECT	GPIO_PB7  // temporary ADC pad for VBAT/3V3 measurement; keep PB7 free
+
 #define GPIO_RX			GPIO_PA0  // UART_RX_PA0, RXD
 // PA0  - UART RX from CH340C TXD
 #define PA0_OUTPUT_ENABLE	0
@@ -116,3 +126,5 @@
 #endif
 
 /* CLOCK_SYS_CLOCK_1S/1MS/1US provided by SDK vendor/common/app_common.h */
+
+#include "vendor/common/default_config.h"

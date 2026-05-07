@@ -23,7 +23,8 @@ enum {
 	CMD_ID_TXADV	= 0x0b, // transmit custom advertisement
 	CMD_ID_CONN		= 0x0c, // BLE ACL connection (central role): connect/disconnect/status
 	CMD_ID_TXDATA	= 0x0d, // send ATT Write Command to connected peer
-	CMD_ID_RXDATA	= 0x0e  // (async) ATT data received from connected peer
+	CMD_ID_RXDATA	= 0x0e, // (async) ATT data received from connected peer
+	CMD_ID_VBAT		= 0x0f  // read current VBAT / 3V3 rail voltage
 } CMD_ID_KEYS;
 
 #define MAC_MAX_SCAN_LIST	64

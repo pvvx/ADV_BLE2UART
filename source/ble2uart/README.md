@@ -34,6 +34,7 @@ Characteristics of this BLE receiver firmware:
 - software FIFO sized for 4 packets of 240 bytes;
 - the firmware can scan BLE PHY 1M advertisements and Coded PHY S8 advertisements (125kbps BLE Long Range mode) concurrently;
 - white-list and black-list for 64 MAC addresses;
+- on-demand `CMD_ID_VBAT` measurement of the chip `VBAT` / board `3.3 V` rail;
 - LEDs to monitor the BLE advertising interface;
 - the software exploits the latest version of the [Telink SDK](https://wiki.telink-semi.cn/wiki/chip-series/TLSR825x-Series/#software-development-kit) for [Bluetooth LE Multi Connection](https://wiki.telink-semi.cn/tools_and_sdk/BLE/B85M_BLE_SDK.zip);
 - ready-to-compile makefile;
@@ -369,6 +370,26 @@ Request format: `[0x0A]`
 
 ---
 
+#### `0x0F` CMD_ID_VBAT — on-demand VBAT / supply measurement
+
+Request format: `[0x0F]`
+
+Returns the current chip supply `VBAT` in millivolts. On TB-03F-KIT this is the `3.3 V` rail after the onboard regulator (not the `5 V` micro-USB input).
+
+Host tooling support:
+- `adv2uart.py` exposes `--battery` and `Ble2Uart.read_vbat()`.
+- `adv2uart_gui.py` exposes a `VBAT` button and shows the latest reading in the Device bar.
+
+| Response field | Value |
+|----------------|-------|
+| `id` | `CMD_STATUS_*` result |
+| `data[0]` | voltage low byte |
+| `data[1]` | voltage high byte |
+
+Implementation note: on TLSR8253 / TB-03F-KIT the measurement uses free ADC-capable pin `PB7`, which must remain unused by the application.
+
+---
+
 #### `0x0B` CMD_ID_TXADV — transmit custom advertisement *(currently disabled)*
 
 Start, stop or query a custom advertisement set transmitted by the device itself.
@@ -532,7 +553,7 @@ usage: adv2uart.py [-h] [-d] [-v] [-i] [-s SLEEP] [-b BAUDRATE] [-p PORT] [-t TI
                    [--duration DURATION] [--idle-timeout IDLE_TIMEOUT] [--status-interval STATUS_INTERVAL]
                    [--phy {1m,coded,both}] [--scan-window-ms SCAN_WINDOW_MS]
                    [--filter-random | --accept-random] [--filter-private | --accept-private]
-                   [--info-after INFO_AFTER]
+                   [--info-after INFO_AFTER] [--battery]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -563,9 +584,20 @@ optional arguments:
   --accept-private      accept private-address advertisements (default)
   --info-after INFO_AFTER
                         send INFO this many seconds after scan start and report whether it is acknowledged
+    --battery             query the current VBAT / 3V3 rail in millivolts and exit
 
 BLE ADV_BLE2UART scanner
 ```
+
+To query only the device supply rail instead of starting a scan:
+
+```bash
+python3 adv2uart.py -p /dev/ttyUSB0 -b 2000000 --battery -i
+```
+
+The command returns the module `VBAT` / `3.3 V` rail in millivolts, not the upstream `5 V` USB input.
+
+In `adv2uart_gui.py`, the **Device** bar shows a `VBAT` field: it is queried automatically after connect and can be refreshed on demand with the `VBAT` button.
 
 ## API
 
@@ -600,6 +632,14 @@ black_white_list(white_list=[ ... ], black_list=[ ... ], info=True, clear=True, 
 ### read_adv()
 
 `read_adv()`: *read serial input, detect advertisements and decode commands*.
+
+### read_vbat()
+
+`read_vbat(wait_seconds=2.0)`: send `CMD_ID_VBAT`, wait for the response and return `(status, millivolts)`.
+
+- `status = 0` means success and `millivolts` contains the measured `VBAT` / `3.3 V` rail value.
+- `status != 0` means the command was rejected or malformed.
+- `status is None` means the query timed out before a response arrived.
 
 Returned parameters: rssi, evtp, adtp, phys, mac, payload
 
@@ -909,7 +949,7 @@ classDiagram
         %% 0x00 CMD_ID_INFO  0x01 CMD_ID_SCAN
         %% 0x02 CMD_ID_WMAC  0x03 CMD_ID_BMAC  0x04 CMD_ID_CLRM
         %% 0x05 CMD_ID_PRNT  0x06 CMD_ID_GPIO (ops 0-4)
-        %% 0x07 CMD_ID_LED   0x08 CMD_ID_UART  0x09 CMD_ID_RFSDK  0x0A CMD_ID_VERSION
+        %% 0x07 CMD_ID_LED   0x08 CMD_ID_UART  0x09 CMD_ID_RFSDK  0x0A CMD_ID_VERSION  0x0F CMD_ID_VBAT
 
         %% Invoked functions:
         my_fifo_get() [SDK/common/utility.c]

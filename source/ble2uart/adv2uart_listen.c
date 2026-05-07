@@ -19,13 +19,18 @@
 #define COMMAND_SETTLE_US 50000U
 
 #define CMD_ID_SCAN 0x01U
+#define CMD_ID_VBAT 0x0FU
 #define SCAN_PHY_1M 0x01U
 #define SCAN_PHY_CODED 0x02U
 
 static volatile sig_atomic_t g_stop_requested = 0;
+static bool g_battery_response_received = false;
+static uint8_t g_battery_status = 0xFFU;
+static unsigned int g_battery_mv = 0U;
 
 static const uint8_t CMD_INFO[] = {0x00};
 static const uint8_t CMD_CLEAR_MAC_LIST[] = {0x04};
+static const uint8_t CMD_BATTERY[] = {CMD_ID_VBAT};
 static const uint8_t CMD_START_SCAN[] = {CMD_ID_SCAN, SCAN_PHY_1M | SCAN_PHY_CODED, 0x30, 0x00};
 static const uint8_t CMD_STOP_SCAN[] = {CMD_ID_SCAN, 0x00, 0x00, 0x00};
 
@@ -358,6 +363,24 @@ static const char *phys_name(uint8_t phys)
     }
 }
 
+static const char *cmd_status_name(uint8_t status)
+{
+    switch (status) {
+    case 0x00:
+        return "OK";
+    case 0x01:
+        return "ARGS";
+    case 0x02:
+        return "PIN";
+    case 0x03:
+        return "DENIED";
+    case 0x04:
+        return "VALUE";
+    default:
+        return "UNKNOWN";
+    }
+}
+
 static void print_timestamp(void)
 {
     struct timespec ts;
@@ -439,6 +462,21 @@ static void handle_command_response(const uint8_t *frame, size_t payload_len)
     case 0x04:
         printf("CLEAR_MAC_LIST max_entries=%u\n", (unsigned int)id);
         break;
+    case CMD_ID_VBAT: {
+        unsigned int batt_mv = data_len >= 2U
+            ? (unsigned int)data[0] | ((unsigned int)data[1] << 8U)
+            : 0U;
+        g_battery_response_received = true;
+        g_battery_status = id;
+        g_battery_mv = batt_mv;
+        printf(
+            "VBAT status=%s(0x%02X) mv=%u\n",
+            cmd_status_name(id),
+            (unsigned int)id,
+            batt_mv
+        );
+        break;
+    }
     default:
         printf(
             "CMD cmd=0x%02X id=0x%02X data=",
@@ -554,8 +592,9 @@ static void usage(const char *progname)
 {
     fprintf(
         stderr,
-        "Usage: %s [serial_port [baudrate [mac_filter]]]\n"
+        "Usage: %s [--battery] [serial_port [baudrate [mac_filter]]]\n"
         "mac_filter accepts a full MAC or a partial OUI/prefix, for example A4:C1:38 or A4C13812\n"
+        "--battery queries the current VBAT/3V3 rail in millivolts and exits (mac_filter is not used)\n"
         "Defaults: serial_port=/dev/ttyUSB0 baudrate=2000000\n",
         progname
     );
@@ -565,38 +604,52 @@ int main(int argc, char **argv)
 {
     const char *port = "/dev/ttyUSB0";
     const char *mac_filter = NULL;
+    const char *positionals[3] = {NULL, NULL, NULL};
     unsigned int baudrate = 2000000U;
     uint8_t rx_buffer[RX_BUFFER_SIZE];
     uint8_t white_list_cmd[7];
     size_t used = 0;
     size_t white_list_cmd_len = 0;
+    size_t positional_count = 0;
+    bool battery_query = false;
     bool synced = false;
     int fd;
 
-    if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-        usage(argv[0]);
-        return 0;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            return 0;
+        }
+        if (strcmp(argv[i], "--battery") == 0) {
+            battery_query = true;
+            continue;
+        }
+        if (positional_count >= sizeof(positionals) / sizeof(positionals[0])) {
+            usage(argv[0]);
+            return 1;
+        }
+        positionals[positional_count++] = argv[i];
     }
 
-    if (argc > 4) {
-        usage(argv[0]);
+    if (battery_query && positional_count > 2U) {
+        fprintf(stderr, "--battery does not accept mac_filter\n");
         return 1;
     }
 
-    if (argc >= 2) {
-        port = argv[1];
+    if (positional_count >= 1U) {
+        port = positionals[0];
     }
 
-    if (argc >= 3) {
-        baudrate = (unsigned int)strtoul(argv[2], NULL, 10);
+    if (positional_count >= 2U) {
+        baudrate = (unsigned int)strtoul(positionals[1], NULL, 10);
         if (baudrate == 0U) {
-            fprintf(stderr, "Invalid baudrate: %s\n", argv[2]);
+            fprintf(stderr, "Invalid baudrate: %s\n", positionals[1]);
             return 1;
         }
     }
 
-    if (argc >= 4) {
-        mac_filter = argv[3];
+    if (positional_count >= 3U) {
+        mac_filter = positionals[2];
         if (build_white_list_command(mac_filter, white_list_cmd, &white_list_cmd_len) < 0) {
             fprintf(stderr, "Invalid MAC filter: %s\n", mac_filter);
             return 1;
@@ -612,6 +665,73 @@ int main(int argc, char **argv)
     if (fd < 0) {
         perror(port);
         return 1;
+    }
+
+    g_battery_response_received = false;
+    g_battery_status = 0xFFU;
+    g_battery_mv = 0U;
+
+    if (battery_query) {
+        printf("Listening on %s at %u baud\n", port, baudrate);
+        printf("Querying VBAT/3V3 rail; press Ctrl-C to stop\n");
+        fflush(stdout);
+
+        if (send_command_with_settle(fd, CMD_BATTERY, sizeof(CMD_BATTERY)) < 0) {
+            perror("send VBAT");
+            close(fd);
+            return 1;
+        }
+
+        for (int i = 0; i < 20 && !g_stop_requested && !g_battery_response_received; ++i) {
+            struct pollfd pfd = {
+                .fd = fd,
+                .events = POLLIN,
+                .revents = 0,
+            };
+
+            int poll_rc = poll(&pfd, 1, 100);
+            if (poll_rc < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                perror("poll");
+                close(fd);
+                return 1;
+            }
+            if (poll_rc == 0) {
+                continue;
+            }
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                fprintf(stderr, "Serial line closed or in error state\n");
+                close(fd);
+                return 1;
+            }
+            if (pfd.revents & POLLIN) {
+                ssize_t rd = read(fd, rx_buffer + used, sizeof(rx_buffer) - used);
+                if (rd < 0) {
+                    if (errno == EINTR || errno == EAGAIN) {
+                        continue;
+                    }
+                    perror("read");
+                    close(fd);
+                    return 1;
+                }
+                if (rd == 0) {
+                    continue;
+                }
+                used += (size_t)rd;
+                process_rx_buffer(rx_buffer, &used, &synced);
+            }
+        }
+
+        if (!g_battery_response_received) {
+            fprintf(stderr, "VBAT query timed out\n");
+            close(fd);
+            return 1;
+        }
+
+        close(fd);
+        return g_battery_status == 0x00U && g_battery_mv > 0U ? 0 : 1;
     }
 
     printf("Listening on %s at %u baud\n", port, baudrate);

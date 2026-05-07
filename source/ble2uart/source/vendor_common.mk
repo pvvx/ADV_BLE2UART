@@ -2,6 +2,7 @@ OUT_DIR += /vendor/common
 
 OBJS += \
 	$(OUT_PATH)/vendor/common/ble_flash.o \
+	$(OUT_PATH)/vendor/common/battery_check.o \
         $(OUT_PATH)/vendor/common/tlkapi_debug.o \
         $(OUT_PATH)/vendor/common/app_common.o \
         $(OUT_PATH)/vendor/common/flash_prot.o \

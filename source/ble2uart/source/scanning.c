@@ -524,6 +524,21 @@ static void handle_version_command(void) {
 	send_resp(CMD_ID_VERSION, SW_VERSION, data, sizeof(data));
 }
 
+static void handle_vbat_command(void) {
+	u8 data[2] = {0};
+	int batt_mv = app_battery_power_get_mv();
+	u8 status = CMD_STATUS_OK;
+
+	if(batt_mv <= 0 || batt_mv > 6000) {
+		status = CMD_STATUS_DENIED;
+	} else {
+		data[0] = batt_mv;
+		data[1] = batt_mv >> 8;
+	}
+
+	send_resp(CMD_ID_VBAT, status, data, sizeof(data));
+}
+
 static void send_txadv_state(u8 status) {
 	u8 data[6];
 	data[0] = txadv_running_phy;
@@ -891,6 +906,8 @@ void scan_task(void) {
 			handle_rfsdk_command(buf, cmd_len);
 		} else if(cmd == CMD_ID_VERSION) {
 			handle_version_command();
+		} else if(cmd == CMD_ID_VBAT && len == 3) {
+			handle_vbat_command();
 		} else if(cmd == CMD_ID_TXADV) {
 			handle_txadv_command(buf, cmd_len);
 		} else if(cmd == CMD_ID_CONN) {

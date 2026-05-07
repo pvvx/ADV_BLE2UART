@@ -37,6 +37,7 @@ CMD_ID_TXADV = 0x0B
 CMD_ID_CONN   = 0x0C
 CMD_ID_TXDATA = 0x0D
 CMD_ID_RXDATA = 0x0E
+CMD_ID_VBAT = 0x0F
 
 GUI_BOOTSTRAP_DELAY_MS = 1000
 GUI_SERIAL_TIMEOUT_S = 0.3
@@ -120,6 +121,7 @@ COMMAND_NAMES = {
     CMD_ID_CONN: "CONN",
     CMD_ID_TXDATA: "TXDATA",
     CMD_ID_RXDATA: "RXDATA",
+    CMD_ID_VBAT: "VBAT",
 }
 
 RF_POWER_OPTIONS = (
@@ -212,6 +214,8 @@ def describe_tx_payload(payload: bytes) -> str:
         return "INFO request"
     if command == CMD_ID_VERSION and len(payload) == 1:
         return "VERSION request"
+    if command == CMD_ID_VBAT and len(payload) == 1:
+        return "VBAT request"
     if command == CMD_ID_SCAN:
         if payload == bytes((CMD_ID_SCAN, 0, 0, 0)):
             return "SCAN stop"
@@ -542,6 +546,9 @@ class SerialClient:
     def command_version_info(self):
         self.send(bytes((CMD_ID_VERSION,)))
 
+    def command_vbat(self):
+        self.send(bytes((CMD_ID_VBAT,)))
+
     def command_clear_list(self):
         self.send(bytes((CMD_ID_CLRM,)))
 
@@ -726,6 +733,7 @@ class AdvBle2UartGui(tk.Tk):
         self.version_var = tk.StringVar(value="-")
         self.hw_version_var = tk.StringVar(value="-")
         self.sdk_version_var = tk.StringVar(value="-")
+        self.vbat_var = tk.StringVar(value="-")
         self.list_capacity_var = tk.StringVar(value="-")
         self.scan_state_var = tk.StringVar(value="Stopped")
 
@@ -879,6 +887,13 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Label(frame, textvariable=self.list_capacity_var, width=6).grid(row=0, column=12, padx=4, pady=8)
         ttk.Label(frame, text="Scan").grid(row=0, column=13, padx=(16, 4), pady=8)
         ttk.Label(frame, textvariable=self.scan_state_var).grid(row=0, column=14, padx=4, pady=8)
+
+        ttk.Button(frame, text="VBAT", command=self.send_vbat).grid(row=1, column=0, padx=(8, 4), pady=(0, 8))
+        ttk.Label(frame, text="Supply").grid(row=1, column=1, padx=(8, 4), pady=(0, 8), sticky="w")
+        ttk.Label(frame, textvariable=self.vbat_var, width=16).grid(row=1, column=2, padx=4, pady=(0, 8), sticky="w")
+        ttk.Label(frame, text="device 3.3V / VBAT rail", foreground="gray").grid(
+            row=1, column=3, columnspan=5, padx=(8, 4), pady=(0, 8), sticky="w"
+        )
 
     def _build_scan_controls(self, parent):
         frame = ttk.LabelFrame(parent, text="Scan Configuration")
@@ -1353,11 +1368,13 @@ class AdvBle2UartGui(tk.Tk):
         self.client.close()
         self.status_var.set("Disconnected")
         self.scan_state_var.set("Stopped")
+        self.vbat_var.set("-")
         self.log("Disconnected")
 
     def send_info(self):
         self.safe_command(self.client.command_info)
         self.after(80, lambda: self.safe_command(self.client.command_version_info))
+        self.after(160, self.send_vbat)
 
     def clear_mac_list(self):
         self.white_list.clear()
@@ -1765,6 +1782,8 @@ class AdvBle2UartGui(tk.Tk):
             self.handle_txdata_response(response)
         elif response.command == CMD_ID_RXDATA:
             self.handle_rxdata_response(response)
+        elif response.command == CMD_ID_VBAT:
+            self.handle_vbat_response(response)
         else:
             self.log(f"RX {response.command_name} idx={response.index} data={bytes_to_hex(response.data)}")
 
@@ -1779,6 +1798,20 @@ class AdvBle2UartGui(tk.Tk):
             self.log(f"RX VERSION hw={hw_label} fw={firmware_version_label(response.index)} sdk={sdk_label}")
         else:
             self.log(f"RX VERSION data={bytes_to_hex(response.data)}")
+
+    def handle_vbat_response(self, response: CommandResponse):
+        status = self.status_name(response.index)
+        if response.data_len >= 2:
+            batt_mv = response.data[0] | (response.data[1] << 8)
+            if response.index == 0:
+                self.vbat_var.set(f"{batt_mv} mV")
+                self.log(f"RX VBAT {batt_mv} mV")
+            else:
+                self.vbat_var.set(status)
+                self.log(f"RX VBAT {status} data={bytes_to_hex(response.data)}")
+        else:
+            self.vbat_var.set(status)
+            self.log(f"RX VBAT {status} data={bytes_to_hex(response.data)}")
 
     def handle_gpio_response(self, response: CommandResponse):
         status = self.status_name(response.index)
@@ -2074,6 +2107,10 @@ class AdvBle2UartGui(tk.Tk):
     def send_version_info(self):
         """Query only HW / FW / SDK version (CMD_ID_VERSION)."""
         self.safe_command(self.client.command_version_info)
+
+    def send_vbat(self):
+        """Query the current device VBAT / 3V3 rail (CMD_ID_VBAT)."""
+        self.safe_command(self.client.command_vbat)
 
     def gpio_read_all(self):
         """Read all board GPIO pins sequentially and update the pin-states grid."""

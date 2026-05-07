@@ -133,10 +133,24 @@ class Command:
     CMD_ID_WMAC = b'\x02'  # add white mac (len_cmd = 6: mac)
     CMD_ID_BMAC = b'\x03'  # add black mac (len_cmd = 6: mac)
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
+    CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage in mV
     # CMD_ID_PRNT = b'\x05'  # debug print
     DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
     START_SCAN  = build_scan_command(scan_phy_1m=True, scan_phy_coded=True)
     STOP_SCAN   = CMD_ID_SCAN + b'\x00\x00\x00'
+
+
+COMMAND_STATUS = {
+    0: 'OK',
+    1: 'ARGS',
+    2: 'PIN',
+    3: 'DENIED',
+    4: 'VALUE',
+}
+
+
+def command_status_name(status):
+    return COMMAND_STATUS.get(status, '0x%02X' % status)
 
 
 class Ble2Uart:
@@ -144,6 +158,8 @@ class Ble2Uart:
         self.sync = None
         self.data = None
         self.ser = None
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
 
         self.timeout = timeout
         self.baud = baud
@@ -180,6 +196,8 @@ class Ble2Uart:
         self.data = bytearray()
         self.sync = None
         self.scan_enabled = None
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
         if timeout:
             self.timeout = timeout
         if baud:
@@ -356,6 +374,25 @@ class Ble2Uart:
                                             self.data[5: len_cmd + 5]
                                         )
                                     )
+                            elif cmd == Command.CMD_ID_VBAT:
+                                self.config_account(cmd)
+                                self.last_vbat_status = self.data[2]
+                                self.last_vbat_mv = None
+                                if len_cmd >= 2:
+                                    self.last_vbat_mv = self.data[5] | (self.data[6] << 8)
+                                if self.last_vbat_mv is not None:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv
+                                    )
+                                else:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status)
+                                    )
                             else:
                                 logging.error(
                                     'blk: %s', HEX(self.data[0: len_payload + 11])
@@ -407,6 +444,17 @@ class Ble2Uart:
                 return True
         logging.warning('SCAN Disable confirmation not received')
         return False
+
+    def read_vbat(self, wait_seconds=2.0):
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
+        self.command(Command.CMD_ID_VBAT)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if self.last_vbat_status is not None:
+                return self.last_vbat_status, self.last_vbat_mv
+        return None, None
 
 
 def setup_logging(
@@ -561,6 +609,12 @@ def main():
         help='send INFO this many seconds after scan start and report whether it is acknowledged',
         default=0
     )
+    parser.add_argument(
+        '--battery',
+        dest='battery',
+        action='store_true',
+        help='query the current VBAT / 3V3 rail in millivolts and exit'
+    )
 
     parser.set_defaults(filter_random=False, filter_private=False)
     args = parser.parse_args()
@@ -577,11 +631,15 @@ def main():
         logging.getLogger().setLevel(loglevel)
         logging.warning("Set loglevel %s", loglevel)
 
-    logging.warning("Press 'ESC' to exit")
+    if args.battery:
+        logging.warning('VBAT query mode')
+    else:
+        logging.warning("Press 'ESC' to exit")
     logging.warning('Connecting to %s...' + args.serial_port[0])
 
     dv = None
     scan_started = False
+    exit_code = 0
     try:
         dv = Ble2Uart(
             port=args.serial_port[0],
@@ -590,66 +648,78 @@ def main():
         )
         time.sleep(args.sleep)
         dv.read(64)  # flush
-        dv.config_start()
-        start_scan_cmd = build_scan_command(
-            scan_phy_1m=args.phy in ['1m', 'both'],
-            scan_phy_coded=args.phy in ['coded', 'both'],
-            address_type_filter_random=args.filter_random,
-            address_type_filter_private=args.filter_private,
-            window_ms=args.scan_window_ms,
-            cmd_id_scan=Command.CMD_ID_SCAN,
-        )
-        dv.black_white_list(start_cmd=start_scan_cmd)
-        scan_started = True
-        count = 0
-        started_at = time.time()
-        last_adv_at = started_at
-        last_status_at = started_at
-        info_sent_at = 0
-        info_timeout_reported = False
-        while True:
-            now = time.time()
-            if args.duration and now - started_at >= args.duration:
-                logging.warning('Duration reached: %.1f seconds', args.duration)
-                break
-            if args.idle_timeout and now - last_adv_at >= args.idle_timeout:
-                logging.warning('Idle timeout reached: %.1f seconds without advertisements', args.idle_timeout)
-                break
-            if args.status_interval and now - last_adv_at >= args.status_interval and now - last_status_at >= args.status_interval:
-                logging.info('idle: no advertisements for %.1f seconds; scanner still running', now - last_adv_at)
-                last_status_at = now
-            if args.info_after and not info_sent_at and now - started_at >= args.info_after:
-                logging.warning('Sending INFO during active scan at %.1f seconds', now - started_at)
-                dv.command(Command.CMD_ID_INFO)
-                info_sent_at = now
-            rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
-            if info_sent_at and not info_timeout_reported:
-                if Command.CMD_ID_INFO[0] not in dv.config_cmd:
-                    logging.warning('INFO during scan acknowledged')
-                    info_timeout_reported = True
-                elif now - info_sent_at >= 2.0:
-                    logging.warning('INFO during scan not acknowledged within 2.0 seconds')
-                    info_timeout_reported = True
-            if payload:
-                last_adv_at = time.time()
-                if args.number:
-                    count += 1
-                    if count == args.number:
-                        break
-            if dv.config_still_running() > 3:
-                logging.warning(
-                    "Commands not answered in time: %s. Retrying...", dv.config_cmd
-                )
-                dv.config_start()
-                dv.black_white_list(start_cmd=start_scan_cmd)
+        if args.battery:
+            status, voltage_mv = dv.read_vbat(wait_seconds=max(2.0, args.timeout * 4.0))
+            if status is None:
+                logging.error('VBAT query timed out')
+                exit_code = 1
+            elif status != 0:
+                logging.error('VBAT query failed: %s', command_status_name(status))
+                exit_code = 1
+            else:
+                logging.warning('VBAT = %s mV (device 3.3V / VBAT rail)', voltage_mv)
+        else:
+            dv.config_start()
+            start_scan_cmd = build_scan_command(
+                scan_phy_1m=args.phy in ['1m', 'both'],
+                scan_phy_coded=args.phy in ['coded', 'both'],
+                address_type_filter_random=args.filter_random,
+                address_type_filter_private=args.filter_private,
+                window_ms=args.scan_window_ms,
+                cmd_id_scan=Command.CMD_ID_SCAN,
+            )
+            dv.black_white_list(start_cmd=start_scan_cmd)
+            scan_started = True
+            count = 0
+            started_at = time.time()
+            last_adv_at = started_at
+            last_status_at = started_at
+            info_sent_at = 0
+            info_timeout_reported = False
+            while True:
+                now = time.time()
+                if args.duration and now - started_at >= args.duration:
+                    logging.warning('Duration reached: %.1f seconds', args.duration)
+                    break
+                if args.idle_timeout and now - last_adv_at >= args.idle_timeout:
+                    logging.warning('Idle timeout reached: %.1f seconds without advertisements', args.idle_timeout)
+                    break
+                if args.status_interval and now - last_adv_at >= args.status_interval and now - last_status_at >= args.status_interval:
+                    logging.info('idle: no advertisements for %.1f seconds; scanner still running', now - last_adv_at)
+                    last_status_at = now
+                if args.info_after and not info_sent_at and now - started_at >= args.info_after:
+                    logging.warning('Sending INFO during active scan at %.1f seconds', now - started_at)
+                    dv.command(Command.CMD_ID_INFO)
+                    info_sent_at = now
+                rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
+                if info_sent_at and not info_timeout_reported:
+                    if Command.CMD_ID_INFO[0] not in dv.config_cmd:
+                        logging.warning('INFO during scan acknowledged')
+                        info_timeout_reported = True
+                    elif now - info_sent_at >= 2.0:
+                        logging.warning('INFO during scan not acknowledged within 2.0 seconds')
+                        info_timeout_reported = True
+                if payload:
+                    last_adv_at = time.time()
+                    if args.number:
+                        count += 1
+                        if count == args.number:
+                            break
+                if dv.config_still_running() > 3:
+                    logging.warning(
+                        "Commands not answered in time: %s. Retrying...", dv.config_cmd
+                    )
+                    dv.config_start()
+                    dv.black_white_list(start_cmd=start_scan_cmd)
     except KeyboardInterrupt:
         logging.warning('Interrupted')
+        exit_code = 130
     finally:
         if dv:
             if scan_started:
                 dv.stop_scan()
             dv.close()  # close the connection
-    sys.exit(0)
+    sys.exit(exit_code)
 
 
 # Custom logging VERBOSE (5)
