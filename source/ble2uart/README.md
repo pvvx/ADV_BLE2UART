@@ -370,21 +370,26 @@ Request format: `[0x0A]`
 
 ---
 
-#### `0x0F` CMD_ID_VBAT — on-demand VBAT / supply measurement
+#### `0x0F` CMD_ID_VBAT — on-demand VBAT / chip-temperature measurement
 
 Request format: `[0x0F]`
 
-Returns the current chip supply `VBAT` in millivolts. On TB-03F-KIT this is the `3.3 V` rail after the onboard regulator (not the `5 V` micro-USB input).
+Returns the current chip supply `VBAT` in millivolts together with an estimate of the internal chip temperature in degrees Celsius when the target platform supports it. On TB-03F-KIT / TLSR8253 `VBAT` is the `3.3 V` rail after the onboard regulator (not the `5 V` micro-USB input), while temperature is currently reported as unavailable.
 
 Host tooling support:
 - `adv2uart.py` exposes `--battery` and `Ble2Uart.read_vbat()`.
 - `adv2uart_gui.py` exposes a `VBAT` button and shows the latest reading in the Device bar.
+- `adv2uart_listen.c` prints both `mv` and `temp_c` when the extended payload is present.
 
 | Response field | Value |
 |----------------|-------|
 | `id` | `CMD_STATUS_*` result |
 | `data[0]` | voltage low byte |
 | `data[1]` | voltage high byte |
+| `data[2]` | temperature low byte (signed `int16`, Celsius) |
+| `data[3]` | temperature high byte (signed `int16`, Celsius) |
+
+If temperature sampling is unavailable, the firmware reports `0x8000` in `data[2:4]`. This is the current behavior on TLSR8253 / B85 builds. Older firmware versions may still return only `data[0:2]`.
 
 Implementation note: on TLSR8253 / TB-03F-KIT the measurement uses free ADC-capable pin `PB7`, which must remain unused by the application.
 
@@ -584,7 +589,7 @@ optional arguments:
   --accept-private      accept private-address advertisements (default)
   --info-after INFO_AFTER
                         send INFO this many seconds after scan start and report whether it is acknowledged
-    --battery             query the current VBAT / 3V3 rail in millivolts and exit
+    --battery             query the current VBAT / 3V3 rail and chip temperature, then exit
 
 BLE ADV_BLE2UART scanner
 ```
@@ -595,9 +600,9 @@ To query only the device supply rail instead of starting a scan:
 python3 adv2uart.py -p /dev/ttyUSB0 -b 2000000 --battery -i
 ```
 
-The command returns the module `VBAT` / `3.3 V` rail in millivolts, not the upstream `5 V` USB input.
+The command returns the module `VBAT` / `3.3 V` rail in millivolts plus the internal chip temperature estimate when available. On TLSR8253 / B85 builds the temperature field is currently reported as unavailable. It does not measure the upstream `5 V` USB input.
 
-In `adv2uart_gui.py`, the **Device** bar shows a `VBAT` field: it is queried automatically after connect and can be refreshed on demand with the `VBAT` button.
+In `adv2uart_gui.py`, the **Device** bar shows `VBAT` and `Temp` fields: they are queried automatically after connect and can be refreshed on demand with the `VBAT` button.
 
 ## API
 
@@ -635,9 +640,10 @@ black_white_list(white_list=[ ... ], black_list=[ ... ], info=True, clear=True, 
 
 ### read_vbat()
 
-`read_vbat(wait_seconds=2.0)`: send `CMD_ID_VBAT`, wait for the response and return `(status, millivolts)`.
+`read_vbat(wait_seconds=2.0)`: send `CMD_ID_VBAT`, wait for the response and return `(status, millivolts, temperature_c)`.
 
 - `status = 0` means success and `millivolts` contains the measured `VBAT` / `3.3 V` rail value.
+- `temperature_c` is the internal chip temperature estimate in whole degrees Celsius, or `None` when unavailable or when an older firmware returns only the legacy 2-byte payload.
 - `status != 0` means the command was rejected or malformed.
 - `status is None` means the query timed out before a response arrived.
 

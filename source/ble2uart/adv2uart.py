@@ -133,7 +133,7 @@ class Command:
     CMD_ID_WMAC = b'\x02'  # add white mac (len_cmd = 6: mac)
     CMD_ID_BMAC = b'\x03'  # add black mac (len_cmd = 6: mac)
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
-    CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage in mV
+    CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage and chip temperature
     # CMD_ID_PRNT = b'\x05'  # debug print
     DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
     START_SCAN  = build_scan_command(scan_phy_1m=True, scan_phy_coded=True)
@@ -160,6 +160,7 @@ class Ble2Uart:
         self.ser = None
         self.last_vbat_status = None
         self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
 
         self.timeout = timeout
         self.baud = baud
@@ -198,6 +199,7 @@ class Ble2Uart:
         self.scan_enabled = None
         self.last_vbat_status = None
         self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
         if timeout:
             self.timeout = timeout
         if baud:
@@ -378,9 +380,31 @@ class Ble2Uart:
                                 self.config_account(cmd)
                                 self.last_vbat_status = self.data[2]
                                 self.last_vbat_mv = None
+                                self.last_vbat_temp_c = None
                                 if len_cmd >= 2:
                                     self.last_vbat_mv = self.data[5] | (self.data[6] << 8)
-                                if self.last_vbat_mv is not None:
+                                if len_cmd >= 4:
+                                    temp_c = self.data[7] | (self.data[8] << 8)
+                                    if temp_c & 0x8000:
+                                        temp_c -= 0x10000
+                                    if temp_c != -32768:
+                                        self.last_vbat_temp_c = temp_c
+                                if self.last_vbat_mv is not None and self.last_vbat_temp_c is not None:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV, temperature: %s C',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv,
+                                        self.last_vbat_temp_c
+                                    )
+                                elif self.last_vbat_mv is not None and len_cmd >= 4:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV, temperature: unavailable',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv
+                                    )
+                                elif self.last_vbat_mv is not None:
                                     logging.warning(
                                         'resp: %s=VBAT, status: %s, voltage: %s mV',
                                         rssi,
@@ -448,13 +472,14 @@ class Ble2Uart:
     def read_vbat(self, wait_seconds=2.0):
         self.last_vbat_status = None
         self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
         self.command(Command.CMD_ID_VBAT)
         deadline = time.time() + wait_seconds
         while time.time() < deadline:
             self.read_adv()
             if self.last_vbat_status is not None:
-                return self.last_vbat_status, self.last_vbat_mv
-        return None, None
+                return self.last_vbat_status, self.last_vbat_mv, self.last_vbat_temp_c
+        return None, None, None
 
 
 def setup_logging(
@@ -613,7 +638,7 @@ def main():
         '--battery',
         dest='battery',
         action='store_true',
-        help='query the current VBAT / 3V3 rail in millivolts and exit'
+        help='query the current VBAT / 3V3 rail and chip temperature, then exit'
     )
 
     parser.set_defaults(filter_random=False, filter_private=False)
@@ -632,7 +657,7 @@ def main():
         logging.warning("Set loglevel %s", loglevel)
 
     if args.battery:
-        logging.warning('VBAT query mode')
+        logging.warning('VBAT/temperature query mode')
     else:
         logging.warning("Press 'ESC' to exit")
     logging.warning('Connecting to %s...' + args.serial_port[0])
@@ -649,15 +674,21 @@ def main():
         time.sleep(args.sleep)
         dv.read(64)  # flush
         if args.battery:
-            status, voltage_mv = dv.read_vbat(wait_seconds=max(2.0, args.timeout * 4.0))
+            status, voltage_mv, temperature_c = dv.read_vbat(wait_seconds=max(2.0, args.timeout * 4.0))
             if status is None:
                 logging.error('VBAT query timed out')
                 exit_code = 1
             elif status != 0:
                 logging.error('VBAT query failed: %s', command_status_name(status))
                 exit_code = 1
+            elif temperature_c is None:
+                logging.warning('VBAT = %s mV (device 3.3V / VBAT rail); chip temperature unavailable', voltage_mv)
             else:
-                logging.warning('VBAT = %s mV (device 3.3V / VBAT rail)', voltage_mv)
+                logging.warning(
+                    'VBAT = %s mV (device 3.3V / VBAT rail); chip temperature = %s C',
+                    voltage_mv,
+                    temperature_c
+                )
         else:
             dv.config_start()
             start_scan_cmd = build_scan_command(

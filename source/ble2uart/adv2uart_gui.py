@@ -734,6 +734,7 @@ class AdvBle2UartGui(tk.Tk):
         self.hw_version_var = tk.StringVar(value="-")
         self.sdk_version_var = tk.StringVar(value="-")
         self.vbat_var = tk.StringVar(value="-")
+        self.temp_var = tk.StringVar(value="-")
         self.list_capacity_var = tk.StringVar(value="-")
         self.scan_state_var = tk.StringVar(value="Stopped")
 
@@ -891,8 +892,10 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Button(frame, text="VBAT", command=self.send_vbat).grid(row=1, column=0, padx=(8, 4), pady=(0, 8))
         ttk.Label(frame, text="Supply").grid(row=1, column=1, padx=(8, 4), pady=(0, 8), sticky="w")
         ttk.Label(frame, textvariable=self.vbat_var, width=16).grid(row=1, column=2, padx=4, pady=(0, 8), sticky="w")
-        ttk.Label(frame, text="device 3.3V / VBAT rail", foreground="gray").grid(
-            row=1, column=3, columnspan=5, padx=(8, 4), pady=(0, 8), sticky="w"
+        ttk.Label(frame, text="Temp").grid(row=1, column=3, padx=(16, 4), pady=(0, 8), sticky="w")
+        ttk.Label(frame, textvariable=self.temp_var, width=12).grid(row=1, column=4, padx=4, pady=(0, 8), sticky="w")
+        ttk.Label(frame, text="chip internal sensor; Supply = device 3.3V / VBAT rail", foreground="gray").grid(
+            row=1, column=5, columnspan=10, padx=(8, 4), pady=(0, 8), sticky="w"
         )
 
     def _build_scan_controls(self, parent):
@@ -1369,6 +1372,7 @@ class AdvBle2UartGui(tk.Tk):
         self.status_var.set("Disconnected")
         self.scan_state_var.set("Stopped")
         self.vbat_var.set("-")
+        self.temp_var.set("-")
         self.log("Disconnected")
 
     def send_info(self):
@@ -1803,14 +1807,27 @@ class AdvBle2UartGui(tk.Tk):
         status = self.status_name(response.index)
         if response.data_len >= 2:
             batt_mv = response.data[0] | (response.data[1] << 8)
+            temp_c = None
+            if response.data_len >= 4:
+                temp_c = response.data[2] | (response.data[3] << 8)
+                if temp_c & 0x8000:
+                    temp_c -= 0x10000
+                if temp_c == -32768:
+                    temp_c = None
             if response.index == 0:
                 self.vbat_var.set(f"{batt_mv} mV")
-                self.log(f"RX VBAT {batt_mv} mV")
+                self.temp_var.set(f"{temp_c} C" if temp_c is not None else "unavailable")
+                if temp_c is not None:
+                    self.log(f"RX VBAT {batt_mv} mV temp={temp_c} C")
+                else:
+                    self.log(f"RX VBAT {batt_mv} mV temp=unavailable")
             else:
                 self.vbat_var.set(status)
+                self.temp_var.set("-")
                 self.log(f"RX VBAT {status} data={bytes_to_hex(response.data)}")
         else:
             self.vbat_var.set(status)
+            self.temp_var.set("-")
             self.log(f"RX VBAT {status} data={bytes_to_hex(response.data)}")
 
     def handle_gpio_response(self, response: CommandResponse):

@@ -466,15 +466,45 @@ static void handle_command_response(const uint8_t *frame, size_t payload_len)
         unsigned int batt_mv = data_len >= 2U
             ? (unsigned int)data[0] | ((unsigned int)data[1] << 8U)
             : 0U;
+        int temp_c = 0;
+        bool have_temp = false;
+
+        if (data_len >= 4U) {
+            temp_c = (int)((unsigned int)data[2] | ((unsigned int)data[3] << 8U));
+            if ((temp_c & 0x8000) != 0) {
+                temp_c -= 0x10000;
+            }
+            if (temp_c != -32768) {
+                have_temp = true;
+            }
+        }
+
         g_battery_response_received = true;
         g_battery_status = id;
         g_battery_mv = batt_mv;
-        printf(
-            "VBAT status=%s(0x%02X) mv=%u\n",
-            cmd_status_name(id),
-            (unsigned int)id,
-            batt_mv
-        );
+        if (have_temp) {
+            printf(
+                "VBAT status=%s(0x%02X) mv=%u temp_c=%d\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                batt_mv,
+                temp_c
+            );
+        } else if (data_len >= 4U) {
+            printf(
+                "VBAT status=%s(0x%02X) mv=%u temp_c=unavailable\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                batt_mv
+            );
+        } else {
+            printf(
+                "VBAT status=%s(0x%02X) mv=%u\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                batt_mv
+            );
+        }
         break;
     }
     default:
@@ -594,7 +624,7 @@ static void usage(const char *progname)
         stderr,
         "Usage: %s [--battery] [serial_port [baudrate [mac_filter]]]\n"
         "mac_filter accepts a full MAC or a partial OUI/prefix, for example A4:C1:38 or A4C13812\n"
-        "--battery queries the current VBAT/3V3 rail in millivolts and exits (mac_filter is not used)\n"
+        "--battery queries the current VBAT/3V3 rail and chip temperature, then exits (mac_filter is not used)\n"
         "Defaults: serial_port=/dev/ttyUSB0 baudrate=2000000\n",
         progname
     );
@@ -673,7 +703,7 @@ int main(int argc, char **argv)
 
     if (battery_query) {
         printf("Listening on %s at %u baud\n", port, baudrate);
-        printf("Querying VBAT/3V3 rail; press Ctrl-C to stop\n");
+        printf("Querying VBAT/3V3 rail and chip temperature; press Ctrl-C to stop\n");
         fflush(stdout);
 
         if (send_command_with_settle(fd, CMD_BATTERY, sizeof(CMD_BATTERY)) < 0) {
