@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -28,55 +29,189 @@
 #include "esp_gatt_defs.h"
 #include "esp_bt_main.h"
 #include "esp_gatt_common_api.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
+#include "esp_log_buffer.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_adc/adc_oneshot.h"
 #include "crc.h"
 #include "freertos/FreeRTOS.h"
-#include "crc.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "driver/usb_serial_jtag.h"
 #include "hal/usb_serial_jtag_ll.h"
 
 
-#define SW_VERSION		0x01
+#ifndef BOARD_LED_GPIO
+#define BOARD_LED_GPIO          GPIO_NUM_8
+#endif
 
+#define SW_VERSION              0x02
+#define HW_VERSION              0xC3
 
-#define HEAD_CRC_ADD_LEN	13
+#define HEAD_CRC_ADD_LEN        13
+#define FRAME_DATA_LEN          6
+#define CMD_BUFFER_SIZE         64
+#define DEBUG_PAYLOAD_MAX_LEN   96
 
 #define EXTADV_RPT_DATA_LEN_MAX 229 // //253 - 24 = 229
 
-#define IN_BUF_SIZE 		64
+#define IN_BUF_SIZE             64
 
-#define OUT_BUF_SIZE 		(EXTADV_RPT_DATA_LEN_MAX + HEAD_CRC_ADD_LEN)
+#define OUT_BUF_SIZE            (EXTADV_RPT_DATA_LEN_MAX + HEAD_CRC_ADD_LEN)
 
-#define IO_TASK_STACK_SIZE	2048
+#define IO_TASK_STACK_SIZE      4096
+
+#define UART_BAUD_RATE_COUNT    3
+#define FILTER_LIST_CAPACITY    64
+#define CODED_SCAN_UNIT_10MS    16
+#define GPIO_BOARD_LED_BIT      0x0001u
+#define BOARD_LED_IDLE_LEVEL    1
+#define BOARD_LED_PULSE_US      25000
+
+// Hardware PWM (LEDC) backing for the board LED.
+// The Super Mini board LED is active-low: GPIO=high → LED off, GPIO=low → LED on.
+// With 8-bit LEDC duty the counter wraps at 2^8 = 256 ticks per period.
+//   duty = 256 → pin always HIGH (no LOW pulse at all) → LED fully OFF
+//   duty = 255 → pin LOW for 1/256 of period → LED VISIBLY DIM at idle (avoid)
+//   duty = 0   → pin always LOW → LED fully ON (max brightness)
+//   duty = 230 → pin LOW for ~10% of period → LED ~10% brightness
+// LED_DUTY_OFF MUST be 2^resolution to suppress idle bleed-through; ESP-IDF
+// LEDC accepts `(1 << duty_resolution)` as the "always one level" sentinel.
+#define LED_PWM_FREQ_HZ         5000
+#define LED_PWM_TIMER           LEDC_TIMER_0
+#define LED_PWM_MODE            LEDC_LOW_SPEED_MODE
+#define LED_PWM_CHANNEL         LEDC_CHANNEL_0
+#define LED_PWM_RES_BITS        LEDC_TIMER_8_BIT
+#define LED_DUTY_FULL           (1u << 8)   // 256 — "always HIGH" sentinel
+#define LED_DUTY_OFF            LED_DUTY_FULL
+#define LED_DUTY_DIM            248u   // ~3% on time — faint blink for 1M / legacy / 2M adv
+#define LED_DUTY_BRIGHT         0u     // 100% — max brightness, used for Coded PHY adv
+
+#define GPIO_OP_ANALOG_READ     7
+#define TXADV_INSTANCE          0
+#define TXADV_DATA_MAX_LEN      31
+#define GAP_SYNC_TIMEOUT_MS     1000
+
+#define GPIO_EVENT_QUEUE_LEN    16
 
 enum {
-	CMD_ID_INFO		= 0x00,
-	CMD_ID_SCAN 	= 0x01, //  Scan on/off, parameters
-	CMD_ID_WMAC		= 0x02, // add white mac
-	CMD_ID_BMAC 	= 0x03, // add black mac
-	CMD_ID_CLRM		= 0x04  // clear mac list
+    CMD_ID_INFO     = 0x00,
+    CMD_ID_SCAN     = 0x01,
+    CMD_ID_WMAC     = 0x02,
+    CMD_ID_BMAC     = 0x03,
+    CMD_ID_CLRM     = 0x04,
+    CMD_ID_PRNT     = 0x05,
+    CMD_ID_GPIO     = 0x06,
+    CMD_ID_UART     = 0x08,
+    CMD_ID_RFSDK    = 0x09,
+    CMD_ID_VERSION  = 0x0A,
+    CMD_ID_TXADV    = 0x0B,
+    CMD_ID_CONN     = 0x0C,
+    CMD_ID_TXDATA   = 0x0D,
+    CMD_ID_RXDATA   = 0x0E,
+    CMD_ID_VBAT     = 0x0F,
+    CMD_ID_GPIOEVT  = 0x10, // GPIO edge events: enable/disable + spontaneous notifications
 } CMD_ID_KEYS;
 
-#define MAC_MAX_SCAN_LIST	64
+// CMD_ID_GPIOEVT sub-operations sent by the host.
+enum {
+    GPIOEVT_OP_QUERY   = 0,  // returns the bitmap of currently-armed pins
+    GPIOEVT_OP_ENABLE  = 1,  // arm ISR on pin (both edges)
+    GPIOEVT_OP_DISABLE = 2,  // disarm
+    GPIOEVT_OP_CLEAR   = 3,  // disarm every pin
+};
 
 enum {
-	WHITE_LIST,
-	BALCK_LIST
-} mode_mac_list_e;
+    CMD_STATUS_OK     = 0,
+    CMD_STATUS_ARGS   = 1,
+    CMD_STATUS_PIN    = 2,
+    CMD_STATUS_DENIED = 3,
+    CMD_STATUS_VALUE  = 4,
+};
 
-typedef struct _mac_list_t {
-	uint8_t	mode;	// mode_mac_list_e
-	uint8_t	count;
-	uint8_t	filtr;
-	uint8_t	res;
-	uint8_t	mac[MAC_MAX_SCAN_LIST][6];
-} mac_list_t;
+typedef struct {
+    uint8_t len;
+    uint8_t bytes[6];
+} mac_filter_entry_t;
 
-mac_list_t mac_list;
+typedef struct {
+    uint8_t count;
+    mac_filter_entry_t entry[FILTER_LIST_CAPACITY];
+} mac_filter_list_t;
+
+typedef struct {
+    mac_filter_list_t white_list;
+    mac_filter_list_t black_list;
+    uint8_t addr_filter_mask;
+    uint8_t uart_baud_index;
+    uint8_t power_index;
+    uint8_t xtal_cap;
+    uint8_t coded_min_units;
+    uint8_t scan_channels[3];
+    uint16_t scan_window_1m_units;
+    uint16_t scan_window_coded_units;
+    uint8_t scan_mode;
+    bool scan_running;
+} scanner_state_t;
+
+typedef struct {
+    bool running;
+    uint8_t phy;
+    uint16_t interval_units;
+    uint8_t adv_len;
+    uint8_t adv_data[TXADV_DATA_MAX_LEN];
+} txadv_state_t;
+
+enum {
+    CONN_STATE_IDLE = 0,
+    CONN_STATE_CONNECTING = 1,
+    CONN_STATE_CONNECTED = 2,
+};
+
+typedef struct {
+    uint8_t state;
+    uint8_t peer_addr_type;
+    uint8_t requested_phy;
+    uint16_t interval_units;
+    esp_bd_addr_t peer_addr;
+} conn_runtime_t;
+
+static const uint32_t s_uart_baud_rates[UART_BAUD_RATE_COUNT] = {
+    2000000,
+    921600,
+    115200,
+};
+
+static scanner_state_t s_state = {
+    .addr_filter_mask = 0,
+    .uart_baud_index = 0,
+    .power_index = ESP_PWR_LVL_P3,
+    .xtal_cap = 0xFF,
+    .coded_min_units = 3,
+    .scan_channels = {37, 38, 39},
+    .scan_window_1m_units = 48,
+    .scan_window_coded_units = 48,
+    .scan_mode = 0x03,
+    .scan_running = false,
+};
+
+static txadv_state_t s_txadv = {0};
+static conn_runtime_t s_conn = {
+    .state = CONN_STATE_IDLE,
+};
+
+static esp_timer_handle_t s_board_led_timer = NULL;
+static volatile uint8_t s_board_led_idle_level = BOARD_LED_IDLE_LEVEL;
+static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
+static SemaphoreHandle_t s_gap_sync_sem = NULL;
+static volatile esp_bt_status_t s_gap_sync_status = ESP_BT_STATUS_SUCCESS;
 
 #define USE_TXT_OUT 0
-#define USE_CONNECT 0
+#define USE_CONNECT 1
 
 #define GATTC_TAG             "SEC_GATTC_DEMO"
 #define REMOTE_SERVICE_UUID   0x00FF
@@ -92,8 +227,13 @@ static esp_gattc_descr_elem_t *descr_elem_result = NULL;
 ///Declare static functions
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
+static void stop_scan_if_running(void);
 #if USE_CONNECT
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
+static void clear_conn_runtime(void);
+static void send_conn_response(uint8_t status);
+static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint8_t *value, uint16_t value_len);
+static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr);
 
 static esp_bt_uuid_t remote_filter_service_uuid = {
     .len = ESP_UUID_LEN_16,
@@ -102,7 +242,6 @@ static esp_bt_uuid_t remote_filter_service_uuid = {
 
 static bool connect = false;
 static bool get_service = false;
-static const char remote_device_name[] = "ESP_BLE50_SERVER";
 #endif
 
 #if USE_TXT_OUT
@@ -116,13 +255,13 @@ static esp_ble_ext_scan_params_t ext_scan_params = {
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
     .scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE,
-    .cfg_mask = ESP_BLE_GAP_EXT_SCAN_CFG_CODE_MASK, // | ESP_BLE_GAP_EXT_SCAN_CFG_UNCODE_MASK,
-    .uncoded_cfg = {BLE_SCAN_TYPE_PASSIVE, 40, 40},
-    .coded_cfg = {BLE_SCAN_TYPE_PASSIVE, 40, 40},
+    .cfg_mask = ESP_BLE_GAP_EXT_SCAN_CFG_UNCODE_MASK | ESP_BLE_GAP_EXT_SCAN_CFG_CODE_MASK,
+    .uncoded_cfg = {BLE_SCAN_TYPE_PASSIVE, 48, 48},
+    .coded_cfg = {BLE_SCAN_TYPE_PASSIVE, 48, 48},
 };
 
 #if USE_CONNECT
-const esp_ble_gap_conn_params_t phy_1m_conn_params = {
+const esp_ble_conn_params_t phy_1m_conn_params = {
     .scan_interval = 0x40,
     .scan_window = 0x40,
     .interval_min = 320,
@@ -132,7 +271,7 @@ const esp_ble_gap_conn_params_t phy_1m_conn_params = {
     .min_ce_len  = 0,
     .max_ce_len = 0,
 };
-const esp_ble_gap_conn_params_t phy_2m_conn_params = {
+const esp_ble_conn_params_t phy_2m_conn_params = {
     .scan_interval = 0x40,
     .scan_window = 0x40,
     .interval_min = 320,
@@ -142,7 +281,7 @@ const esp_ble_gap_conn_params_t phy_2m_conn_params = {
     .min_ce_len  = 0,
     .max_ce_len = 0,
 };
-const esp_ble_gap_conn_params_t phy_coded_conn_params = {
+const esp_ble_conn_params_t phy_coded_conn_params = {
     .scan_interval = 0x40,
     .scan_window = 0x40,
     .interval_min = 320, // 306-> 362Kbps
@@ -274,23 +413,40 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     case ESP_GATTC_OPEN_EVT:
         if (param->open.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "open failed, error status = %x", p_data->open.status);
+            clear_conn_runtime();
+            send_conn_response(CMD_STATUS_DENIED);
             break;
         }
         ESP_LOGI(GATTC_TAG, "open success");
+        s_conn.state = CONN_STATE_CONNECTED;
         gl_profile_tab[PROFILE_A_APP_ID].conn_id = p_data->open.conn_id;
+        gl_profile_tab[PROFILE_A_APP_ID].service_start_handle = INVALID_HANDLE;
+        gl_profile_tab[PROFILE_A_APP_ID].service_end_handle = INVALID_HANDLE;
+        gl_profile_tab[PROFILE_A_APP_ID].notify_char_handle = INVALID_HANDLE;
         memcpy(gl_profile_tab[PROFILE_A_APP_ID].remote_bda, p_data->open.remote_bda, sizeof(esp_bd_addr_t));
         ESP_LOGI(GATTC_TAG, "REMOTE BDA:");
-        esp_log_buffer_hex(GATTC_TAG, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, sizeof(esp_bd_addr_t));
+        ESP_LOG_BUFFER_HEX(GATTC_TAG, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, sizeof(esp_bd_addr_t));
+        send_conn_response(CMD_STATUS_OK);
         esp_err_t mtu_ret = esp_ble_gattc_send_mtu_req (gattc_if, p_data->open.conn_id);
         if (mtu_ret){
             ESP_LOGE(GATTC_TAG, "config MTU error, error code = %x", mtu_ret);
+            esp_err_t search_ret = esp_ble_gattc_search_service(gattc_if, p_data->open.conn_id, &remote_filter_service_uuid);
+            if (search_ret != ESP_OK) {
+                ESP_LOGE(GATTC_TAG, "search service request failed, error code = %x", search_ret);
+            }
         }
         break;
     case ESP_GATTC_CFG_MTU_EVT:
         if (param->cfg_mtu.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG,"config mtu failed, error status = %x", param->cfg_mtu.status);
+            send_conn_response(CMD_STATUS_OK);
+            break;
         }
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_CFG_MTU_EVT, Status %d, MTU %d, conn_id %d", param->cfg_mtu.status, param->cfg_mtu.mtu, param->cfg_mtu.conn_id);
+        esp_err_t search_ret = esp_ble_gattc_search_service(gattc_if, param->cfg_mtu.conn_id, &remote_filter_service_uuid);
+        if (search_ret != ESP_OK) {
+            ESP_LOGE(GATTC_TAG, "search service request failed, error code = %x", search_ret);
+        }
         break;
     case ESP_GATTC_DIS_SRVC_CMPL_EVT:
         if (param->dis_srvc_cmpl.status != ESP_GATT_OK){
@@ -298,7 +454,6 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             break;
         }
         ESP_LOGI(GATTC_TAG, "discover service complete conn_id %d", param->dis_srvc_cmpl.conn_id);
-        esp_ble_gattc_search_service(gattc_if, param->cfg_mtu.conn_id, &remote_filter_service_uuid);
         break;
     case ESP_GATTC_SEARCH_RES_EVT: {
         ESP_LOGI(GATTC_TAG, "SEARCH RES: conn_id = %x is primary service %d", p_data->search_res.conn_id, p_data->search_res.is_primary);
@@ -359,7 +514,9 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
 
                         for (int i = 0; i < count; ++i)
                         {
-                            if (char_elem_result[i].uuid.len == ESP_UUID_LEN_16  && (char_elem_result[i].properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY))
+                            if (char_elem_result[i].uuid.len == ESP_UUID_LEN_16
+                                && char_elem_result[i].uuid.uuid.uuid16 == REMOTE_NOTIFY_UUID
+                                && (char_elem_result[i].properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY))
                             {
                                 gl_profile_tab[PROFILE_A_APP_ID].notify_char_handle = char_elem_result[i].char_handle;
                                 esp_ble_gattc_register_for_notify (gattc_if,
@@ -375,10 +532,13 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             }
         }
 
+        send_conn_response(CMD_STATUS_OK);
+
         break;
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
         if (p_data->reg_for_notify.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "reg for notify failed, error status = %x", p_data->reg_for_notify.status);
+            send_conn_response(CMD_STATUS_DENIED);
             break;
         }
 
@@ -434,11 +594,15 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 descr_elem_result = NULL;
             }
 
+        send_conn_response(CMD_STATUS_OK);
+
         break;
     }
     case ESP_GATTC_NOTIFY_EVT:
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_NOTIFY_EVT, receive notify value:");
-        esp_log_buffer_hex(GATTC_TAG, p_data->notify.value, p_data->notify.value_len);
+        ESP_LOG_BUFFER_HEX(GATTC_TAG, p_data->notify.value, p_data->notify.value_len);
+        send_rxdata_response(p_data->notify.is_notify, p_data->notify.handle,
+                             p_data->notify.value, p_data->notify.value_len);
         break;
     case ESP_GATTC_WRITE_DESCR_EVT:
         if (p_data->write.status != ESP_GATT_OK){
@@ -451,7 +615,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         esp_bd_addr_t bda;
         memcpy(bda, p_data->srvc_chg.remote_bda, sizeof(esp_bd_addr_t));
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_SRVC_CHG_EVT, bd_addr:");
-        esp_log_buffer_hex(GATTC_TAG, bda, sizeof(esp_bd_addr_t));
+        ESP_LOG_BUFFER_HEX(GATTC_TAG, bda, sizeof(esp_bd_addr_t));
         break;
     }
     case ESP_GATTC_WRITE_CHAR_EVT:
@@ -461,10 +625,19 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         }
         ESP_LOGI(GATTC_TAG, "Write char success ");
         break;
+    case ESP_GATTC_CANCEL_OPEN_EVT:
+        if (p_data->cancel_open.status == ESP_GATT_OK) {
+            clear_conn_runtime();
+            send_conn_response(CMD_STATUS_OK);
+        } else {
+            ESP_LOGE(GATTC_TAG, "cancel open failed, error status = %x", p_data->cancel_open.status);
+            send_conn_response(CMD_STATUS_DENIED);
+        }
+        break;
     case ESP_GATTC_DISCONNECT_EVT:
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_DISCONNECT_EVT, reason = 0x%x", p_data->disconnect.reason);
-        connect = false;
-        get_service = false;
+        clear_conn_runtime();
+        send_conn_response(CMD_STATUS_OK);
         break;
 #endif
     default:
@@ -475,41 +648,660 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
 
 //#define MYFIFO_BLK_SIZE		(EXTADV_RPT_DATA_LEN_MAX + HEAD_CRC_ADD_LEN) // 229+12 = 241 bytes
 //MYFIFO_INIT(ad_fifo, MYFIFO_BLK_SIZE, 4); 	// (229+12)*4 = 964 bytes + sizeof(my_fifo_t)
-mac_list_t mac_list;
-
-void send_resp(uint8_t cmd, uint8_t id, uint8_t *pmac, uint8_t len) {
-	uint8_t s[HEAD_CRC_ADD_LEN];
-	memset(s, 0, HEAD_CRC_ADD_LEN);
-	//s[0] = 0;
-	s[1] = cmd; // rssi
-	s[2] = id; // ev type
-	s[3] = len; // addr type
-	s[4] = 0xff; // phy = 0xff -> cmd response
-	if(len)
-		memcpy(&s[5], pmac, (len > 6)? 6 : len);
-	len = HEAD_CRC_ADD_LEN - 2;
-	uint16_t crc = crcFast(s, len);
-	s[len++] = crc;
-	s[len++] = crc >> 8;
-    usb_serial_jtag_write_bytes(s, len, 5 / portTICK_PERIOD_MS);
+static void flush_serial_frame(const uint8_t *frame, size_t len)
+{
+    usb_serial_jtag_write_bytes(frame, len, 5 / portTICK_PERIOD_MS);
     usb_serial_jtag_ll_txfifo_flush();
 }
 
+static void send_frame(uint8_t payload_len,
+                       uint8_t byte1,
+                       uint8_t byte2,
+                       uint8_t byte3,
+                       uint8_t byte4,
+                       const uint8_t data_field[FRAME_DATA_LEN],
+                       const uint8_t *payload)
+{
+    const size_t frame_len = HEAD_CRC_ADD_LEN + payload_len;
+    uint8_t frame[HEAD_CRC_ADD_LEN + DEBUG_PAYLOAD_MAX_LEN];
 
-static int chk_mac(uint8_t *pmac) {
-	int ret = 0;
-	if(mac_list.count) {
-		for(int i = 0; i < mac_list.count; i++) {
-			if(memcmp(&mac_list.mac[i], pmac, 6) == 0) {
-				ret = 1;
-				break;
-			}
-		}
-		if(mac_list.mode == BALCK_LIST)
-			ret = !ret;
-	} else
-		ret = 1;
-	return ret;
+    if (payload_len > DEBUG_PAYLOAD_MAX_LEN) {
+        payload_len = DEBUG_PAYLOAD_MAX_LEN;
+    }
+
+    memset(frame, 0, sizeof(frame));
+    frame[0] = payload_len;
+    frame[1] = byte1;
+    frame[2] = byte2;
+    frame[3] = byte3;
+    frame[4] = byte4;
+    if (data_field != NULL) {
+        memcpy(&frame[5], data_field, FRAME_DATA_LEN);
+    }
+    if (payload_len != 0 && payload != NULL) {
+        memcpy(&frame[11], payload, payload_len);
+    }
+
+    uint16_t crc = crcFast(frame, frame_len - 2);
+    frame[frame_len - 2] = crc & 0xFF;
+    frame[frame_len - 1] = crc >> 8;
+    flush_serial_frame(frame, frame_len);
+}
+
+static void send_cmd_response(uint8_t cmd, uint8_t id, const uint8_t *data, uint8_t len)
+{
+    uint8_t data_field[FRAME_DATA_LEN] = {0};
+
+    if (data != NULL && len != 0) {
+        memcpy(data_field, data, len > FRAME_DATA_LEN ? FRAME_DATA_LEN : len);
+    }
+    send_frame(0, cmd, id, len, 0xFF, data_field, NULL);
+}
+
+static void send_cmd_response_bytes(uint8_t cmd, uint8_t id, const uint8_t *data, uint8_t len)
+{
+    uint8_t data_field[FRAME_DATA_LEN] = {0};
+    uint8_t effective_len = len;
+    uint8_t payload_len = 0;
+
+    if (effective_len > FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN) {
+        effective_len = FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN;
+    }
+    if (data != NULL && effective_len != 0) {
+        memcpy(data_field, data, effective_len > FRAME_DATA_LEN ? FRAME_DATA_LEN : effective_len);
+    }
+    if (effective_len > FRAME_DATA_LEN) {
+        payload_len = effective_len - FRAME_DATA_LEN;
+    }
+
+    send_frame(payload_len, cmd, id, effective_len, 0xFF, data_field,
+               payload_len != 0 ? data + FRAME_DATA_LEN : NULL);
+}
+
+static void clear_gap_sync_signal(void)
+{
+    if (s_gap_sync_sem == NULL) {
+        return;
+    }
+
+    while (xSemaphoreTake(s_gap_sync_sem, 0) == pdTRUE) {
+    }
+}
+
+static bool wait_gap_sync_signal(esp_bt_status_t *status)
+{
+    if (s_gap_sync_sem == NULL) {
+        return false;
+    }
+    if (xSemaphoreTake(s_gap_sync_sem, pdMS_TO_TICKS(GAP_SYNC_TIMEOUT_MS)) != pdTRUE) {
+        return false;
+    }
+    if (status != NULL) {
+        *status = s_gap_sync_status;
+    }
+    return true;
+}
+
+static void send_debug_print(const char *fmt, ...)
+{
+    uint8_t data_field[FRAME_DATA_LEN] = {0};
+    char payload[DEBUG_PAYLOAD_MAX_LEN + 1];
+    va_list args;
+
+    va_start(args, fmt);
+    int written = vsnprintf(payload, sizeof(payload), fmt, args);
+    va_end(args);
+    if (written <= 0) {
+        return;
+    }
+
+    if (written > DEBUG_PAYLOAD_MAX_LEN) {
+        written = DEBUG_PAYLOAD_MAX_LEN;
+    }
+    send_frame((uint8_t)written, CMD_ID_PRNT, 0xFF, 0xFF, 0xFF, data_field, (const uint8_t *)payload);
+}
+
+static void clear_txadv_state(void)
+{
+    s_txadv.running = false;
+    s_txadv.phy = 0;
+    s_txadv.interval_units = 0;
+    s_txadv.adv_len = 0;
+    memset(s_txadv.adv_data, 0, sizeof(s_txadv.adv_data));
+}
+
+static void fill_txadv_response(uint8_t *resp)
+{
+    memset(resp, 0, FRAME_DATA_LEN);
+    if (s_txadv.running) {
+        resp[0] = s_txadv.phy + 1;
+    }
+    resp[1] = s_txadv.interval_units & 0xFF;
+    resp[2] = s_txadv.interval_units >> 8;
+    resp[3] = s_txadv.adv_len;
+}
+
+static esp_ble_gap_ext_adv_params_t txadv_params_for(uint8_t phy, uint16_t interval_units)
+{
+    esp_ble_gap_ext_adv_params_t params = {
+        .interval_min = interval_units,
+        .interval_max = interval_units,
+        .channel_map = ADV_CHNL_ALL,
+        .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+        .filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+        .tx_power = EXT_ADV_TX_PWR_NO_PREFERENCE,
+        .max_skip = 0,
+        .sid = TXADV_INSTANCE,
+        .scan_req_notif = false,
+    };
+
+    switch (phy) {
+    case 0:
+        params.type = ESP_BLE_GAP_SET_EXT_ADV_PROP_LEGACY_NONCONN;
+        params.primary_phy = ESP_BLE_GAP_PRI_PHY_1M;
+        params.secondary_phy = ESP_BLE_GAP_PHY_1M;
+        break;
+    case 1:
+        params.type = ESP_BLE_GAP_SET_EXT_ADV_PROP_NONCONN_NONSCANNABLE_UNDIRECTED;
+        params.primary_phy = ESP_BLE_GAP_PRI_PHY_1M;
+        params.secondary_phy = ESP_BLE_GAP_PHY_1M;
+        break;
+    case 2:
+    default:
+        params.type = ESP_BLE_GAP_SET_EXT_ADV_PROP_NONCONN_NONSCANNABLE_UNDIRECTED;
+        params.primary_phy = ESP_BLE_GAP_PRI_PHY_CODED;
+        params.secondary_phy = ESP_BLE_GAP_PHY_CODED;
+        break;
+    }
+
+    return params;
+}
+
+static bool stop_txadv_if_running(void)
+{
+    static const uint8_t txadv_instance = TXADV_INSTANCE;
+    esp_bt_status_t status = ESP_BT_STATUS_FAIL;
+
+    if (!s_txadv.running) {
+        return true;
+    }
+
+    clear_gap_sync_signal();
+    s_gap_sync_status = ESP_BT_STATUS_FAIL;
+    if (esp_ble_gap_ext_adv_stop(1, &txadv_instance) != ESP_OK) {
+        return false;
+    }
+    if (!wait_gap_sync_signal(&status) || status != ESP_BT_STATUS_SUCCESS) {
+        return false;
+    }
+
+    clear_txadv_state();
+    return true;
+}
+
+static bool start_txadv(uint8_t phy, uint16_t interval_units, const uint8_t *adv_data, uint8_t adv_len)
+{
+    static const esp_ble_gap_ext_adv_t txadv_enable = {
+        .instance = TXADV_INSTANCE,
+        .duration = 0,
+        .max_events = 0,
+    };
+    esp_bt_status_t status = ESP_BT_STATUS_FAIL;
+    esp_ble_gap_ext_adv_params_t params = txadv_params_for(phy, interval_units);
+
+    if (!stop_txadv_if_running()) {
+        return false;
+    }
+
+    clear_gap_sync_signal();
+    s_gap_sync_status = ESP_BT_STATUS_FAIL;
+    if (esp_ble_gap_ext_adv_set_params(TXADV_INSTANCE, &params) != ESP_OK) {
+        return false;
+    }
+    if (!wait_gap_sync_signal(&status) || status != ESP_BT_STATUS_SUCCESS) {
+        return false;
+    }
+
+    clear_gap_sync_signal();
+    s_gap_sync_status = ESP_BT_STATUS_FAIL;
+    if (esp_ble_gap_config_ext_adv_data_raw(TXADV_INSTANCE, adv_len, adv_len != 0 ? adv_data : NULL) != ESP_OK) {
+        return false;
+    }
+    if (!wait_gap_sync_signal(&status) || status != ESP_BT_STATUS_SUCCESS) {
+        return false;
+    }
+
+    clear_gap_sync_signal();
+    s_gap_sync_status = ESP_BT_STATUS_FAIL;
+    if (esp_ble_gap_ext_adv_start(1, &txadv_enable) != ESP_OK) {
+        return false;
+    }
+    if (!wait_gap_sync_signal(&status) || status != ESP_BT_STATUS_SUCCESS) {
+        return false;
+    }
+
+    s_txadv.running = true;
+    s_txadv.phy = phy;
+    s_txadv.interval_units = interval_units;
+    s_txadv.adv_len = adv_len;
+    memset(s_txadv.adv_data, 0, sizeof(s_txadv.adv_data));
+    if (adv_len != 0) {
+        memcpy(s_txadv.adv_data, adv_data, adv_len);
+    }
+    return true;
+}
+
+static void clear_conn_runtime(void)
+{
+    memset(&s_conn, 0, sizeof(s_conn));
+    s_conn.state = CONN_STATE_IDLE;
+    connect = false;
+    get_service = false;
+    gl_profile_tab[PROFILE_A_APP_ID].conn_id = 0;
+    gl_profile_tab[PROFILE_A_APP_ID].service_start_handle = INVALID_HANDLE;
+    gl_profile_tab[PROFILE_A_APP_ID].service_end_handle = INVALID_HANDLE;
+    gl_profile_tab[PROFILE_A_APP_ID].notify_char_handle = INVALID_HANDLE;
+    memset(gl_profile_tab[PROFILE_A_APP_ID].remote_bda, 0, sizeof(esp_bd_addr_t));
+}
+
+static void fill_conn_response(uint8_t *resp)
+{
+    uint16_t handle = gl_profile_tab[PROFILE_A_APP_ID].notify_char_handle;
+
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = s_conn.state;
+    resp[1] = s_conn.peer_addr_type;
+    resp[2] = handle & 0xFF;
+    resp[3] = handle >> 8;
+    resp[4] = s_conn.interval_units & 0xFF;
+    resp[5] = s_conn.interval_units >> 8;
+}
+
+static void send_conn_response(uint8_t status)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+
+    fill_conn_response(resp);
+    send_cmd_response(CMD_ID_CONN, status, resp, FRAME_DATA_LEN);
+}
+
+static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint8_t *value, uint16_t value_len)
+{
+    uint8_t resp[FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN] = {0};
+    uint8_t opcode = is_notify ? 0x1B : 0x1D;
+    uint8_t truncated_len = value_len;
+
+    if (truncated_len > FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN - 3) {
+        truncated_len = FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN - 3;
+    }
+
+    resp[0] = att_handle & 0xFF;
+    resp[1] = att_handle >> 8;
+    resp[2] = truncated_len;
+    if (truncated_len != 0 && value != NULL) {
+        memcpy(&resp[3], value, truncated_len);
+    }
+
+    send_cmd_response_bytes(CMD_ID_RXDATA, opcode, resp, 3 + truncated_len);
+}
+
+static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr)
+{
+    esp_ble_gatt_creat_conn_params_t create_conn = {
+        .remote_addr_type = (esp_ble_addr_type_t)peer_addr_type,
+        .is_direct = true,
+        .is_aux = phy != 0,
+        .own_addr_type = (esp_ble_addr_type_t)0xFF,
+        .phy_mask = phy != 0 ? ESP_BLE_GAP_PHY_CODED_PREF_MASK : ESP_BLE_GAP_PHY_1M_PREF_MASK,
+        .phy_1m_conn_params = &phy_1m_conn_params,
+        .phy_2m_conn_params = NULL,
+        .phy_coded_conn_params = &phy_coded_conn_params,
+    };
+
+    if (gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE || peer_addr == NULL) {
+        return false;
+    }
+
+    clear_conn_runtime();
+    s_conn.state = CONN_STATE_CONNECTING;
+    s_conn.peer_addr_type = peer_addr_type;
+    s_conn.requested_phy = phy;
+    s_conn.interval_units = phy != 0 ? phy_coded_conn_params.interval_max : phy_1m_conn_params.interval_max;
+    memcpy(s_conn.peer_addr, peer_addr, sizeof(esp_bd_addr_t));
+    memcpy(create_conn.remote_bda, peer_addr, sizeof(esp_bd_addr_t));
+    connect = true;
+
+    stop_scan_if_running();
+    return esp_ble_gattc_enh_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if, &create_conn) == ESP_OK;
+}
+
+static inline bool is_led_pin(uint8_t pin_code)
+{
+    return pin_code == (uint8_t)BOARD_LED_GPIO;
+}
+
+static inline bool is_analog_gpio(uint8_t pin_code)
+{
+    switch (pin_code) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline uint16_t board_mask(void)
+{
+    return GPIO_BOARD_LED_BIT;
+}
+
+static bool is_supported_gpio(uint8_t pin_code);
+
+static bool analog_channel_for_gpio(uint8_t pin_code, adc_channel_t *channel)
+{
+    if (channel == NULL) {
+        return false;
+    }
+
+    switch (pin_code) {
+    case 0:
+        *channel = ADC_CHANNEL_0;
+        return true;
+    case 1:
+        *channel = ADC_CHANNEL_1;
+        return true;
+    case 2:
+        *channel = ADC_CHANNEL_2;
+        return true;
+    case 3:
+        *channel = ADC_CHANNEL_3;
+        return true;
+    case 4:
+        *channel = ADC_CHANNEL_4;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void init_adc_inputs(void)
+{
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = ADC_UNIT_1,
+    };
+    adc_oneshot_chan_cfg_t channel_config = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    const uint8_t analog_pins[] = {0, 1, 2, 3, 4};
+
+    if (adc_oneshot_new_unit(&init_config, &s_adc1_handle) != ESP_OK) {
+        s_adc1_handle = NULL;
+        ESP_LOGW(GATTC_TAG, "ADC oneshot init failed; analog GPIO reads disabled");
+        return;
+    }
+
+    for (size_t index = 0; index < sizeof(analog_pins) / sizeof(analog_pins[0]); ++index) {
+        adc_channel_t channel;
+
+        if (!analog_channel_for_gpio(analog_pins[index], &channel)) {
+            continue;
+        }
+        if (adc_oneshot_config_channel(s_adc1_handle, channel, &channel_config) != ESP_OK) {
+            ESP_LOGW(GATTC_TAG, "ADC channel config failed for GPIO%u", analog_pins[index]);
+        }
+    }
+}
+
+static bool read_gpio_analog(uint8_t pin_code, uint16_t *raw_value)
+{
+    int raw = 0;
+    adc_channel_t channel;
+
+    if (raw_value == NULL || s_adc1_handle == NULL || !analog_channel_for_gpio(pin_code, &channel)) {
+        return false;
+    }
+    if (adc_oneshot_read(s_adc1_handle, channel, &raw) != ESP_OK) {
+        return false;
+    }
+    if (raw < 0) {
+        raw = 0;
+    }
+    *raw_value = (uint16_t)raw;
+    return true;
+}
+
+static inline void board_led_set_duty(uint32_t duty)
+{
+    // Two register writes — hardware PWM keeps running autonomously,
+    // so this has no measurable impact on the BLE RX path.
+    ledc_set_duty(LED_PWM_MODE, LED_PWM_CHANNEL, duty);
+    ledc_update_duty(LED_PWM_MODE, LED_PWM_CHANNEL);
+}
+
+static inline uint32_t board_led_idle_duty(void)
+{
+    // s_board_led_idle_level encodes the digital idle level set via the GPIO
+    // command from the host: 1 == HIGH (active-low LED OFF), 0 == LOW (LED ON).
+    return s_board_led_idle_level ? LED_DUTY_OFF : LED_DUTY_BRIGHT;
+}
+
+static void restore_board_led_idle_level(void *arg)
+{
+    (void)arg;
+    board_led_set_duty(board_led_idle_duty());
+}
+
+static void set_board_led_idle_level(uint8_t level)
+{
+    s_board_led_idle_level = level ? 1 : 0;
+    if (s_board_led_timer != NULL) {
+        esp_timer_stop(s_board_led_timer);
+    }
+    board_led_set_duty(board_led_idle_duty());
+}
+
+// Pulse the LED to indicate adv reception. When the host has configured the
+// LED to be off in idle (idle_level == 1, the default), the pulse uses two
+// brightness levels chosen by primary PHY:
+//   - Coded PHY (primary_phy == 3): LED_DUTY_BRIGHT (full intensity)
+//   - everything else (1M, 2M, legacy):     LED_DUTY_DIM    (~10% intensity)
+// When the user has forced the LED on in idle (idle_level == 0), the pulse
+// briefly dims to LED_DUTY_DIM regardless of PHY so the activity is still
+// visible against the bright background.
+static void indicate_board_activity(uint8_t primary_phy)
+{
+    uint32_t pulse_duty;
+    if (s_board_led_idle_level == 0) {
+        // Idle is fully ON — pulse must contrast by dimming briefly.
+        pulse_duty = LED_DUTY_DIM;
+    } else {
+        pulse_duty = (primary_phy == 3) ? LED_DUTY_BRIGHT : LED_DUTY_DIM;
+    }
+
+    board_led_set_duty(pulse_duty);
+    if (s_board_led_timer != NULL) {
+        esp_timer_stop(s_board_led_timer);
+        esp_timer_start_once(s_board_led_timer, BOARD_LED_PULSE_US);
+    }
+}
+
+static void init_board_led_pwm(void)
+{
+    ledc_timer_config_t timer_cfg = {
+        .speed_mode = LED_PWM_MODE,
+        .timer_num = LED_PWM_TIMER,
+        .duty_resolution = LED_PWM_RES_BITS,
+        .freq_hz = LED_PWM_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_cfg));
+
+    ledc_channel_config_t ch_cfg = {
+        .speed_mode = LED_PWM_MODE,
+        .channel = LED_PWM_CHANNEL,
+        .timer_sel = LED_PWM_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = BOARD_LED_GPIO,
+        .duty = LED_DUTY_OFF,
+        .hpoint = 0,
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ch_cfg));
+}
+
+static bool is_supported_gpio(uint8_t pin_code)
+{
+    switch (pin_code) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 20:
+    case 21:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool apply_gpio_config(uint8_t pin_code, uint8_t input_en, uint8_t output_en, uint8_t pull)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = BIT64(pin_code),
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    if (!is_supported_gpio(pin_code)) {
+        return false;
+    }
+
+    if (input_en && output_en) {
+        io_conf.mode = GPIO_MODE_INPUT_OUTPUT;
+    } else if (output_en) {
+        io_conf.mode = GPIO_MODE_OUTPUT;
+    } else if (input_en) {
+        io_conf.mode = GPIO_MODE_INPUT;
+    }
+
+    switch (pull) {
+    case 1:
+    case 3:
+        io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        break;
+    case 2:
+        io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+        break;
+    default:
+        break;
+    }
+
+    return gpio_config(&io_conf) == ESP_OK;
+}
+
+static uint16_t scan_coded_floor_units(void)
+{
+    return (uint16_t)s_state.coded_min_units * CODED_SCAN_UNIT_10MS;
+}
+
+static uint16_t clamp_scan_window_units(uint16_t units)
+{
+    return units < 10 ? 10 : units;
+}
+
+static uint8_t total_filter_count(void)
+{
+    return s_state.white_list.count + s_state.black_list.count;
+}
+
+static void clear_filter_lists(void)
+{
+    memset(&s_state.white_list, 0, sizeof(s_state.white_list));
+    memset(&s_state.black_list, 0, sizeof(s_state.black_list));
+}
+
+static uint8_t add_filter_entry(mac_filter_list_t *list, const uint8_t *wire_mac, size_t wire_len)
+{
+    mac_filter_entry_t *entry;
+
+    if (wire_len == 0 || wire_len > FRAME_DATA_LEN || list->count >= FILTER_LIST_CAPACITY) {
+        return list->count;
+    }
+
+    entry = &list->entry[list->count++];
+    entry->len = wire_len;
+    memset(entry->bytes, 0, sizeof(entry->bytes));
+    for (size_t i = 0; i < wire_len; ++i) {
+        entry->bytes[i] = wire_mac[wire_len - 1 - i];
+    }
+    return list->count;
+}
+
+static bool filter_list_matches(const mac_filter_list_t *list, const uint8_t *mac)
+{
+    for (size_t i = 0; i < list->count; ++i) {
+        if (memcmp(mac, list->entry[i].bytes, list->entry[i].len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool chk_mac(const uint8_t *mac)
+{
+    if (s_state.white_list.count != 0 && !filter_list_matches(&s_state.white_list, mac)) {
+        return false;
+    }
+    if (s_state.black_list.count != 0 && filter_list_matches(&s_state.black_list, mac)) {
+        return false;
+    }
+    return true;
+}
+
+static void refresh_scan_params(void)
+{
+    const uint8_t flg = s_state.scan_mode;
+    uint16_t window_1m = clamp_scan_window_units(s_state.scan_window_1m_units);
+    uint16_t window_coded = clamp_scan_window_units(s_state.scan_window_coded_units);
+    uint16_t coded_floor = scan_coded_floor_units();
+    if (window_coded < coded_floor) {
+        window_coded = coded_floor;
+    }
+
+    ext_scan_params.cfg_mask = flg & 0x03;
+    ext_scan_params.own_addr_type = (flg >> 6) & 0x03;
+    ext_scan_params.scan_duplicate = ((flg >> 3) & 0x01) ? BLE_SCAN_DUPLICATE_ENABLE : BLE_SCAN_DUPLICATE_DISABLE;
+    ext_scan_params.uncoded_cfg.scan_type = ((flg >> 2) & 0x01) ? BLE_SCAN_TYPE_ACTIVE : BLE_SCAN_TYPE_PASSIVE;
+    ext_scan_params.coded_cfg.scan_type = ext_scan_params.uncoded_cfg.scan_type;
+    ext_scan_params.uncoded_cfg.scan_interval = window_1m;
+    ext_scan_params.uncoded_cfg.scan_window = window_1m;
+    ext_scan_params.coded_cfg.scan_interval = window_coded;
+    ext_scan_params.coded_cfg.scan_window = window_coded;
+
+    s_state.scan_window_1m_units = window_1m;
+    s_state.scan_window_coded_units = window_coded;
+    s_state.addr_filter_mask = (flg >> 4) & 0x03;
+}
+
+static void stop_scan_if_running(void)
+{
+    if (s_state.scan_running) {
+        esp_ble_gap_stop_ext_scan();
+        s_state.scan_running = false;
+    }
 }
 
 
@@ -532,8 +1324,9 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             ESP_LOGE(GATTC_TAG, "extend scan parameters set failed, error status = %x", param->set_ext_scan_params.status);
             break;
         }
-        //the unit of the duration is second
-        esp_ble_gap_start_ext_scan(EXT_SCAN_DURATION, EXT_SCAN_PERIOD);
+        if ((s_state.scan_mode & 0x03) != 0) {
+            esp_ble_gap_start_ext_scan(EXT_SCAN_DURATION, EXT_SCAN_PERIOD);
+        }
         break;
     }
     case ESP_GAP_BLE_EXT_SCAN_START_COMPLETE_EVT:
@@ -541,7 +1334,32 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             ESP_LOGE(GATTC_TAG, "scan start failed, error status = %x", param->scan_start_cmpl.status);
             break;
         }
+        s_state.scan_running = true;
         ESP_LOGI(GATTC_TAG, "Scan start success");
+        break;
+    case ESP_GAP_BLE_EXT_ADV_SET_PARAMS_COMPLETE_EVT:
+        s_gap_sync_status = param->ext_adv_set_params.status;
+        if (s_gap_sync_sem != NULL) {
+            xSemaphoreGive(s_gap_sync_sem);
+        }
+        break;
+    case ESP_GAP_BLE_EXT_ADV_DATA_SET_COMPLETE_EVT:
+        s_gap_sync_status = param->ext_adv_data_set.status;
+        if (s_gap_sync_sem != NULL) {
+            xSemaphoreGive(s_gap_sync_sem);
+        }
+        break;
+    case ESP_GAP_BLE_EXT_ADV_START_COMPLETE_EVT:
+        s_gap_sync_status = param->ext_adv_start.status;
+        if (s_gap_sync_sem != NULL) {
+            xSemaphoreGive(s_gap_sync_sem);
+        }
+        break;
+    case ESP_GAP_BLE_EXT_ADV_STOP_COMPLETE_EVT:
+        s_gap_sync_status = param->ext_adv_stop.status;
+        if (s_gap_sync_sem != NULL) {
+            xSemaphoreGive(s_gap_sync_sem);
+        }
         break;
 #if USE_CONNECT
     case ESP_GAP_BLE_PASSKEY_REQ_EVT:                           /* passkey request event */
@@ -650,13 +1468,13 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 #else
         int len = param->ext_adv_report.params.adv_data_len;
         if(len && len <= EXTADV_RPT_DATA_LEN_MAX
-        		&& chk_mac(param->ext_adv_report.params.addr)
-        		&& (param->ext_adv_report.params.addr_type & mac_list.filtr) == 0) {
+			&& chk_mac(param->ext_adv_report.params.addr)
+			&& (param->ext_adv_report.params.addr_type & s_state.addr_filter_mask) == 0) {
             out_buf[0] = len;
             out_buf[1] = param->ext_adv_report.params.rssi;
             out_buf[2] = param->ext_adv_report.params.event_type;
-            out_buf[3] = param->ext_adv_report.params.primary_phy | (param->ext_adv_report.params.secondly_phy << 4);
-            out_buf[4] = (param->ext_adv_report.params.addr_type & 0x0f) | (param->ext_adv_report.params.dir_addr_type << 4);
+            out_buf[3] = (param->ext_adv_report.params.addr_type & 0x0f) | (param->ext_adv_report.params.dir_addr_type << 4);
+            out_buf[4] = param->ext_adv_report.params.primary_phy | (param->ext_adv_report.params.secondly_phy << 4);
             //memcpy(&out_buf[5], param->ext_adv_report.params.addr, 6);
             out_buf[5] = param->ext_adv_report.params.addr[5];
             out_buf[6] = param->ext_adv_report.params.addr[4];
@@ -671,22 +1489,7 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 			out_buf[len++] = crc >> 8;
 		    usb_serial_jtag_write_bytes(out_buf, len, 5 / portTICK_PERIOD_MS);
 		    usb_serial_jtag_ll_txfifo_flush();
-        }
-#endif
-#if USE_CONNECT
-        if (!connect && strlen(remote_device_name) == adv_name_len && strncmp((char *)adv_name, remote_device_name, adv_name_len) == 0) {
-            connect = true;
-            esp_ble_gap_stop_ext_scan();
-            esp_log_buffer_hex("adv addr", param->ext_adv_report.params.addr, 6);
-            esp_log_buffer_char("adv name", adv_name, adv_name_len);
-            ESP_LOGI(GATTC_TAG, "Stop extend scan and create aux open, primary_phy %d secondary phy %d", param->ext_adv_report.params.primary_phy, param->ext_adv_report.params.secondly_phy);
-
-            esp_ble_gap_prefer_ext_connect_params_set(param->ext_adv_report.params.addr,
-                                                     ESP_BLE_GAP_PHY_1M_PREF_MASK | ESP_BLE_GAP_PHY_2M_PREF_MASK | ESP_BLE_GAP_PHY_CODED_PREF_MASK ,
-                                                     &phy_1m_conn_params, &phy_2m_conn_params, &phy_coded_conn_params);
-            esp_ble_gattc_aux_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
-                                    param->ext_adv_report.params.addr,
-                                    param->ext_adv_report.params.addr_type, true);
+                indicate_board_activity(param->ext_adv_report.params.primary_phy);
         }
 #endif
         break;
@@ -696,6 +1499,7 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             ESP_LOGE(GATTC_TAG, "extend Scan stop failed, error status = %x", param->ext_scan_stop.status);
             break;
         }
+        s_state.scan_running = false;
         ESP_LOGI(GATTC_TAG, "Stop extend scan successfully");
         break;
 
@@ -734,102 +1538,730 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
     } while (0);
 }
 
-uint8_t read_buf[32];
+static uint8_t read_buf[CMD_BUFFER_SIZE];
 
-static void io_task(void *arg) {
-//	uint8_t buf[HEAD_CRC_ADD_LEN];
-	usb_serial_jtag_driver_config_t usb_serial_config = {.tx_buffer_size = 2048,
-	                                                     .rx_buffer_size = 256 };
+static uint8_t current_power_index(void)
+{
+    esp_power_level_t level = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_SCAN);
+    if (level != ESP_PWR_LVL_INVALID) {
+        s_state.power_index = (uint8_t)level;
+    }
+    return s_state.power_index;
+}
+
+static void fill_gpio_response(uint8_t op, uint8_t pin_code, uint8_t *resp)
+{
+    uint16_t mask = board_mask();
+
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = op;
+    resp[1] = pin_code;
+    if (is_supported_gpio(pin_code)) {
+        if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+            resp[2] = s_board_led_idle_level ? 1 : 0;
+        } else {
+            resp[2] = gpio_get_level((gpio_num_t)pin_code) ? 1 : 0;
+        }
+    }
+    resp[3] = is_led_pin(pin_code) ? 1 : 0;
+    resp[4] = mask & 0xFF;
+    resp[5] = (mask >> 8) & 0xFF;
+}
+
+static void fill_gpio_analog_response(uint8_t pin_code, uint16_t raw_value, uint8_t *resp)
+{
+    uint16_t mask = board_mask();
+
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = GPIO_OP_ANALOG_READ;
+    resp[1] = pin_code;
+    resp[2] = raw_value & 0xFF;
+    resp[3] = raw_value >> 8;
+    resp[4] = mask & 0xFF;
+    resp[5] = (mask >> 8) & 0xFF;
+}
+
+static void fill_uart_response(uint8_t op, uint8_t *resp)
+{
+    uint32_t baud = s_uart_baud_rates[s_state.uart_baud_index];
+
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = op;
+    resp[1] = s_state.uart_baud_index;
+    resp[2] = UART_BAUD_RATE_COUNT;
+    resp[3] = baud & 0xFF;
+    resp[4] = (baud >> 8) & 0xFF;
+    resp[5] = (baud >> 16) & 0xFF;
+}
+
+static void fill_rfsdk_response(uint8_t *resp)
+{
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = current_power_index();
+    resp[1] = s_state.xtal_cap;
+    resp[2] = s_state.scan_channels[0];
+    resp[3] = s_state.scan_channels[1];
+    resp[4] = s_state.scan_channels[2];
+    resp[5] = s_state.coded_min_units;
+}
+
+static void fill_version_response(uint8_t *resp)
+{
+    memset(resp, 0, FRAME_DATA_LEN);
+    resp[0] = HW_VERSION;
+    resp[1] = 0x00;
+    resp[2] = 0x01;
+    resp[3] = ESP_IDF_VERSION_MAJOR;
+    resp[4] = ESP_IDF_VERSION_MINOR;
+    resp[5] = ESP_IDF_VERSION_PATCH;
+}
+
+static void handle_scan_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t echo[FRAME_DATA_LEN] = {0};
+    const int data_len = len - 3;
+    uint8_t flags;
+
+    if (data_len != 3 && data_len != 5) {
+        send_cmd_response(CMD_ID_SCAN, total_filter_count(), NULL, 0);
+        return;
+    }
+
+    flags = cmd_buf[1];
+    memcpy(echo, &cmd_buf[1], data_len > FRAME_DATA_LEN ? FRAME_DATA_LEN : data_len);
+    stop_scan_if_running();
+    s_state.scan_mode = flags;
+
+    if ((flags & 0x03) != 0) {
+        s_state.scan_window_1m_units = clamp_scan_window_units((uint16_t)(cmd_buf[2] | (cmd_buf[3] << 8)));
+        if (data_len == 5) {
+            uint16_t coded = (uint16_t)(cmd_buf[4] | (cmd_buf[5] << 8));
+            s_state.scan_window_coded_units = coded == 0 ? s_state.scan_window_1m_units : clamp_scan_window_units(coded);
+        } else {
+            s_state.scan_window_coded_units = s_state.scan_window_1m_units;
+        }
+
+        refresh_scan_params();
+        esp_err_t scan_ret = esp_ble_gap_set_ext_scan_params(&ext_scan_params);
+        if (scan_ret != ESP_OK) {
+            ESP_LOGE(GATTC_TAG, "set extend scan params error, error code = %x", scan_ret);
+            send_debug_print("scan params error: 0x%x", scan_ret);
+        }
+    } else {
+        s_state.scan_running = false;
+    }
+
+    send_cmd_response(CMD_ID_SCAN, total_filter_count(), echo, data_len);
+}
+
+static void handle_mac_list_command(uint8_t cmd, const uint8_t *cmd_buf, int len)
+{
+    mac_filter_list_t *list = cmd == CMD_ID_WMAC ? &s_state.white_list : &s_state.black_list;
+    const int mac_len = len - 3;
+    uint8_t echo[FRAME_DATA_LEN] = {0};
+
+    if (mac_len <= 0 || mac_len > FRAME_DATA_LEN) {
+        send_cmd_response(cmd, list->count, NULL, 0);
+        return;
+    }
+
+    memcpy(echo, &cmd_buf[1], mac_len);
+    send_cmd_response(cmd, add_filter_entry(list, &cmd_buf[1], mac_len), echo, FRAME_DATA_LEN);
+}
+
+// ---------- GPIO event subsystem (CMD_ID_GPIOEVT) -------------------------
+//
+// Hardware-driven GPIO edge notifications. The host arms a pin via
+// CMD_ID_GPIOEVT op=1; from that moment every rising/falling edge on the pin
+// triggers an ISR that posts a (pin, level, timestamp) tuple to a FreeRTOS
+// queue. The io_task drains that queue once per loop iteration and emits a
+// CMD_ID_GPIOEVT response frame for each event — same wire format as other
+// command responses (the host distinguishes "spontaneous event" by the cmd
+// byte being CMD_ID_GPIOEVT and the high bit of the index field meaning
+// "this is an event, not an op echo"). The high bit is set on events so the
+// host parser cannot confuse a level value with a request status code.
+
+typedef struct {
+    uint8_t  pin;
+    uint8_t  level;
+    uint32_t timestamp_ms;
+} gpio_event_msg_t;
+
+static QueueHandle_t s_gpio_event_queue = NULL;
+static bool s_gpio_isr_service_installed = false;
+static uint32_t s_gpio_event_enabled_mask = 0;   // bitmap, one bit per pin id (0..31)
+
+#define GPIOEVT_EVENT_FLAG  0x80u   // set in the "id" field of event frames
+
+static void IRAM_ATTR gpio_event_isr(void *arg)
+{
+    if (s_gpio_event_queue == NULL) {
+        return;
+    }
+    uint8_t pin = (uint8_t)(uintptr_t)arg;
+    gpio_event_msg_t msg = {
+        .pin = pin,
+        .level = gpio_get_level((gpio_num_t)pin) ? 1u : 0u,
+        .timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000),
+    };
+    BaseType_t hp_woken = pdFALSE;
+    xQueueSendFromISR(s_gpio_event_queue, &msg, &hp_woken);
+    if (hp_woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static bool ensure_gpio_event_infra(void)
+{
+    if (s_gpio_event_queue == NULL) {
+        s_gpio_event_queue = xQueueCreate(GPIO_EVENT_QUEUE_LEN, sizeof(gpio_event_msg_t));
+        if (s_gpio_event_queue == NULL) {
+            return false;
+        }
+    }
+    if (!s_gpio_isr_service_installed) {
+        esp_err_t err = gpio_install_isr_service(0);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            return false;
+        }
+        s_gpio_isr_service_installed = true;
+    }
+    return true;
+}
+
+static bool gpio_event_enable_pin(uint8_t pin)
+{
+    if (pin >= 32 || pin == (uint8_t)BOARD_LED_GPIO) {
+        // LED pin is owned by LEDC; reconfiguring it as GPIO interrupt would
+        // unbind the PWM output. Refuse to arm events on it.
+        return false;
+    }
+    if (!ensure_gpio_event_infra()) {
+        return false;
+    }
+    gpio_config_t io_conf = {
+        .pin_bit_mask = BIT64(pin),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    if (gpio_config(&io_conf) != ESP_OK) {
+        return false;
+    }
+    if (gpio_isr_handler_add((gpio_num_t)pin, gpio_event_isr, (void *)(uintptr_t)pin) != ESP_OK) {
+        return false;
+    }
+    s_gpio_event_enabled_mask |= (1u << pin);
+    return true;
+}
+
+static bool gpio_event_disable_pin(uint8_t pin)
+{
+    if (pin >= 32) {
+        return false;
+    }
+    if ((s_gpio_event_enabled_mask & (1u << pin)) == 0) {
+        return true;  // already disabled — idempotent
+    }
+    gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_DISABLE);
+    gpio_isr_handler_remove((gpio_num_t)pin);
+    s_gpio_event_enabled_mask &= ~(1u << pin);
+    return true;
+}
+
+static void gpio_event_disable_all(void)
+{
+    for (uint8_t p = 0; p < 32; p++) {
+        if (s_gpio_event_enabled_mask & (1u << p)) {
+            gpio_set_intr_type((gpio_num_t)p, GPIO_INTR_DISABLE);
+            gpio_isr_handler_remove((gpio_num_t)p);
+        }
+    }
+    s_gpio_event_enabled_mask = 0;
+}
+
+static void drain_gpio_event_queue(void)
+{
+    if (s_gpio_event_queue == NULL) {
+        return;
+    }
+    gpio_event_msg_t msg;
+    while (xQueueReceive(s_gpio_event_queue, &msg, 0) == pdTRUE) {
+        uint8_t data[FRAME_DATA_LEN] = {
+            msg.pin,
+            msg.level,
+            (uint8_t)( msg.timestamp_ms        & 0xFF),
+            (uint8_t)((msg.timestamp_ms >> 8)  & 0xFF),
+            (uint8_t)((msg.timestamp_ms >> 16) & 0xFF),
+            (uint8_t)((msg.timestamp_ms >> 24) & 0xFF),
+        };
+        // High bit set in id field marks this as a spontaneous event (vs.
+        // a request-acknowledge with the regular CMD_STATUS_* values).
+        send_cmd_response(CMD_ID_GPIOEVT, GPIOEVT_EVENT_FLAG | (msg.pin & 0x1F), data, FRAME_DATA_LEN);
+    }
+}
+
+static void handle_gpioevt_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t status = CMD_STATUS_OK;
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0xFF;
+    uint8_t pin = len >= 5 ? cmd_buf[2] : 0xFF;
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+
+    switch (op) {
+    case GPIOEVT_OP_QUERY:
+        // resp[0..3] = enabled-pins bitmap (little endian)
+        resp[0] = (uint8_t)( s_gpio_event_enabled_mask        & 0xFF);
+        resp[1] = (uint8_t)((s_gpio_event_enabled_mask >> 8)  & 0xFF);
+        resp[2] = (uint8_t)((s_gpio_event_enabled_mask >> 16) & 0xFF);
+        resp[3] = (uint8_t)((s_gpio_event_enabled_mask >> 24) & 0xFF);
+        break;
+    case GPIOEVT_OP_ENABLE:
+        if (len < 5 || !is_supported_gpio(pin) || pin == (uint8_t)BOARD_LED_GPIO) {
+            status = CMD_STATUS_PIN;
+            break;
+        }
+        if (!gpio_event_enable_pin(pin)) {
+            status = CMD_STATUS_DENIED;
+        }
+        resp[0] = pin;
+        resp[1] = (s_gpio_event_enabled_mask >> 0)  & 0xFF;
+        resp[2] = (s_gpio_event_enabled_mask >> 8)  & 0xFF;
+        resp[3] = (s_gpio_event_enabled_mask >> 16) & 0xFF;
+        resp[4] = (s_gpio_event_enabled_mask >> 24) & 0xFF;
+        break;
+    case GPIOEVT_OP_DISABLE:
+        if (len < 5) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (!gpio_event_disable_pin(pin)) {
+            status = CMD_STATUS_DENIED;
+        }
+        resp[0] = pin;
+        resp[1] = (s_gpio_event_enabled_mask >> 0)  & 0xFF;
+        resp[2] = (s_gpio_event_enabled_mask >> 8)  & 0xFF;
+        resp[3] = (s_gpio_event_enabled_mask >> 16) & 0xFF;
+        resp[4] = (s_gpio_event_enabled_mask >> 24) & 0xFF;
+        break;
+    case GPIOEVT_OP_CLEAR:
+        gpio_event_disable_all();
+        break;
+    default:
+        status = CMD_STATUS_ARGS;
+        break;
+    }
+    send_cmd_response(CMD_ID_GPIOEVT, status, resp, FRAME_DATA_LEN);
+}
+
+static void handle_gpio_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0;
+    uint8_t pin_code = len >= 5 ? cmd_buf[2] : 0;
+    uint8_t status = CMD_STATUS_OK;
+    uint16_t analog_raw = 0;
+    bool analog_reply = false;
+
+    if (len < 5) {
+        send_cmd_response(CMD_ID_GPIO, CMD_STATUS_ARGS, NULL, 0);
+        return;
+    }
+
+    if (!is_supported_gpio(pin_code)) {
+        fill_gpio_response(op, pin_code, resp);
+        send_cmd_response(CMD_ID_GPIO, CMD_STATUS_PIN, resp, FRAME_DATA_LEN);
+        return;
+    }
+
+    switch (op) {
+    case 0:
+    case 1:
+        break;
+    case 2:
+        if (len < 6) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+            // Board LED is driven by LEDC; calling apply_gpio_config() here
+            // would gpio_config() the pin and detach the LEDC PWM output.
+            set_board_led_idle_level(cmd_buf[3] ? 1 : 0);
+        } else {
+            apply_gpio_config(pin_code, 0, 1, 0);
+            gpio_set_level((gpio_num_t)pin_code, cmd_buf[3] ? 1 : 0);
+        }
+        break;
+    case 3:
+        if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+            set_board_led_idle_level(s_board_led_idle_level ? 0 : 1);
+        } else {
+            apply_gpio_config(pin_code, 0, 1, 0);
+            gpio_set_level((gpio_num_t)pin_code, !gpio_get_level((gpio_num_t)pin_code));
+        }
+        break;
+    case 4:
+        if (len < 8) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (!apply_gpio_config(pin_code, cmd_buf[3], cmd_buf[4], cmd_buf[5])) {
+            status = CMD_STATUS_PIN;
+        }
+        break;
+    case GPIO_OP_ANALOG_READ:
+        analog_reply = true;
+        if (!is_analog_gpio(pin_code)) {
+            status = CMD_STATUS_PIN;
+            break;
+        }
+        if (!read_gpio_analog(pin_code, &analog_raw)) {
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    default:
+        status = CMD_STATUS_ARGS;
+        break;
+    }
+
+    if (analog_reply) {
+        fill_gpio_analog_response(pin_code, analog_raw, resp);
+    } else {
+        fill_gpio_response(op, pin_code, resp);
+    }
+    send_cmd_response(CMD_ID_GPIO, status, resp, FRAME_DATA_LEN);
+}
+
+static void handle_uart_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0;
+
+    if (len < 4) {
+        send_cmd_response(CMD_ID_UART, CMD_STATUS_ARGS, NULL, 0);
+        return;
+    }
+
+    switch (op) {
+    case 0:
+        fill_uart_response(op, resp);
+        send_cmd_response(CMD_ID_UART, CMD_STATUS_OK, resp, FRAME_DATA_LEN);
+        break;
+    case 1:
+        if (len < 7) {
+            send_cmd_response(CMD_ID_UART, CMD_STATUS_ARGS, NULL, 0);
+            break;
+        }
+        resp[0] = op;
+        resp[1] = cmd_buf[2];
+        resp[2] = cmd_buf[3];
+        resp[3] = cmd_buf[4];
+        resp[4] = s_state.uart_baud_index;
+        resp[5] = UART_BAUD_RATE_COUNT;
+        send_cmd_response(CMD_ID_UART, CMD_STATUS_OK, resp, FRAME_DATA_LEN);
+        break;
+    case 2:
+        fill_uart_response(op, resp);
+        send_cmd_response(CMD_ID_UART, CMD_STATUS_DENIED, resp, FRAME_DATA_LEN);
+        break;
+    default:
+        send_cmd_response(CMD_ID_UART, CMD_STATUS_ARGS, NULL, 0);
+        break;
+    }
+}
+
+static void handle_rfsdk_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0;
+    uint8_t status = CMD_STATUS_OK;
+
+    if (len < 4) {
+        send_cmd_response(CMD_ID_RFSDK, CMD_STATUS_ARGS, NULL, 0);
+        return;
+    }
+
+    switch (op) {
+    case 0:
+        break;
+    case 1:
+        if (len < 5 || cmd_buf[2] > ESP_PWR_LVL_P20) {
+            status = CMD_STATUS_VALUE;
+            break;
+        }
+        if (esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, (esp_power_level_t)cmd_buf[2]) != ESP_OK ||
+            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, (esp_power_level_t)cmd_buf[2]) != ESP_OK ||
+            esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)cmd_buf[2]) != ESP_OK) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        s_state.power_index = cmd_buf[2];
+        break;
+    case 2:
+    case 3:
+        status = CMD_STATUS_DENIED;
+        break;
+    case 4:
+        if (len < 5) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        s_state.coded_min_units = cmd_buf[2];
+        refresh_scan_params();
+        break;
+    default:
+        status = CMD_STATUS_ARGS;
+        break;
+    }
+
+    fill_rfsdk_response(resp);
+    send_cmd_response(CMD_ID_RFSDK, status, resp, FRAME_DATA_LEN);
+}
+
+static void handle_version_command(void)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    fill_version_response(resp);
+    send_cmd_response(CMD_ID_VERSION, SW_VERSION, resp, FRAME_DATA_LEN);
+}
+
+static void handle_conn_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t status = CMD_STATUS_OK;
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0xFF;
+
+    switch (op) {
+    case 0:
+        break;
+    case 1:
+    case 2:
+        if (len < 11) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (s_conn.state != CONN_STATE_IDLE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (!start_conn_request(op == 2 ? 1 : 0, cmd_buf[2], &cmd_buf[3])) {
+            clear_conn_runtime();
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    case 3:
+        if (s_conn.state != CONN_STATE_CONNECTED || gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (esp_ble_gattc_close(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                gl_profile_tab[PROFILE_A_APP_ID].conn_id) != ESP_OK) {
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    case 4: {
+        esp_ble_gattc_cancel_open_params_t cancel_params = {
+            .gattc_if = gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+        };
+
+        if (s_conn.state != CONN_STATE_CONNECTING || gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        memcpy(cancel_params.remote_bda, s_conn.peer_addr, sizeof(esp_bd_addr_t));
+        if (esp_ble_gattc_cancel_open(&cancel_params) != ESP_OK) {
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    }
+    default:
+        status = CMD_STATUS_ARGS;
+        break;
+    }
+
+    send_conn_response(status);
+}
+
+static void handle_txadv_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    uint8_t status = CMD_STATUS_OK;
+    uint8_t op = len >= 4 ? cmd_buf[1] : 0xFF;
+
+    if (s_gap_sync_sem == NULL) {
+        status = CMD_STATUS_DENIED;
+        fill_txadv_response(resp);
+        send_cmd_response(CMD_ID_TXADV, status, resp, FRAME_DATA_LEN);
+        return;
+    }
+
+    switch (op) {
+    case 0:
+        if (!stop_txadv_if_running()) {
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    case 2:
+        // Status query — return CMD_STATUS_OK with current state in resp.
+        break;
+    case 1: {
+        uint8_t phy;
+        uint16_t interval_units;
+        uint8_t adv_len;
+
+        if (len < 8) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+
+        phy = cmd_buf[2];
+        interval_units = (uint16_t)cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
+        adv_len = cmd_buf[5];
+
+        if (phy > 2 || interval_units < 0x20 || adv_len > TXADV_DATA_MAX_LEN) {
+            status = CMD_STATUS_VALUE;
+            break;
+        }
+        if (len < 8 + adv_len) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (!start_txadv(phy, interval_units, &cmd_buf[6], adv_len)) {
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    }
+    default:
+        status = CMD_STATUS_ARGS;
+        break;
+    }
+
+    fill_txadv_response(resp);
+    send_cmd_response(CMD_ID_TXADV, status, resp, FRAME_DATA_LEN);
+}
+
+static void handle_txdata_command(const uint8_t *cmd_buf, int len)
+{
+    uint8_t resp[FRAME_DATA_LEN] = {0};
+    uint8_t status = CMD_STATUS_OK;
+
+    if (len >= 6) {
+        resp[0] = cmd_buf[1];
+        resp[1] = cmd_buf[2];
+        resp[2] = cmd_buf[3];
+    }
+
+    if (len < 6) {
+        status = CMD_STATUS_ARGS;
+    } else if (len < 6 + cmd_buf[3]) {
+        status = CMD_STATUS_ARGS;
+    } else if (s_conn.state != CONN_STATE_CONNECTED || gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+        status = CMD_STATUS_DENIED;
+        resp[3] = ESP_GATT_ERROR;
+    } else {
+        esp_err_t tx_ret = esp_ble_gattc_write_char(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                                    (uint16_t)cmd_buf[1] | ((uint16_t)cmd_buf[2] << 8),
+                                                    cmd_buf[3],
+                                                    (uint8_t *)&cmd_buf[4],
+                                                    ESP_GATT_WRITE_TYPE_NO_RSP,
+                                                    ESP_GATT_AUTH_REQ_NONE);
+        if (tx_ret == ESP_OK) {
+            resp[3] = ESP_GATT_OK;
+        } else {
+            status = CMD_STATUS_DENIED;
+            resp[3] = ESP_GATT_ERROR;
+        }
+    }
+
+    send_cmd_response(CMD_ID_TXDATA, status, resp, FRAME_DATA_LEN);
+}
+
+static void io_task(void *arg)
+{
+	usb_serial_jtag_driver_config_t usb_serial_config = {
+        .tx_buffer_size = 2048,
+	    .rx_buffer_size = 256,
+    };
 	ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_serial_config));
 
-	while(1) {
-		// vTaskDelay( 5 / portTICK_PERIOD_MS );
-		int len = usb_serial_jtag_read_bytes(read_buf, HEAD_CRC_ADD_LEN, 3 / portTICK_PERIOD_MS);
-		//int len = uart_read(buf, sizeof(buf));
-		if(len > 2 && crcFast(read_buf, len) == 0) {
-			int cmd = read_buf[0];
-			if(cmd == CMD_ID_SCAN && len >= 6) {
-				esp_ble_gap_stop_ext_scan();
-#if 0
-				static esp_ble_ext_scan_params_t ext_scan_params = {
-					.own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-				    .filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
-				    .scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE,
-				    .cfg_mask = ESP_BLE_GAP_EXT_SCAN_CFG_CODE_MASK, // | ESP_BLE_GAP_EXT_SCAN_CFG_UNCODE_MASK,
-				    .uncoded_cfg = {BLE_SCAN_TYPE_PASSIVE, 40, 40},
-				    .coded_cfg = {BLE_SCAN_TYPE_PASSIVE, 40, 40},
-				};
-#endif
-				uint8_t flg = read_buf[1];
-				if(flg & 3) {
-					uint16_t tdw = read_buf[2] | (read_buf[3] << 8);
-					if(tdw < 10)
-						tdw = 10;
-					ext_scan_params.cfg_mask = flg & 3; // ESP_BLE_GAP_EXT_SCAN_CFG_UNCODE_MASK, ESP_BLE_GAP_EXT_SCAN_CFG_CODE_MASK
-					/*
-					BLE_ADDR_TYPE_PUBLIC        = 0x00,     // Public Device Address
-					BLE_ADDR_TYPE_RANDOM        = 0x01,     // Random Device Address. To set this address, use the function esp_ble_gap_set_rand_addr(esp_bd_addr_t rand_addr)
-				    BLE_ADDR_TYPE_RPA_PUBLIC    = 0x02,     // Resolvable Private Address (RPA) with public identity address
-				    BLE_ADDR_TYPE_RPA_RANDOM    = 0x03      // Resolvable Private Address (RPA) with random identity address. To set this address, use the function esp_ble_gap_set_rand_addr(esp_bd_addr_t rand_addr)
-					*/
-					ext_scan_params.own_addr_type = flg >> 6;
-					ext_scan_params.uncoded_cfg.scan_type = (flg >> 2) & 1; // =0 Passive scan, =1 Active scan
-					ext_scan_params.coded_cfg.scan_type  = (flg >> 2) & 1; // =0 Passive scan, =1 Active scan
-					ext_scan_params.uncoded_cfg.scan_interval = tdw;
-					ext_scan_params.uncoded_cfg.scan_window = tdw;
-					ext_scan_params.coded_cfg.scan_interval  = tdw;
-					ext_scan_params.coded_cfg.scan_window  = tdw;
-					mac_list.filtr = (flg >> 4) & 3;
-					esp_err_t scan_ret = esp_ble_gap_set_ext_scan_params(&ext_scan_params);
-					if(scan_ret) {
-						ESP_LOGE(GATTC_TAG, "set extend scan params error, error code = %x", scan_ret);
-					}
-		        }
-				send_resp(cmd, mac_list.count, &read_buf[1], 3);
-			} else if(len >= 6 + 3) {
-				if(read_buf[0] == CMD_ID_WMAC) {
-					mac_list.mode = WHITE_LIST;
-					if(mac_list.count < MAC_MAX_SCAN_LIST) {
-						//memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
-						mac_list.mac[mac_list.count][0] = read_buf[6];
-						mac_list.mac[mac_list.count][1] = read_buf[5];
-						mac_list.mac[mac_list.count][2] = read_buf[4];
-						mac_list.mac[mac_list.count][3] = read_buf[3];
-						mac_list.mac[mac_list.count][4] = read_buf[2];
-						mac_list.mac[mac_list.count][5] = read_buf[1];
-						mac_list.count++;
-					}
-					send_resp(cmd, mac_list.count, &read_buf[1], 6);
-				} else if(read_buf[0] == CMD_ID_BMAC) {
-					mac_list.mode = BALCK_LIST;
-					if(mac_list.count < MAC_MAX_SCAN_LIST) {
-						//memcpy(&mac_list.mac[mac_list.count], &read_buf[1], 6);
-						mac_list.mac[mac_list.count][0] = read_buf[6];
-						mac_list.mac[mac_list.count][1] = read_buf[5];
-						mac_list.mac[mac_list.count][2] = read_buf[4];
-						mac_list.mac[mac_list.count][3] = read_buf[3];
-						mac_list.mac[mac_list.count][4] = read_buf[2];
-						mac_list.mac[mac_list.count][5] = read_buf[1];
-						mac_list.count++;
-					}
-					send_resp(cmd, mac_list.count, &read_buf[1], 6);
-				}
-			} else if(len >= 3) {
-				if(read_buf[0] == CMD_ID_CLRM)  {
-					mac_list.count = 0;
-					send_resp(cmd, MAC_MAX_SCAN_LIST, &read_buf[1], 0);
-				}
-				else if(read_buf[0] == CMD_ID_INFO) {
-					esp_read_mac(read_buf, ESP_MAC_BT);
-					send_resp(cmd, SW_VERSION, read_buf, 6);
-				}
-			}
+	while (1) {
+		int len = usb_serial_jtag_read_bytes(read_buf, sizeof(read_buf), 3 / portTICK_PERIOD_MS);
+		// Drain any pending GPIO events whether or not we just read a command.
+		// At a 3 ms read tick this runs ~330x/s, fast enough that the queue
+		// (16 slots) never overflows for realistic button-press / GPIO activity.
+		drain_gpio_event_queue();
+		if (len <= 2 || crcFast(read_buf, len) != 0) {
+			continue;
+		}
+
+        if (read_buf[0] != CMD_ID_GPIO || len < 5 || read_buf[2] != (uint8_t)BOARD_LED_GPIO) {
+            // Host-command indicator: low-intensity flicker (same level as 1M adv).
+            indicate_board_activity(ESP_BLE_GAP_PRI_PHY_1M);
+        }
+
+		switch (read_buf[0]) {
+		case CMD_ID_INFO:
+			esp_read_mac(read_buf, ESP_MAC_BT);
+			send_cmd_response(CMD_ID_INFO, SW_VERSION, read_buf, FRAME_DATA_LEN);
+			break;
+		case CMD_ID_SCAN:
+			handle_scan_command(read_buf, len);
+			break;
+		case CMD_ID_WMAC:
+		case CMD_ID_BMAC:
+			handle_mac_list_command(read_buf[0], read_buf, len);
+			break;
+		case CMD_ID_CLRM:
+			clear_filter_lists();
+			send_cmd_response(CMD_ID_CLRM, FILTER_LIST_CAPACITY, NULL, 0);
+			break;
+		case CMD_ID_GPIO:
+			handle_gpio_command(read_buf, len);
+			break;
+		case CMD_ID_UART:
+			handle_uart_command(read_buf, len);
+			break;
+		case CMD_ID_RFSDK:
+			handle_rfsdk_command(read_buf, len);
+			break;
+		case CMD_ID_VERSION:
+			handle_version_command();
+			break;
+		case CMD_ID_VBAT:
+			send_cmd_response(CMD_ID_VBAT, CMD_STATUS_DENIED, NULL, 0);
+			break;
+		case CMD_ID_TXADV:
+            handle_txadv_command(read_buf, len);
+			break;
+		case CMD_ID_CONN:
+			handle_conn_command(read_buf, len);
+			break;
+		case CMD_ID_TXDATA:
+			handle_txdata_command(read_buf, len);
+			break;
+		case CMD_ID_RXDATA:
+			send_cmd_response(CMD_ID_RXDATA, CMD_STATUS_DENIED, NULL, 0);
+			break;
+		case CMD_ID_GPIOEVT:
+			handle_gpioevt_command(read_buf, len);
+			break;
+		default:
+			send_debug_print("unsupported cmd: 0x%02x", read_buf[0]);
+			break;
 		}
 	}
 }
 
+static void quiet_protocol_uart_logging(void)
+{
+    /* The protocol shares USB Serial/JTAG with ESP-IDF logs. Keep the link binary-clean. */
+    esp_log_level_set("*", ESP_LOG_NONE);
+}
+
 void app_main(void)
 {
+    quiet_protocol_uart_logging();
 
     // Initialize NVS.
     esp_err_t ret = nvs_flash_init();
@@ -887,6 +2319,27 @@ void app_main(void)
     if (ret){
         ESP_LOGE(GATTC_TAG, "set local  MTU failed, error code = %x", ret);
     }
+
+    refresh_scan_params();
+    current_power_index();
+    s_gap_sync_sem = xSemaphoreCreateBinary();
+    if (is_supported_gpio((uint8_t)BOARD_LED_GPIO)) {
+        const esp_timer_create_args_t board_led_timer_args = {
+            .callback = restore_board_led_idle_level,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "board_led",
+        };
+
+        ESP_ERROR_CHECK(esp_timer_create(&board_led_timer_args, &s_board_led_timer));
+        // Hardware PWM: pin matrix is routed to LEDC, duty changes are O(1)
+        // register writes. No CPU/interrupt overhead during PWM cycles, so the
+        // BLE RX path is not impacted.
+        init_board_led_pwm();
+        set_board_led_idle_level(BOARD_LED_IDLE_LEVEL);
+    }
+
+    init_adc_inputs();
 
 #if USE_CONNECT
 

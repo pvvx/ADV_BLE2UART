@@ -81,14 +81,6 @@ rm -rf "$PROJECT_DIR_PATH/build"
     -G "Unix Makefiles" \
     build
 
-if [[ -f "$PROJECT_DIR_PATH/build/bootloader/bootloader.bin" ]]; then
-    cp -f "$PROJECT_DIR_PATH/build/bootloader/bootloader.bin" "$PROJECT_DIR_PATH/build/bootloader.bin"
-fi
-
-if [[ -f "$PROJECT_DIR_PATH/build/partition_table/partition-table.bin" ]]; then
-    cp -f "$PROJECT_DIR_PATH/build/partition_table/partition-table.bin" "$PROJECT_DIR_PATH/build/partition-table.bin"
-fi
-
 echo
 echo "Build completed. Generated files:"
 echo "  $PROJECT_DIR/build/ble50_scan.bin"
