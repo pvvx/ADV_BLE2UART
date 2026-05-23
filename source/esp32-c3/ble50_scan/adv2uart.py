@@ -130,8 +130,8 @@ class ByteAdapter(Adapter):
 class Command:
     CMD_ID_INFO = b'\x00'
     CMD_ID_SCAN = b'\x01'  # Scan on/off, (len_cmd = 3: parameters)
-    CMD_ID_WMAC = b'\x02'  # add white mac (len_cmd = 6: mac)
-    CMD_ID_BMAC = b'\x03'  # add black mac (len_cmd = 6: mac)
+    CMD_ID_WMAC = b'\x02'  # add white mac/prefix (len_cmd = 1..6 bytes)
+    CMD_ID_BMAC = b'\x03'  # add black mac/prefix (len_cmd = 1..6 bytes)
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
     CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage and chip temperature
     CMD_ID_GPIOEVT = b'\x10'  # GPIO edge events: arm/disarm + spontaneous notifications
@@ -309,9 +309,7 @@ class Ble2Uart:
         return True
 
     def add_mac_list(self, mac, cmd=Command.CMD_ID_WMAC):
-        return self.command(
-            bytearray([cmd[0]]) + bytearray(self.ReversedMacAddress.build(mac))
-        )
+        return self.command(bytearray([cmd[0]]) + bytearray(mac_to_wire(mac)))
 
     def close(self):
         return self.ser.close()
@@ -585,6 +583,34 @@ def setup_logging(
         logging.basicConfig(level=default_level)
 
 
+def normalize_mac(text):
+    normalized = re.sub(r'[^0-9a-fA-F]', '', text).upper()
+    n = len(normalized)
+    if n == 0 or n % 2 != 0 or n > 12:
+        raise ValueError(
+            'MAC address must contain 2-12 even-count hexadecimal digits (1-6 bytes prefix)'
+        )
+    return normalized
+
+
+def mac_to_wire(text):
+    return bytes.fromhex(normalize_mac(text))[::-1]
+
+
+def parse_mac_filters(raw_values, parser, option_name):
+    macs = []
+    for raw_value in raw_values or []:
+        for candidate in re.split(r'[,;]', raw_value):
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            try:
+                macs.append(normalize_mac(candidate))
+            except ValueError as exc:
+                parser.error('%s: %s: %r' % (option_name, exc, candidate))
+    return macs
+
+
 ########################### MAIN ###################################
 def main():
     parser = argparse.ArgumentParser(
@@ -711,6 +737,23 @@ def main():
         help='accept private-address advertisements'
     )
     parser.add_argument(
+        '--whitelist',
+        dest='whitelist',
+        action='append',
+        default=[],
+        metavar='MAC/PREFIX[,MAC/PREFIX...]',
+        help='add one or more MAC addresses or prefixes to the firmware whitelist before scan start'
+    )
+    parser.add_argument(
+        '--blacklist',
+        '--backlist',
+        dest='blacklist',
+        action='append',
+        default=[],
+        metavar='MAC/PREFIX[,MAC/PREFIX...]',
+        help='add one or more MAC addresses or prefixes to the firmware blacklist before scan start'
+    )
+    parser.add_argument(
         '--info-after',
         dest='info_after',
         type=float,
@@ -745,6 +788,16 @@ def main():
 
     parser.set_defaults(filter_random=False, filter_private=False)
     args = parser.parse_args()
+    white_list = parse_mac_filters(args.whitelist, parser, '--whitelist')
+    black_list = parse_mac_filters(
+        args.blacklist,
+        parser,
+        '--blacklist/--backlist'
+    )
+    if not white_list:
+        white_list = list(Mac_Wb_List.WHITE_LIST)
+    if not black_list:
+        black_list = list(Mac_Wb_List.BLACK_LIST)
 
     setup_logging()
     loglevel = None
@@ -827,7 +880,11 @@ def main():
                 window_ms=args.scan_window_ms,
                 cmd_id_scan=Command.CMD_ID_SCAN,
             )
-            dv.black_white_list(start_cmd=start_scan_cmd)
+            dv.black_white_list(
+                white_list=white_list,
+                black_list=black_list,
+                start_cmd=start_scan_cmd
+            )
             scan_started = True
             count = 0
             started_at = time.time()
@@ -869,7 +926,11 @@ def main():
                         "Commands not answered in time: %s. Retrying...", dv.config_cmd
                     )
                     dv.config_start()
-                    dv.black_white_list(start_cmd=start_scan_cmd)
+                    dv.black_white_list(
+                        white_list=white_list,
+                        black_list=black_list,
+                        start_cmd=start_scan_cmd
+                    )
     except KeyboardInterrupt:
         logging.warning('Interrupted')
         exit_code = 130

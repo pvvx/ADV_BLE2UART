@@ -82,6 +82,7 @@ class DeviceProfile:
     supports_txadv: bool
     supports_conn: bool
     supports_analog: bool
+    supports_gpio_events: bool
     allow_general_gpio_write: bool
     led_mask_mode: bool
     legacy_reset_default: bool
@@ -122,6 +123,7 @@ ESP32_C3_PROFILE = DeviceProfile(
     supports_txadv=True,
     supports_conn=True,
     supports_analog=True,
+    supports_gpio_events=True,
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
@@ -203,6 +205,7 @@ TB_03F_KIT_PROFILE = DeviceProfile(
     supports_txadv=False,
     supports_conn=False,
     supports_analog=False,
+    supports_gpio_events=False,
     allow_general_gpio_write=True,
     led_mask_mode=True,
     legacy_reset_default=True,
@@ -278,6 +281,7 @@ RF_CHANNELS_SUPPORTED = DEVICE_PROFILE.rf_channels_supported
 DEVICE_SUPPORTS_TXADV = DEVICE_PROFILE.supports_txadv
 DEVICE_SUPPORTS_CONN = DEVICE_PROFILE.supports_conn
 DEVICE_SUPPORTS_ANALOG = DEVICE_PROFILE.supports_analog
+DEVICE_SUPPORTS_GPIO_EVENTS = DEVICE_PROFILE.supports_gpio_events
 DEVICE_ALLOW_GENERAL_GPIO_WRITE = DEVICE_PROFILE.allow_general_gpio_write
 DEVICE_LED_MASK_MODE = DEVICE_PROFILE.led_mask_mode
 DEVICE_LEGACY_RESET_DEFAULT = DEVICE_PROFILE.legacy_reset_default
@@ -297,6 +301,7 @@ def apply_device_profile(profile_id: str):
     global DEVICE_DEFAULT_GPIO_PIN, DEVICE_DEFAULT_RF_POWER_LABEL, DEVICE_SUPPORTS_VBAT
     global UART_SET_BAUD_SUPPORTED, RF_CAP_SUPPORTED, RF_CHANNELS_SUPPORTED
     global DEVICE_SUPPORTS_TXADV, DEVICE_SUPPORTS_CONN, DEVICE_SUPPORTS_ANALOG
+    global DEVICE_SUPPORTS_GPIO_EVENTS
     global DEVICE_ALLOW_GENERAL_GPIO_WRITE, DEVICE_LED_MASK_MODE, DEVICE_LEGACY_RESET_DEFAULT
     global DEVICE_STATUS_PIN_ACTIVE_LOW, DEVICE_STATUS_PIN_ACTIVE_LABEL, DEVICE_STATUS_PIN_INACTIVE_LABEL
     global DEVICE_BOARD_LED_ACTIVE_LOW, BOARD_LED_PIN_ID, STATUS_GPIO_PIN_ID
@@ -325,6 +330,7 @@ def apply_device_profile(profile_id: str):
     DEVICE_SUPPORTS_TXADV = DEVICE_PROFILE.supports_txadv
     DEVICE_SUPPORTS_CONN = DEVICE_PROFILE.supports_conn
     DEVICE_SUPPORTS_ANALOG = DEVICE_PROFILE.supports_analog
+    DEVICE_SUPPORTS_GPIO_EVENTS = DEVICE_PROFILE.supports_gpio_events
     DEVICE_ALLOW_GENERAL_GPIO_WRITE = DEVICE_PROFILE.allow_general_gpio_write
     DEVICE_LED_MASK_MODE = DEVICE_PROFILE.led_mask_mode
     DEVICE_LEGACY_RESET_DEFAULT = DEVICE_PROFILE.legacy_reset_default
@@ -1398,6 +1404,15 @@ class AdvBle2UartGui(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(str(value))
 
+        def copy_advertisement(iid):
+            if not iid or "payload" not in tree["columns"]:
+                return
+            value = tree.set(iid, "payload")
+            if not value:
+                return
+            self.clipboard_clear()
+            self.clipboard_append(str(value))
+
         def on_right_click(event):
             iid = tree.identify_row(event.y)
             col = column_under(event)
@@ -1414,6 +1429,10 @@ class AdvBle2UartGui(tk.Tk):
                 mac_val = tree.set(iid, "mac")
                 if mac_val:
                     menu.add_command(label=f"Copy MAC  ({mac_val})", command=lambda: copy_mac(iid))
+            if iid and "payload" in tree["columns"]:
+                payload_val = tree.set(iid, "payload")
+                if payload_val:
+                    menu.add_command(label="Copy Advertisement", command=lambda: copy_advertisement(iid))
             if iid:
                 menu.add_separator()
             menu.add_command(label="Copy all rows", command=copy_all)
@@ -1643,9 +1662,11 @@ class AdvBle2UartGui(tk.Tk):
             self.adv_tree.heading(name, text=headings[name])
             self.adv_tree.column(name, width=widths[name], anchor=tk.CENTER if name != "payload" else tk.W)
         yscroll = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=self.adv_tree.yview)
-        self.adv_tree.configure(yscrollcommand=yscroll.set)
+        xscroll = ttk.Scrollbar(tab, orient=tk.HORIZONTAL, command=self.adv_tree.xview)
+        self.adv_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.adv_tree.grid(row=1, column=0, sticky="nsew", padx=(6, 0), pady=(0, 6))
         yscroll.grid(row=1, column=1, sticky="ns", pady=(0, 6))
+        xscroll.grid(row=2, column=0, sticky="ew", padx=(6, 0), pady=(0, 6))
         self._enhance_treeview(self.adv_tree, numeric_cols=("rssi", "len"))
 
     def _build_stats_tab(self, tab):
@@ -1681,7 +1702,11 @@ class AdvBle2UartGui(tk.Tk):
         states_tab = ttk.Frame(inner)
         inner.add(led_tab, text="LED & Status")
         inner.add(pinio_tab, text="Pin I/O")
-        inner.add(events_tab, text="Events")
+        inner.add(
+            events_tab,
+            text="Events",
+            state=tk.NORMAL if DEVICE_SUPPORTS_GPIO_EVENTS else tk.DISABLED,
+        )
         if DEVICE_SUPPORTS_ANALOG:
             analog_tab = ttk.Frame(inner)
             inner.add(analog_tab, text="Analog")
@@ -1689,7 +1714,8 @@ class AdvBle2UartGui(tk.Tk):
 
         self._build_gpio_led_tab(_scrollable_body(led_tab))
         self._build_gpio_pinio_tab(_scrollable_body(pinio_tab))
-        self._build_gpio_events_tab(events_tab)  # contains its own scroll for the log
+        if DEVICE_SUPPORTS_GPIO_EVENTS:
+            self._build_gpio_events_tab(events_tab)  # contains its own scroll for the log
         if DEVICE_SUPPORTS_ANALOG:
             self._build_gpio_analog_tab(_scrollable_body(analog_tab))
         self._build_gpio_states_tab(_scrollable_body(states_tab))
