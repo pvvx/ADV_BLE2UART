@@ -21,8 +21,6 @@ extern "C" {
 #include "CONFIG.h"
 #include "RTC.h"
 #include "SLEEP.h"
-#include "LED.h"
-#include "KEY.h"
 
 /* hal task Event */
 #define LED_BLINK_EVENT       0x0001
@@ -40,12 +38,12 @@ extern tmosTaskID halTaskID;
  */
 
 /**
- * @brief   Ó²¼þ³õÊ¼»¯
+ * @brief   Ó²ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½ï¿½
  */
 extern void HAL_Init(void);
 
 /**
- * @brief   Ó²¼þ²ãÊÂÎñ´¦Àí
+ * @brief   Ó²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
  *
  * @param   task_id - The TMOS assigned task ID.
  * @param   events - events to process.  This is a bit map and can
@@ -54,19 +52,19 @@ extern void HAL_Init(void);
 extern tmosEvents HAL_ProcessEvent(tmosTaskID task_id, tmosEvents events);
 
 /**
- * @brief   BLE ¿â³õÊ¼»¯
+ * @brief   BLE ï¿½ï¿½ï¿½Ê¼ï¿½ï¿½
  */
 extern void CH58X_BLEInit(void);
 
 /**
- * @brief   »ñÈ¡ÄÚ²¿ÎÂ¸Ð²ÉÑùÖµ£¬Èç¹ûÊ¹ÓÃÁËADCÖÐ¶Ï²ÉÑù£¬ÐèÔÚ´Ëº¯ÊýÖÐÔÝÊ±ÆÁ±ÎÖÐ¶Ï.
+ * @brief   ï¿½ï¿½È¡ï¿½Ú²ï¿½ï¿½Â¸Ð²ï¿½ï¿½ï¿½Öµï¿½ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ï¿½ï¿½ADCï¿½Ð¶Ï²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú´Ëºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½Ð¶ï¿½.
  *
- * @return  ÄÚ²¿ÎÂ¸Ð²ÉÑùÖµ.
+ * @return  ï¿½Ú²ï¿½ï¿½Â¸Ð²ï¿½ï¿½ï¿½Öµ.
  */
 extern uint16_t HAL_GetInterTempValue(void);
 
 /**
- * @brief   ÄÚ²¿32kÐ£×¼
+ * @brief   ï¿½Ú²ï¿½32kÐ£×¼
  */
 extern void Lib_Calibration_LSI(void);
 

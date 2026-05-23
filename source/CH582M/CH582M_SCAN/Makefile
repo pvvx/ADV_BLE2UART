@@ -1,9 +1,15 @@
 ## Makefile
 
-# Prefix for older riscv gcc is  risv-none-embed
-# Prefix for newer riscv gcc is  risv-none-elf
-# TOOLCHAIN_PREFIX := riscv-none-embed
-TOOLCHAIN_PREFIX := ../../../../CH592/MRS_Toolchain_Linux_x64_V1.92/RISC-V_Embedded_GCC12/bin/riscv-none-elf
+# RISC-V cross-compiler prefix.
+#
+# Default: the locally-installed repo toolchain placed in ../.tooling/ by
+# ../install.sh. Override on the command line if you have a different one:
+#
+#     make TOOLCHAIN_PREFIX=/opt/wch/bin/riscv-none-elf
+#
+# The default installer currently uses xPack GNU RISC-V Embedded GCC and keeps
+# the legacy MRS layout available as an override path if needed.
+TOOLCHAIN_PREFIX ?= ../.tooling/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf
 
 
 APP_C_SRCS = \
@@ -77,9 +83,10 @@ SECONDARY_LIST := observer.lst
 SECONDARY_SIZE := observer.siz
 SECONDARY_BIN := observer.bin
 
-# ARCH is rv32imac on older gcc, rv32imac_zicsr on newer gcc
+# ARCH is rv32imac on older gcc. Newer bare-metal GCCs also require
+# explicit zicsr + zifencei for the WCH headers' fence.i usage.
 # ARCH := rv32imac
-ARCH := rv32imac_zicsr
+ARCH := rv32imac_zicsr_zifencei
 
 CFLAGS_COMMON := \
   -march=$(ARCH) \

@@ -32,24 +32,24 @@ UINT16 SetupReqLen;
 const uint8_t *pDescr;
 
 #define DevEP0SIZE  0x40
-#define DevEP2SIZE  0x20
-// Éè±¸ÃèÊö·û
+#define DevEP2SIZE  0x40
+// ï¿½è±¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 const uint8_t MyDevDescr[] = { 0x12,0x01,0x10,0x01,0xFF,0x00,0x00,DevEP0SIZE,
                              0x86,0x1A,0x23,0x75,0x63,0x02,0x00,0x02,
                              0x00,0x01 };
-// ÅäÖÃÃèÊö·û
-const uint8_t MyCfgDescr[] = {   0x09,0x02,0x27,0x00,0x01,0x01,0x00,0x80,0xf0,              //ÅäÖÃÃèÊö·û£¬½Ó¿ÚÃèÊö·û,¶ËµãÃèÊö·û
+// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+const uint8_t MyCfgDescr[] = {   0x09,0x02,0x27,0x00,0x01,0x01,0x00,0x80,0xf0,              //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,ï¿½Ëµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                                  0x09,0x04,0x00,0x00,0x03,0xff,0x01,0x02,0x00,
-                                 0x07,0x05,0x82,0x02,DevEP2SIZE,0x00,0x00,                        //ÅúÁ¿ÉÏ´«¶Ëµã
-                                 0x07,0x05,0x02,0x02,DevEP2SIZE,0x00,0x00,                        //ÅúÁ¿ÏÂ´«¶Ëµã
-                                 0x07,0x05,0x81,0x03,0x08,0x00,0x01};                       //ÖÐ¶ÏÉÏ´«¶Ëµã
-// ÓïÑÔÃèÊö·û
+                                 0x07,0x05,0x82,0x02,DevEP2SIZE,0x00,0x00,                        //ï¿½ï¿½ï¿½ï¿½ï¿½Ï´ï¿½ï¿½Ëµï¿½
+                                 0x07,0x05,0x02,0x02,DevEP2SIZE,0x00,0x00,                        //ï¿½ï¿½ï¿½ï¿½ï¿½Â´ï¿½ï¿½Ëµï¿½
+                                 0x07,0x05,0x81,0x03,0x08,0x00,0x01};                       //ï¿½Ð¶ï¿½ï¿½Ï´ï¿½ï¿½Ëµï¿½
+// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 const uint8_t MyLangDescr[] = { 0x04, 0x03, 0x09, 0x04 };
-// ³§¼ÒÐÅÏ¢
+// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï¢
 const uint8_t MyManuInfo[] = { 0x0E, 0x03, 'w', 0, 'c', 0, 'h', 0, '.', 0, 'c', 0, 'n', 0 };
-// ²úÆ·ÐÅÏ¢
+// ï¿½ï¿½Æ·ï¿½ï¿½Ï¢
 const uint8_t MyProdInfo[] = { 0x0C, 0x03, 'C', 0, 'H', 0, '5', 0, '8', 0, 'x', 0 };
-/*²úÆ·ÃèÊö·û*/
+/*ï¿½ï¿½Æ·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½*/
 const uint8_t StrDesc[28] =
 {
   0x1C,0x03,0x55,0x00,0x53,0x00,0x42,0x00,
@@ -66,7 +66,7 @@ const uint8_t Return3[2] = {0x9F,0xEE};
  * LOCAL VARIABLES
  */
 
-/******** ÓÃ»§×Ô¶¨Òå·ÖÅä¶ËµãRAM ****************************************/
+/******** ï¿½Ã»ï¿½ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ëµï¿½RAM ****************************************/
 __attribute__((aligned(4)))  uint8_t EP0_Databuf[64 + 64 + 64];    //ep0(64)+ep4_out(64)+ep4_in(64)
 __attribute__((aligned(4)))  uint8_t EP1_Databuf[64 + 64];    //ep1_out(64)+ep1_in(64)
 __attribute__((aligned(4)))  uint8_t EP2_Databuf[64 + 64];    //ep2_out(64)+ep2_in(64)
@@ -79,7 +79,7 @@ __attribute__((aligned(4)))  uint8_t EP3_Databuf[64 + 64];    //ep3_out(64)+ep3_
 /*********************************************************************
  * @fn      app_usb_init
  *
- * @brief   ³õÊ¼»¯usb
+ * @brief   ï¿½ï¿½Ê¼ï¿½ï¿½usb
  *
  * @return  none
  */
@@ -351,19 +351,19 @@ void USB_DevTransProcess( void )
 
               case USB_DESCR_TYP_REPORT :
 //              {
-//                if ( ( ( pSetupReqPak->wIndex ) & 0xff ) == 0 )                             //½Ó¿Ú0±¨±íÃèÊö·û
+//                if ( ( ( pSetupReqPak->wIndex ) & 0xff ) == 0 )                             //ï¿½Ó¿ï¿½0ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 //                {
-//                  pDescr = KeyRepDesc;                                  //Êý¾Ý×¼±¸ÉÏ´«
+//                  pDescr = KeyRepDesc;                                  //ï¿½ï¿½ï¿½ï¿½×¼ï¿½ï¿½ï¿½Ï´ï¿½
 //                  len = sizeof( KeyRepDesc );
 //                }
-//                else if ( ( ( pSetupReqPak->wIndex ) & 0xff ) == 1 )                        //½Ó¿Ú1±¨±íÃèÊö·û
+//                else if ( ( ( pSetupReqPak->wIndex ) & 0xff ) == 1 )                        //ï¿½Ó¿ï¿½1ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 //                {
-//                  pDescr = MouseRepDesc;                                //Êý¾Ý×¼±¸ÉÏ´«
+//                  pDescr = MouseRepDesc;                                //ï¿½ï¿½ï¿½ï¿½×¼ï¿½ï¿½ï¿½Ï´ï¿½
 //                  len = sizeof( MouseRepDesc );
-//                  Ready = 1;                                            //Èç¹ûÓÐ¸ü¶à½Ó¿Ú£¬¸Ã±ê×¼Î»Ó¦¸ÃÔÚ×îºóÒ»¸ö½Ó¿ÚÅäÖÃÍê³ÉºóÓÐÐ§
+//                  Ready = 1;                                            //ï¿½ï¿½ï¿½ï¿½Ð¸ï¿½ï¿½ï¿½Ó¿Ú£ï¿½ï¿½Ã±ï¿½×¼Î»Ó¦ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½Ó¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Éºï¿½ï¿½ï¿½Ð§
 //                }
 //                else
-//                  len = 0xff;                                           //±¾³ÌÐòÖ»ÓÐ2¸ö½Ó¿Ú£¬Õâ¾ä»°Õý³£²»¿ÉÄÜÖ´ÐÐ
+//                  len = 0xff;                                           //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½2ï¿½ï¿½ï¿½Ó¿Ú£ï¿½ï¿½ï¿½ä»°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö´ï¿½ï¿½
 //              }
                 break;
 
@@ -419,7 +419,7 @@ void USB_DevTransProcess( void )
 
           case USB_CLEAR_FEATURE :
           {
-            if ( ( pSetupReqPak->bRequestType & USB_REQ_RECIP_MASK ) == USB_REQ_RECIP_ENDP )    // ¶Ëµã
+            if ( ( pSetupReqPak->bRequestType & USB_REQ_RECIP_MASK ) == USB_REQ_RECIP_ENDP )    // ï¿½Ëµï¿½
             {
               switch ( ( pSetupReqPak->wIndex ) & 0xff )
               {
@@ -516,13 +516,13 @@ void USB_DevTransProcess( void )
 /*********************************************************************
  * @fn      USB_IRQHandler
  *
- * @brief   USBÖÐ¶Ïº¯Êý
+ * @brief   USBï¿½Ð¶Ïºï¿½ï¿½ï¿½
  *
  * @return  none
  */
 __attribute__((interrupt("WCH-Interrupt-fast")))
 __attribute__((section(".highcode")))
-void USB_IRQHandler( void ) /* USBÖÐ¶Ï·þÎñ³ÌÐò,Ê¹ÓÃ¼Ä´æÆ÷×é1 */
+void USB_IRQHandler( void ) /* USBï¿½Ð¶Ï·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,Ê¹ï¿½Ã¼Ä´ï¿½ï¿½ï¿½ï¿½ï¿½1 */
 {
   USB_DevTransProcess();
 }
