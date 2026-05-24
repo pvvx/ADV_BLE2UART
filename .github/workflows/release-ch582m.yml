@@ -1,0 +1,58 @@
+name: Release CH582M (CH32V208W)
+
+on:
+  push:
+    branches:
+      - CH582M
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and SDK
+        working-directory: source/CH582M
+        run: ./install.sh
+
+      - name: Build firmware
+        working-directory: source/CH582M
+        run: ./build.sh
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p out/release
+          cp source/CH582M/CH582M_SCAN/observer.bin out/release/
+          cp source/CH582M/CH582M_SCAN/observer.hex out/release/
+          cp source/CH582M/CH582M_SCAN/observer.elf out/release/
+          cp source/CH582M/adv2uart.py out/release/
+          cp source/CH582M/adv2uart_gui.py out/release/
+          tar -czf out/ch582m-ch32v208w-latest.tar.gz -C out/release .
+
+      - name: Create release notes
+        run: |
+          cat > out/release-notes-ch582m.md << 'EOF'
+          Build package for CH582M / CH32V208W SoC.
+
+          Source branch used for compilation: CH582M.
+
+          This package is generated from the latest toolchain, SDK, and firmware code currently maintained in branch CH582M.
+          EOF
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ch582m-ch32v208w-latest
+          name: CH582M CH32V208W SoC (CH582M latest)
+          body_path: out/release-notes-ch582m.md
+          files: |
+            out/ch582m-ch32v208w-latest.tar.gz
+            source/CH582M/CH582M_SCAN/observer.bin
+          prerelease: true
+          make_latest: false
