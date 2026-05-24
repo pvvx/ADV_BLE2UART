@@ -31,8 +31,10 @@ jobs:
           cp source/CH582M/CH582M_SCAN/observer.bin out/release/
           cp source/CH582M/CH582M_SCAN/observer.hex out/release/
           cp source/CH582M/CH582M_SCAN/observer.elf out/release/
-          cp source/CH582M/adv2uart.py out/release/
-          cp source/CH582M/adv2uart_gui.py out/release/
+          cp source/ble2uart/adv2uart.py out/release/
+          if [[ -f source/ble2uart/adv2uart_gui.py ]]; then
+            cp source/ble2uart/adv2uart_gui.py out/release/
+          fi
           tar -czf out/ch582m-ch32v208w-latest.tar.gz -C out/release .
 
       - name: Create release notes
