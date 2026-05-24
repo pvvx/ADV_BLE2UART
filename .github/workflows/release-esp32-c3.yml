@@ -1,0 +1,60 @@
+name: Release ESP32 BLE (ESP32-C3)
+
+on:
+  push:
+    branches:
+      - esp32-c3
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and SDK
+        working-directory: source/esp32-c3
+        run: ./install.sh
+
+      - name: Build firmware
+        working-directory: source/esp32-c3
+        run: ./build.sh
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p out/release
+          cp source/esp32-c3/ble50_scan/build/ble50_scan.bin out/release/
+          cp source/esp32-c3/ble50_scan/build/bootloader/bootloader.bin out/release/
+          cp source/esp32-c3/ble50_scan/build/partition_table/partition-table.bin out/release/
+          cp source/esp32-c3/ble50_scan/adv2uart.py out/release/
+          cp source/esp32-c3/ble50_scan/adv2uart_gui.py out/release/
+          tar -czf out/esp32-c3-ble-latest.tar.gz -C out/release .
+
+      - name: Create release notes
+        run: |
+          cat > out/release-notes-esp32-c3.md << 'EOF'
+          Build package for ESP32 BLE (ESP32-C3 SoC).
+
+          Source branch used for compilation: esp32-c3.
+
+          This package is generated from the latest toolchain, SDK, and firmware code currently maintained in branch esp32-c3.
+          EOF
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: esp32-c3-ble-latest
+          name: ESP32 BLE (ESP32-C3 SoC) latest
+          body_path: out/release-notes-esp32-c3.md
+          files: |
+            out/esp32-c3-ble-latest.tar.gz
+            source/esp32-c3/ble50_scan/build/ble50_scan.bin
+            source/esp32-c3/ble50_scan/build/bootloader/bootloader.bin
+            source/esp32-c3/ble50_scan/build/partition_table/partition-table.bin
+          prerelease: true
+          make_latest: false
