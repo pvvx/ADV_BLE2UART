@@ -1138,6 +1138,8 @@ class AdvBle2UartGui(tk.Tk):
         # of a Start/Stop scan command, we force-resync the buttons so the
         # user is never locked out by a missed response or a chip reset.
         self._scan_response_watchdog = None
+        self._protocol_probe_watchdog = None
+        self._protocol_ready = False
 
         self._build_variables()
         self._build_ui()
@@ -2215,10 +2217,11 @@ class AdvBle2UartGui(tk.Tk):
     def connect(self):
         try:
             self.client.open(self.port_var.get().strip(), int(self.baud_var.get()), self.pulse_reset_var.get())
-            self.status_var.set("Connected")
+            self._protocol_ready = False
+            self._cancel_protocol_probe_watchdog()
+            self.status_var.set("Connected - probing")
             self.led_blink_generation += 1
-            self.after(GUI_BOOTSTRAP_DELAY_MS, self.send_info)
-            self.after(GUI_BOOTSTRAP_DELAY_MS + 240, self.led_query_state)
+            self.after(GUI_BOOTSTRAP_DELAY_MS, self._begin_protocol_probe)
         except Exception as exc:
             self.status_var.set("Connection failed")
             self.log(f"Connection failed: {exc}")
@@ -2230,7 +2233,9 @@ class AdvBle2UartGui(tk.Tk):
         self.led_blink_generation += 1
         self.cancel_gpio_read_batch()
         self._cancel_scan_response_watchdog()
+        self._cancel_protocol_probe_watchdog()
         self._cancel_conn_timeout()
+        self._protocol_ready = False
         self.client.close()
         self.status_var.set("Disconnected")
         self.scan_state_var.set("Stopped")
@@ -2262,9 +2267,10 @@ class AdvBle2UartGui(tk.Tk):
         if not hasattr(self, "start_scan_button") or not hasattr(self, "stop_scan_button"):
             return
         is_open = bool(self.client and self.client.is_open)
-        scan_running = is_open and self.scan_state_var.get() not in ("", "Stopped")
+        protocol_ready = is_open and self._protocol_ready
+        scan_running = protocol_ready and self.scan_state_var.get() not in ("", "Stopped")
         try:
-            if not is_open:
+            if not protocol_ready:
                 self.start_scan_button.state(["disabled"])
                 self.stop_scan_button.state(["disabled"])
             elif scan_running:
@@ -2275,6 +2281,49 @@ class AdvBle2UartGui(tk.Tk):
                 self.stop_scan_button.state(["disabled"])
         except Exception:
             pass
+
+    def _begin_protocol_probe(self):
+        if not (self.client and self.client.is_open):
+            return
+        self.log("Probing ADV_BLE2UART protocol with INFO/VERSION")
+        self.safe_command(self.client.command_info)
+        self.after(80, lambda: self.safe_command(self.client.command_version_info))
+        self._cancel_protocol_probe_watchdog()
+        self._protocol_probe_watchdog = self.after(2500, self._protocol_probe_timeout)
+
+    def _cancel_protocol_probe_watchdog(self):
+        wd = getattr(self, "_protocol_probe_watchdog", None)
+        if wd is not None:
+            try:
+                self.after_cancel(wd)
+            except Exception:
+                pass
+            self._protocol_probe_watchdog = None
+
+    def _protocol_probe_timeout(self):
+        self._protocol_probe_watchdog = None
+        if self._protocol_ready or not (self.client and self.client.is_open):
+            return
+        self.status_var.set("Connected - no protocol")
+        self.log(
+            "No ADV_BLE2UART response after INFO/VERSION probe. This GUI supports "
+            "ADV_BLE2UART firmware on ESP32-C3 and TB-03F-KIT; an ESP8266 or a plain "
+            "serial console will not answer these commands, and ESP8266 has no BLE radio. "
+            "Verify COM port, device, firmware, and baud."
+        )
+        self._sync_scan_buttons()
+
+    def _mark_protocol_ready(self):
+        if self._protocol_ready:
+            return
+        self._protocol_ready = True
+        self._cancel_protocol_probe_watchdog()
+        self.status_var.set("Connected")
+        self.log("ADV_BLE2UART protocol handshake OK")
+        self._sync_scan_buttons()
+        self.after(120, self.led_query_state)
+        if DEVICE_SUPPORTS_VBAT:
+            self.after(200, self.send_vbat)
 
     def send_info(self):
         self.safe_command(self.client.command_info)
@@ -2384,6 +2433,15 @@ class AdvBle2UartGui(tk.Tk):
         )
 
     def start_scan(self):
+        if not self._protocol_ready:
+            detail = (
+                "No ADV_BLE2UART response has been received from the connected device yet. "
+                "This GUI supports ADV_BLE2UART firmware on ESP32-C3 and TB-03F-KIT; "
+                "ESP8266 is not supported and has no BLE radio."
+            )
+            self.log(detail)
+            messagebox.showerror("Scan unavailable", detail)
+            return
         config = self.current_scan_config()
         if not config.phy_1m and not config.phy_coded:
             messagebox.showerror("Invalid scan", "Enable at least one PHY")
@@ -2796,9 +2854,11 @@ class AdvBle2UartGui(tk.Tk):
     def handle_rx(self, event):
         if isinstance(event, AdvPacket):
             self._flush_crc_discards()
+            self._mark_protocol_ready()
             self.handle_advertisement(event)
         elif isinstance(event, CommandResponse):
             self._flush_crc_discards()
+            self._mark_protocol_ready()
             self.handle_response(event)
         elif isinstance(event, tuple) and event[0] == "crc_error":
             self._record_crc_discard(event[1])
@@ -2853,9 +2913,15 @@ class AdvBle2UartGui(tk.Tk):
         Clears any pending watchdog and force-resets transient state so the
         GUI does not stay locked into 'connecting' or 'scanning' phantoms."""
         self._cancel_scan_response_watchdog()
+        self._cancel_protocol_probe_watchdog()
         self._cancel_conn_timeout()
+        self._protocol_ready = False
         self.scan_state_var.set("Stopped")
         self.last_started_scan_config = None
+        if self.client and self.client.is_open:
+            self.status_var.set("Connected - probing")
+            self.after(GUI_BOOTSTRAP_DELAY_MS, self._begin_protocol_probe)
+        self._sync_scan_buttons()
 
     def handle_response(self, response: CommandResponse):
         if response.command == CMD_ID_INFO:
