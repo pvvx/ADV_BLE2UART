@@ -3,223 +3,954 @@
 import sys
 import time
 import serial
-import binascii
-from pynput import keyboard
+import logging
+import argparse
+import os
+import json
+import codecs
+import re
+from construct import *
 
 
-CMD_ID_INFO		= 0x00
-CMD_ID_SCAN 	= 0x01 # Scan on/off, parameters
-CMD_ID_WMAC		= 0x02 # add whitelist mac
-CMD_ID_BMAC 	= 0x03 # add blacklist mac
-CMD_ID_CLRM		= 0x04 # clear mac list
+class Mac_Wb_List:
+    WHITE_LIST = [
+        # 'aabbccddeef0'  # Example of white-listed MAC address
+        # 'aabbccddeef1'
+    ]
 
-crctable = (
-0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
-0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
-0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
-0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
-0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
-0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
-0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
-0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
-0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
-0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
-0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
-0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
-0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
-0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
-0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
-0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
-0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
-0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
-0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
-0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840,
-0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
-0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
-0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
-0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
-0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241,
-0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440,
-0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40,
-0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
-0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
-0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
-0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
-0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040 )
-def crc16(data: bytearray, length):
-	crc = 0xFFFF
-	for i in range(0, length):
-		crc = (crc >> 8) ^ crctable[(crc ^ data[i]) & 0xFF]
-	return crc 
+    BLACK_LIST = [
+        # 'aabbccddeef0'  # Example of black-listed MAC address
+        # 'aabbccddeef1'
+    ]
 
-class BLE2UART:
-	def __init__(self, port, baud = 921600):
-		self.reopen(baud, port)
-	def reopen(self, baud, port = None):
-		if port == None:
-			if self.port == None:
-				print ('ReOpen ?')
-				return False
-			else:
-				self._port.close();
-				port = self.port
-			print ('ReOpen %s, %d bit/s...' % (port, baud), end = ' ')
-		else:
-			print ('Open %s, %d bit/s...' % (port, baud), end = ' ')
-		try:
-			self._port = serial.Serial(port, baud, \
-									   serial.EIGHTBITS,\
-									   serial.PARITY_NONE, \
-									   serial.STOPBITS_ONE)
-			self._port.setRTS(True)
-			self._port.setDTR(True)
-			time.sleep(0.5)
-			self._port.flushOutput()
-			self._port.flushInput()
-			self._port.reset_output_buffer()
-			self._port.reset_input_buffer()
-			self._port.setRTS(False)
-			self._port.setDTR(False)
-			self._port.timeout = 0.1
-		except OSError as err:
-			print("OS error:", err)
-			sys.exit(1)
-		except ValueError:
-			print("Could not convert data to an integer.")
-			sys.exit(1)
-		except Exception as err:
-			print(f"Unexpected {err=}, {type(err)=}")
-			raise
-			sys.exit(1)
-		except:
-			print('Error!')
-			sys.exit(1)
-		print('ok')
-		self.port = port
-		return True
-	def read(self, rdlen):
-		try:
-			rblk = self._port.read(rdlen)
-		except OSError as err:
-			print("OS error:", err)
-			sys.exit(1)
-		except:
-			print('\rError read %s!' % (self.port))
-			sys.exit(1)
-		return rblk
-	def write(self, blk):
-		try:
-			self._port.write(blk)
-		except OSError as err:
-			print("OS error:", err)
-			sys.exit(1)
-		except:
-			print('\rError write %s!' % (self.port))
-			sys.exit(1)
-		return True
-	def command(self, blk):
-		ac = crc16(blk, len(blk))
-		b = blk+bytearray([ac&0xFF,(ac>>8)&0xFF])
-		self.write(b)
-		self._port.flushOutput()
-		print("cmd:", blk.hex())
-		time.sleep(0.02)
-		return True
-	def add_mac_list(self, mac, m = CMD_ID_WMAC):
-		b = bytearray(7)
-		b[0] = m
-		b[1] = mac[5]
-		b[2] = mac[4]
-		b[3] = mac[3]
-		b[4] = mac[2]
-		b[5] = mac[1]
-		b[6] = mac[0]
-		return self.command(b)
-	def close(self):
-		return self._port.close()
 
-def on_press(key):
-    if key == keyboard.Key.esc:
+crc_table = (
+    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
+    0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
+    0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
+    0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
+    0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
+    0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
+    0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
+    0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
+    0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
+    0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
+    0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
+    0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
+    0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
+    0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
+    0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
+    0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
+    0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
+    0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
+    0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
+    0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840,
+    0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
+    0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
+    0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
+    0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
+    0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241,
+    0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440,
+    0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40,
+    0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
+    0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
+    0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
+    0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
+    0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
+)
+
+HEX = codecs.getencoder('hex')
+
+
+def crc_16(data, length):
+    crc = 0xFFFF
+    for i in range(0, length):
+        crc = (crc >> 8) ^ crc_table[(crc ^ data[i]) & 0xFF]
+    return crc
+
+
+adv_scanning = Struct(
+    "flag" / BitStruct(
+        "address_type" / Enum(BitsInteger(2),  # Bits 6 and 7. Generally PUBLIC
+            PUBLIC = 0,
+            RANDOM = 1,
+            RESOLVE_PRIVATE_PUBLIC = 2,
+            RESOLVE_PRIVATE_RANDOM = 3,
+        ),
+        "address_type_filter_random" / Flag,  # Bits 4 and 5: address_type_filter. Generally both.
+        "address_type_filter_private" / Flag,
+        "DUP_FILTER_ENABLE" / Flag,  # Bit 3 - (filter duplicates) True if DUP_FILTER_ENABLE, False if DUP_FILTER_DISABLE
+        "SCAN_TYPE_ACTIVE" / Flag,  # Bit 2 - True if SCAN_TYPE_ACTIVE, False if SCAN_TYPE_PASSIVE
+        "SCAN_PHY_CODED" / Flag,  # Bit 1 - True if Coded PHY. SCAN_PHY_1M_CODED = SCAN_PHY_CODED | SCAN_PHY_1M
+        "SCAN_PHY_1M" / Flag,  # Bit 0 - True if 1M PHY
+        # Set both SCAN_PHY_CODED and SCAN_PHY_1M to False to disable scan
+    ),
+    "window_ms" / ExprAdapter(Int16sl,
+        decoder=lambda obj, ctx: int(float(obj) * 0.625),
+        encoder=lambda obj, ctx: int(float(obj) / 0.625)
+    )
+)
+
+
+def build_scan_command(
+    scan_phy_1m=True,
+    scan_phy_coded=True,
+    address_type_filter_random=False,
+    address_type_filter_private=False,
+    window_ms=30,
+    cmd_id_scan=b'\x01',
+):
+    return cmd_id_scan + adv_scanning.build(
+        {
+            "flag": {
+                "address_type": "PUBLIC",
+                "address_type_filter_random": address_type_filter_random,
+                "address_type_filter_private": address_type_filter_private,
+                "DUP_FILTER_ENABLE": False,
+                "SCAN_TYPE_ACTIVE": False,
+                "SCAN_PHY_CODED": scan_phy_coded,
+                "SCAN_PHY_1M": scan_phy_1m
+            },
+            "window_ms": window_ms
+        }
+    )
+
+
+class ByteAdapter(Adapter):
+    def __init__(self, nbytes=6, separator=':', reverse=False):
+        Adapter.__init__(self, Byte[nbytes])
+        self._decode = lambda obj, ctx, path: separator.join(
+            "%02x" % b for b in obj[::-1 if reverse else 1]
+        ).upper()
+        self._encode = lambda obj, ctx, path: bytearray.fromhex(
+            re.sub(r'[.:\- ]', '', obj)
+        )[::-1 if reverse else 1]
+
+
+class Command:
+    CMD_ID_INFO = b'\x00'
+    CMD_ID_SCAN = b'\x01'  # Scan on/off, (len_cmd = 3: parameters)
+    CMD_ID_WMAC = b'\x02'  # add white mac/prefix (len_cmd = 1..6 bytes)
+    CMD_ID_BMAC = b'\x03'  # add black mac/prefix (len_cmd = 1..6 bytes)
+    CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
+    CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage and chip temperature
+    CMD_ID_GPIOEVT = b'\x10'  # GPIO edge events: arm/disarm + spontaneous notifications
+    # CMD_ID_PRNT = b'\x05'  # debug print
+    DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
+    START_SCAN  = build_scan_command(scan_phy_1m=True, scan_phy_coded=True)
+    STOP_SCAN   = CMD_ID_SCAN + b'\x00\x00\x00'
+
+
+# CMD_ID_GPIOEVT sub-operations (must match the firmware enum).
+GPIOEVT_OP_QUERY = 0
+GPIOEVT_OP_ENABLE = 1
+GPIOEVT_OP_DISABLE = 2
+GPIOEVT_OP_CLEAR = 3
+# High bit of the response 'index' field set → spontaneous event (vs. command ack).
+GPIOEVT_EVENT_FLAG = 0x80
+
+
+COMMAND_STATUS = {
+    0: 'OK',
+    1: 'ARGS',
+    2: 'PIN',
+    3: 'DENIED',
+    4: 'VALUE',
+}
+
+
+def command_status_name(status):
+    return COMMAND_STATUS.get(status, '0x%02X' % status)
+
+
+class Ble2Uart:
+    def __init__(self, port=None, baud=2000000, timeout=0.3, mac_separator=""):
+        self.sync = None
+        self.data = None
+        self.ser = None
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
+
+        self.timeout = timeout
+        self.baud = baud
+        self.port = None
+        self.config_cmd = {}
+        self.cmd_time = time.time()
+        self.scan_enabled = None
+        self.ReversedMacAddress = ByteAdapter(
+            nbytes=6,
+            reverse=True,
+            separator=mac_separator
+        )
+
+        self.reopen(baud, port, timeout)
+
+    def config_start(self):
+        self.config_cmd = {}
+        ret = time.time() - self.cmd_time
+        self.cmd_time = time.time()
+        return ret
+
+    def config_still_running(self):
+        if not self.config_cmd:
+            return -1
+        return time.time() - self.cmd_time
+
+    def config_account(self, cmd):
+        self.config_cmd[cmd[0]] = self.config_cmd.get(cmd[0], 0) - 1
+        if not self.config_cmd[cmd[0]]:
+            del self.config_cmd[cmd[0]]
+
+    def reopen(self, baud=None, port=None, timeout=None):
+        self.config_start()
+        self.data = bytearray()
+        self.sync = None
+        self.scan_enabled = None
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
+        if timeout:
+            self.timeout = timeout
+        if baud:
+            self.baud = baud
+        if port:
+            self.port = port
+        if not self.port:
+            logging.warning('ReOpen ?')
+            return False
+        if self.ser and self.ser.isOpen():
+            self.ser.close()
+            logging.warning(
+                'ReOpen %s, %d baud, timeout: %s secs...',
+                self.port, self.baud, self.timeout
+            )
+        else:
+            logging.warning(
+                'Open %s, %d baud, timeout: %s secs...',
+                self.port, self.baud, self.timeout
+            )
+        try:
+            self.ser = serial.serial_for_url(port, self.baud)
+            time.sleep(0.05)
+            self.ser.setDTR(True)
+            self.ser.setRTS(True)
+            time.sleep(0.05)
+            self.ser.setDTR(False)
+            self.ser.setRTS(False)
+            self.ser.timeout = self.timeout
+        except OSError as err:
+            logging.critical("OS error: %s. Terminating.", err)
+            sys.exit(1)
+        except ValueError:
+            logging.critical(
+                "Could not convert data to an integer. Terminating."
+            )
+            sys.exit(1)
+        except Exception as err:
+            logging.critical("Unexpected %s - %s. Terminating.", err, type(err))
+            sys.exit(1)
+        except:
+            logging.critical('Generic error. Terminating.')
+            sys.exit(1)
+        logging.warning('Connected')
+        self.sync = False
+        return True
+
+    def read(self, rdlen):
+        try:
+            rblk = self.ser.read(rdlen)
+        except OSError as err:
+            logging.critical("OS error: %s. Terminating.", err)
+            sys.exit(1)
+        except Exception as e:
+            logging.critical('%s read error: %s Terminating.', self.port, e)
+            sys.exit(1)
+        except:
+            logging.critical('Received program termination command.')
+            sys.exit(1)
+        return rblk
+
+    def drain_input(self, wait_seconds=None, rdlen=256):
+        if wait_seconds is None:
+            wait_seconds = max(0.5, self.timeout * 4.0)
+        deadline = time.time() + wait_seconds
+        total = 0
+        while time.time() < deadline:
+            blk = self.read(rdlen)
+            if not blk:
+                break
+            total += len(blk)
+        return total
+
+    def write(self, blk):
+        try:
+            self.ser.write(blk)
+        except OSError as err:
+            logging.critical("OS error: %s. Terminating.", err)
+            sys.exit(1)
+        except Exception as e:
+            logging.critical('Write error %s: %s. Terminating.', self.port, e)
+            sys.exit(1)
+        return True
+
+    def command(self, cmd):
+        blk = bytearray([d for d in cmd])
+        ac = crc_16(blk, len(blk))
+        b = blk + bytearray([ac & 0xFF, (ac >> 8) & 0xFF])
+        self.write(b)
+        self.ser.flush()
+        logging.debug(
+            "send cmd: %s [%s] %s",
+            HEX(b[0:1])[0], HEX(b[1:-2])[0], HEX(b[-2:])[0]
+        )
+        self.config_cmd[cmd[0]] = self.config_cmd.get(cmd[0], 0) + 1
+        time.sleep(0.05)
+        return True
+
+    def add_mac_list(self, mac, cmd=Command.CMD_ID_WMAC):
+        return self.command(bytearray([cmd[0]]) + bytearray(mac_to_wire(mac)))
+
+    def close(self):
+        return self.ser.close()
+
+    def read_adv(self):
+        rssi = ""
+        adtp = ""
+        evtp = ""
+        phys = ""
+        mac = ""
+        payload = ""  # valued if advertisement
+        blk = self.read(64)
+        if blk is not None and len(blk) > 0:
+            self.data += blk
+            if len(self.data) >= 13:  # minimum packet size (11 bytes + crc16)
+                while (
+                    len(self.data) > 0 and self.data[0] + 13 <= len(self.data)  # data exists and includes at least a full packet
+                ):
+                    len_payload = self.data[0]
+                    if crc_16(self.data, len_payload + 13) == 0:  # l + 13 = total packet size
+                        logging.verbose(
+                            "packet: %s %s",
+                            HEX(self.data[:11]),
+                            HEX(self.data[11: len_payload + 11])
+                        )
+                        self.sync = True
+                        rssi = Int8sl.parse(self.data[1:2])
+                        adtp = HEX(self.data[2:3])[0]
+                        evtp = HEX(self.data[3:4])[0]
+                        phys = HEX(self.data[4:5])[0]
+                        mac = self.ReversedMacAddress.parse(self.data[5:11])
+                        if self.data[4] == 0xff:  # phys = 0xff -> cmd response received; rssi is the cmd number
+                            # 0, cmd id, position, length, 0xff; all commands have 11 bytes packet length
+                            logging.verbose(
+                                'resp-blk: %s %s %s %s %s %s',
+                                len_payload, rssi, adtp, evtp, phys, mac
+                            )
+                            cmd = self.data[1:2]
+                            len_cmd = self.data[3]  # evtp = length of the command data included in mac (max=6)
+                            if self.data[1:11] == Command.DEBUG_PRINT:
+                                payload = (
+                                    self.data[11: len_payload + 11]
+                                ).decode()
+                                logging.warning("Debug message: %s", payload)
+                            elif cmd == Command.CMD_ID_INFO:
+                                self.config_account(cmd)
+                                logging.warning(
+                                    'resp: %s=CmdInfo, version: %s; '
+                                    'local MAC: %s', rssi, adtp, mac
+                                )  # command id, total number of definable mac list elements
+                            elif cmd == Command.CMD_ID_CLRM:
+                                self.config_account(cmd)
+                                logging.warning(
+                                    'resp: %s=ClearMacList, definable'
+                                    ' elements: %s', rssi, self.data[2]
+                                )  # command id, total number of definable mac list elements
+                            elif cmd in [
+                                Command.CMD_ID_WMAC,
+                                Command.CMD_ID_BMAC
+                            ]:  # it includes a mac; print it in reverse
+                                self.config_account(cmd)
+                                logging.warning(  # command id, count, mac
+                                    'resp: %s=Add %s List, '
+                                    'position %s, MAC: %s', rssi,
+                                    "WHITE" if cmd == Command.CMD_ID_WMAC
+                                    else "BLACK", self.data[2], mac
+                                )
+                            elif cmd == Command.CMD_ID_SCAN:
+                                self.config_account(cmd)
+                                if self.data[5] == 0:
+                                    self.scan_enabled = False
+                                    logging.warning(
+                                        'resp: %s=SCAN Disable %s',
+                                        rssi, adtp,  # command id, single numeric attribute
+                                    )
+                                else:
+                                    self.scan_enabled = True
+                                    logging.warning(
+                                        'resp: %s=SCAN Enable, '
+                                        'MAC addresses in list: %s, %s=%s',
+                                        rssi, self.data[2],  # command id, MAC addrs in list
+                                        HEX(self.data[5: len_cmd + 5]),
+                                        adv_scanning.parse(
+                                            self.data[5: len_cmd + 5]
+                                        )
+                                    )
+                            elif cmd == Command.CMD_ID_VBAT:
+                                self.config_account(cmd)
+                                self.last_vbat_status = self.data[2]
+                                self.last_vbat_mv = None
+                                self.last_vbat_temp_c = None
+                                if len_cmd >= 2:
+                                    self.last_vbat_mv = self.data[5] | (self.data[6] << 8)
+                                if len_cmd >= 4:
+                                    temp_c = self.data[7] | (self.data[8] << 8)
+                                    if temp_c & 0x8000:
+                                        temp_c -= 0x10000
+                                    if temp_c != -32768:
+                                        self.last_vbat_temp_c = temp_c
+                                if self.last_vbat_mv is not None and self.last_vbat_temp_c is not None:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV, temperature: %s C',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv,
+                                        self.last_vbat_temp_c
+                                    )
+                                elif self.last_vbat_mv is not None and len_cmd >= 4:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV, temperature: unavailable',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv
+                                    )
+                                elif self.last_vbat_mv is not None:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s, voltage: %s mV',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status),
+                                        self.last_vbat_mv
+                                    )
+                                else:
+                                    logging.warning(
+                                        'resp: %s=VBAT, status: %s',
+                                        rssi,
+                                        command_status_name(self.last_vbat_status)
+                                    )
+                            elif cmd == Command.CMD_ID_GPIOEVT:
+                                self._handle_gpioevt_frame(rssi, len_cmd)
+                            else:
+                                logging.error(
+                                    'blk: %s', HEX(self.data[0: len_payload + 11])
+                                )
+                        else:  # advertisement received (payload is valued)
+                            payload = HEX(self.data[11: len_payload + 11])[0]
+                            logging.info(
+                                'adv: %s %s %s %s %s %s %s',
+                                len_payload, rssi, evtp.decode(), adtp.decode(),
+                                phys.decode(), mac, payload.decode()
+                            )
+                        self.data = self.data[len_payload + 13:]  # remove the processed packet
+                    else:  # CRC error
+                        if self.sync:
+                            logging.error(
+                                "CRC error. Discard %02x", self.data[0]
+                            )
+                        else:
+                            logging.debug("Discard %02x", self.data[0])
+                        self.data = self.data[1:]  # discard 1 byte
+        return rssi, evtp, adtp, phys, mac, payload
+
+    def black_white_list(
+        self,
+        white_list=Mac_Wb_List.WHITE_LIST,
+        black_list=Mac_Wb_List.BLACK_LIST,
+        info=True,
+        clear=True,
+        start=True,
+        start_cmd=None,
+    ):
+        if info:
+            self.command(Command.CMD_ID_INFO)
+        if clear:
+            self.command(Command.CMD_ID_CLRM)  # clear w/b list
+        for i in white_list:
+            self.add_mac_list(i, Command.CMD_ID_WMAC)
+        for i in black_list:
+            self.add_mac_list(i, Command.CMD_ID_BMAC)
+        if start:
+            self.command(start_cmd or Command.START_SCAN)
+
+    def stop_scan(self, wait_seconds=2.0):
+        self.command(Command.STOP_SCAN)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if self.scan_enabled is False:
+                return True
+        logging.warning('SCAN Disable confirmation not received')
         return False
 
+    def read_vbat(self, wait_seconds=2.0):
+        self.last_vbat_status = None
+        self.last_vbat_mv = None
+        self.last_vbat_temp_c = None
+        self.command(Command.CMD_ID_VBAT)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if self.last_vbat_status is not None:
+                return self.last_vbat_status, self.last_vbat_mv, self.last_vbat_temp_c
+        return None, None, None
+
+    # ---------- CMD_ID_GPIOEVT helpers ------------------------------------
+    def _handle_gpioevt_frame(self, status_or_index_byte, len_cmd):
+        """Parse a CMD_ID_GPIOEVT response/event and print it.
+
+        The protocol-response frame the firmware emits has layout:
+          self.data[1]  = CMD_ID_GPIOEVT (0x10)        (== cmd)
+          self.data[2]  = 'index' byte: bit7=event flag, low bits=pin (for events)
+                                       OR command status (CMD_STATUS_*) for an ack
+          self.data[3]  = len_cmd (FRAME_DATA_LEN bytes follow)
+          self.data[4]  = 0xFF (phys marker for responses)
+          self.data[5..10] = payload
+        """
+        # Note: ``status_or_index_byte`` (rssi value used by adv path) is the
+        # byte the caller already passed as ``rssi`` in the surrounding code;
+        # for GPIOEVT frames it is repurposed as cmd byte (== 0x10) so we
+        # take the real index from self.data[2].
+        index = self.data[2]
+        payload = self.data[5:5 + len_cmd]
+        if index & GPIOEVT_EVENT_FLAG:
+            if len(payload) < 6:
+                logging.warning('GPIOEVT event (truncated): %s', HEX(bytes(payload))[0])
+                return
+            pin = payload[0]
+            level = payload[1]
+            ts_ms = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24)
+            edge = 'RISE' if level else 'FALL'
+            logging.warning(
+                'GPIOEVT event: GPIO%d → %d (%s)  t=%d ms', pin, level, edge, ts_ms
+            )
+            return
+        # Ack of an enable / disable / query / clear request.
+        status = command_status_name(index)
+        if len(payload) >= 5:
+            pin_acted = payload[0]
+            mask = payload[1] | (payload[2] << 8) | (payload[3] << 16) | (payload[4] << 24)
+            logging.warning(
+                'GPIOEVT ack: status=%s pin=0x%02X armed_mask=0x%08X',
+                status, pin_acted, mask
+            )
+        elif len(payload) >= 4:
+            mask = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)
+            logging.warning(
+                'GPIOEVT query: status=%s armed_mask=0x%08X', status, mask
+            )
+        else:
+            logging.warning('GPIOEVT: status=%s data=%s', status, HEX(bytes(payload))[0])
+
+    def gpioevt_enable(self, pin_id):
+        return self.command(Command.CMD_ID_GPIOEVT + bytearray([GPIOEVT_OP_ENABLE, pin_id & 0xFF]))
+
+    def gpioevt_disable(self, pin_id):
+        return self.command(Command.CMD_ID_GPIOEVT + bytearray([GPIOEVT_OP_DISABLE, pin_id & 0xFF]))
+
+    def gpioevt_query(self):
+        return self.command(Command.CMD_ID_GPIOEVT + bytearray([GPIOEVT_OP_QUERY]))
+
+    def gpioevt_clear(self):
+        return self.command(Command.CMD_ID_GPIOEVT + bytearray([GPIOEVT_OP_CLEAR]))
+
+
+def setup_logging(
+        default_path='adv2uart-log.json',
+        default_level=logging.WARNING,
+        env_key='ADV2UART_CFG'
+):
+    path = default_path
+    value = os.getenv(env_key, None)
+    if value:
+        path = value
+    if os.path.exists(path):
+        with open(path, 'rt') as f:
+            config = json.load(f)
+        try:
+            logging.config.dictConfig(config)
+        except Exception:
+            logging.basicConfig(level=default_level)
+    else:
+        logging.basicConfig(level=default_level)
+
+
+def normalize_mac(text):
+    normalized = re.sub(r'[^0-9a-fA-F]', '', text).upper()
+    n = len(normalized)
+    if n == 0 or n % 2 != 0 or n > 12:
+        raise ValueError(
+            'MAC address must contain 2-12 even-count hexadecimal digits (1-6 bytes prefix)'
+        )
+    return normalized
+
+
+def mac_to_wire(text):
+    return bytes.fromhex(normalize_mac(text))[::-1]
+
+
+def parse_mac_filters(raw_values, parser, option_name):
+    macs = []
+    for raw_value in raw_values or []:
+        for candidate in re.split(r'[,;]', raw_value):
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            try:
+                macs.append(normalize_mac(candidate))
+            except ValueError as exc:
+                parser.error('%s: %s: %r' % (option_name, exc, candidate))
+    return macs
+
+
+########################### MAIN ###################################
 def main():
-	if(len(sys.argv) < 2):
-		print("Usage: adv2uart <COM Port>")
-		sys.exit(1)
-	if(sys.argv[1] == "-h"):
-		print("Usage: adv2uart <COM Port>")
-		sys.exit(0)
-	print("Press 'ESC' to exit")
-	print ('Connecting to '+sys.argv[1]+' ...')
-	dv = BLE2UART(sys.argv[1], 921600)
-	data = bytearray() #[] #dv.read(1)
-	#if data != None and len(data) > 0:
-	#	if data[0] == 0:
-	#		data = data[1:]				
-	dv.command(b'\x04') #clear w/b list
-	# MAC List (max 64) Mode: BlackList or WhiteList! The list type is set by the last MAC add command
-	# Add BlackList:
-	#dv.add_mac_list(binascii.unhexlify('381f8dd93cb6'), CMD_ID_BMAC) 
-	#dv.add_mac_list(binascii.unhexlify('381f8d941e11'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('381f8dd8b52d'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('381f8d942ef9'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('381f8dd93b3a'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('39ee85f86c71'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('1c90ffdc0cc6'), CMD_ID_BMAC)
-	#dv.add_mac_list(binascii.unhexlify('1c90ffd8ba69'), CMD_ID_BMAC)
-	# Or Add WhiteList (max 64):
-	#dv.add_mac_list(binascii.unhexlify('123456789000'), CMD_ID_WMAC)
-	#dv.add_mac_list(binascii.unhexlify('123456789abc'), CMD_ID_WMAC)
+    parser = argparse.ArgumentParser(
+        epilog='BLE ADV_BLE2UART scanner'
+    )
+    parser.add_argument(
+        '-d',
+        '--debug',
+        dest='debug',
+        action='store_true',
+        help='Print debug information'
+    )
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        dest='verbose',
+        action='store_true',
+        help='Print verbose information'
+    )
+    parser.add_argument(
+        '-i',
+        '--info',
+        dest='info',
+        action='store_true',
+        help='Print limited debug information'
+    )
+    parser.add_argument(
+        '-s',
+        '--sleep',
+        dest='sleep',
+        type=int,
+        help='add an initial delay in seconds before the query (default: 1)',
+        default=1
+    )
+    parser.add_argument(
+        '-b',
+        '--baudrate',
+        dest='baudrate',
+        type=int,
+        help='serial connection baudrate (default: 2000000)',
+        default=2000000
+    )
+    parser.add_argument(
+        '-p', '--port',
+        dest='serial_port',
+        help="Serial port; default = COM11 or /dev/ttyUSB0",
+        default=['COM11'] if os.name == 'nt' else ['/dev/ttyUSB0'],
+        nargs=1,
+        metavar='PORT'
+    )
+    parser.add_argument(
+        '-t',
+        '--timeout',
+        dest='timeout',
+        type=float,
+        help='serial port read timeout in seconds (default: 0.3)',
+        default=0.3
+    )
+    parser.add_argument(
+        '-n',
+        '--number',
+        dest='number',
+        type=int,
+        help='Number of advertisements to process (default is 0 = infinite)',
+        default=0
+    )
+    parser.add_argument(
+        '--duration',
+        dest='duration',
+        type=float,
+        help='stop scanning after this many seconds (default: 0 = infinite)',
+        default=0
+    )
+    parser.add_argument(
+        '--idle-timeout',
+        dest='idle_timeout',
+        type=float,
+        help='stop scanning after this many seconds without advertisements (default: 0 = disabled)',
+        default=0
+    )
+    parser.add_argument(
+        '--status-interval',
+        dest='status_interval',
+        type=float,
+        help='print an idle status every N seconds while listening (default: 10, 0 = disabled)',
+        default=10
+    )
+    parser.add_argument(
+        '--phy',
+        dest='phy',
+        choices=['1m', 'coded', 'both'],
+        help='scan PHY selection (default: both)',
+        default='both'
+    )
+    parser.add_argument(
+        '--scan-window-ms',
+        dest='scan_window_ms',
+        type=float,
+        help='scan window in milliseconds (default: 30)',
+        default=30
+    )
+    parser.add_argument(
+        '--filter-random',
+        dest='filter_random',
+        action='store_true',
+        help='discard random-address advertisements'
+    )
+    parser.add_argument(
+        '--accept-random',
+        dest='filter_random',
+        action='store_false',
+        help='accept random-address advertisements'
+    )
+    parser.add_argument(
+        '--filter-private',
+        dest='filter_private',
+        action='store_true',
+        help='discard private-address advertisements'
+    )
+    parser.add_argument(
+        '--accept-private',
+        dest='filter_private',
+        action='store_false',
+        help='accept private-address advertisements'
+    )
+    parser.add_argument(
+        '--whitelist',
+        dest='whitelist',
+        action='append',
+        default=[],
+        metavar='MAC/PREFIX[,MAC/PREFIX...]',
+        help='add one or more MAC addresses or prefixes to the firmware whitelist before scan start'
+    )
+    parser.add_argument(
+        '--blacklist',
+        '--backlist',
+        dest='blacklist',
+        action='append',
+        default=[],
+        metavar='MAC/PREFIX[,MAC/PREFIX...]',
+        help='add one or more MAC addresses or prefixes to the firmware blacklist before scan start'
+    )
+    parser.add_argument(
+        '--info-after',
+        dest='info_after',
+        type=float,
+        help='send INFO this many seconds after scan start and report whether it is acknowledged',
+        default=0
+    )
+    parser.add_argument(
+        '--battery',
+        dest='battery',
+        action='store_true',
+        help='query the current VBAT / 3V3 rail and chip temperature, then exit'
+    )
+    parser.add_argument(
+        '--gpio-event',
+        dest='gpio_event_pin',
+        type=int,
+        action='append',
+        metavar='PIN',
+        default=[],
+        help=(
+            'Arm a CMD_ID_GPIOEVT interrupt on the given GPIO before scanning. '
+            'Edges (rising or falling) will be printed as "GPIOEVT event" log lines. '
+            'Can be repeated, e.g. --gpio-event 9 --gpio-event 10.'
+        ),
+    )
+    parser.add_argument(
+        '--gpio-event-only',
+        dest='gpio_event_only',
+        action='store_true',
+        help='arm --gpio-event pins and just print events; skip BLE scan loop'
+    )
 
-	# Scan Type:
-	# bit0: =1 Scan PHY 1M 
-	# bit1: =1 Scan PHY Coded 
-	# bit2: =0 Passive scan, =1 Active scan
-	# bit3: none
-	# bit[4:5] Out Scan Filter: Out if AddressType &  ScanFilter == 0
-	# bit[6:7] Scan address type: =0 BLE_ADDR_TYPE_PUBLIC, =1 BLE_ADDR_TYPE_RANDOM, =2 BLE_ADDR_TYPE_RPA_PUBLIC, =3 BLE_ADDR_TYPE_RPA_RANDOM 
-	
-	#dv.command(b'\x01\x33\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
-	#print("Start passive scan PHY 1M and Coded PHY, Windows 30 ms")
+    parser.set_defaults(filter_random=False, filter_private=False)
+    args = parser.parse_args()
+    white_list = parse_mac_filters(args.whitelist, parser, '--whitelist')
+    black_list = parse_mac_filters(
+        args.blacklist,
+        parser,
+        '--blacklist/--backlist'
+    )
+    if not white_list:
+        white_list = list(Mac_Wb_List.WHITE_LIST)
+    if not black_list:
+        black_list = list(Mac_Wb_List.BLACK_LIST)
 
-	dv.command(b'\x01\x01\x30\x00') #Start pas.scan 1M and Coded PHY [bit0:1], filter .., Windows: 0x0030 * 0.625 = 30 ms
-	print("Start passive scan PHY 1M, Windows 30 ms")
-	with keyboard.Listener(on_press=on_press) as listener:
-		while listener.running:
-			blk = dv.read(64)
-			if blk != None and len(blk) > 0:
-				data += blk
-				if len(data) >= 13:
-					while(len(data) > 0 and data[0] + 13 <= len(data)):
-						l = data[0]
-						if crc16(data, l+13) == 0:
-							rssi = data[1:2].hex() 
-							evtp = data[2:3].hex() 
-							phys = data[3:4].hex()
-							adtp = data[4:5].hex()
-							xmac = bytes([data[10], data[9], data[8], data[7], data[6], data[5]])
-							if data[4] == 0xff:
-								x = data[3]
-								if x == 0:
-									print('resp:', rssi, adtp)
-								else:
-									if x < (len(data) - 7):
-										if x == 6:
-											print('resp:', rssi, adtp, xmac.hex())
-										else:
-											print('resp:', rssi, adtp, data[5:x+5].hex())
-									else:
-										print('blk:', data.hex())
-							else:
-								mac = xmac.hex() 
-								dump = data[11:l+11].hex()
-								print('adv:', rssi, evtp, phys, adtp, mac, dump)
-							data = data[l + 13:]
-						else:
-							data = data[1:]
-	dv.command(b'\x01\x00\x00\x00') # Stop scan
-	dv.close()  # close the connection
-	sys.exit(0)
+    setup_logging()
+    loglevel = None
+    if args.info:
+        loglevel = logging.INFO
+    if args.verbose:
+        loglevel = logging.VERBOSE
+    if args.debug:
+        loglevel = logging.DEBUG
+    if loglevel:
+        logging.getLogger().setLevel(loglevel)
+        logging.warning("Set loglevel %s", loglevel)
+    elif not args.battery:
+        logging.getLogger().setLevel(logging.INFO)
+
+    if args.battery:
+        logging.warning('VBAT/temperature query mode')
+    else:
+        logging.warning('Press Ctrl+C to exit')
+    logging.warning('Connecting to %s...', args.serial_port[0])
+
+    dv = None
+    scan_started = False
+    exit_code = 0
+    try:
+        dv = Ble2Uart(
+            port=args.serial_port[0],
+            baud=args.baudrate,
+            timeout=args.timeout
+        )
+        time.sleep(args.sleep)
+        drained = dv.drain_input()
+        if drained:
+            logging.warning('Discarded %d startup bytes from serial input', drained)
+        # Arm any GPIO event sources requested by the user before starting
+        # the scan loop. Each enable triggers an ack frame which is logged
+        # by the regular read_adv() machinery.
+        if args.gpio_event_pin:
+            for pin in args.gpio_event_pin:
+                logging.warning('Arming GPIOEVT on GPIO%d', pin)
+                dv.gpioevt_enable(pin)
+            for _ in range(20):
+                dv.read_adv()
+                time.sleep(0.05)
+
+        if args.gpio_event_only:
+            if not args.gpio_event_pin:
+                logging.error('--gpio-event-only requires at least one --gpio-event PIN')
+                exit_code = 2
+            else:
+                logging.warning('GPIO-event-only mode (Ctrl+C to exit)')
+                started_at = time.time()
+                while True:
+                    if args.duration and time.time() - started_at >= args.duration:
+                        break
+                    dv.read_adv()
+        elif args.battery:
+            status, voltage_mv, temperature_c = dv.read_vbat(wait_seconds=max(2.0, args.timeout * 4.0))
+            if status is None:
+                logging.error('VBAT query timed out')
+                exit_code = 1
+            elif status != 0:
+                logging.error('VBAT query failed: %s', command_status_name(status))
+                exit_code = 1
+            elif temperature_c is None:
+                logging.warning('VBAT = %s mV (device 3.3V / VBAT rail); chip temperature unavailable', voltage_mv)
+            else:
+                logging.warning(
+                    'VBAT = %s mV (device 3.3V / VBAT rail); chip temperature = %s C',
+                    voltage_mv,
+                    temperature_c
+                )
+        else:
+            dv.config_start()
+            start_scan_cmd = build_scan_command(
+                scan_phy_1m=args.phy in ['1m', 'both'],
+                scan_phy_coded=args.phy in ['coded', 'both'],
+                address_type_filter_random=args.filter_random,
+                address_type_filter_private=args.filter_private,
+                window_ms=args.scan_window_ms,
+                cmd_id_scan=Command.CMD_ID_SCAN,
+            )
+            dv.black_white_list(
+                white_list=white_list,
+                black_list=black_list,
+                start_cmd=start_scan_cmd
+            )
+            scan_started = True
+            count = 0
+            started_at = time.time()
+            last_adv_at = started_at
+            last_status_at = started_at
+            info_sent_at = 0
+            info_timeout_reported = False
+            while True:
+                now = time.time()
+                if args.duration and now - started_at >= args.duration:
+                    logging.warning('Duration reached: %.1f seconds', args.duration)
+                    break
+                if args.idle_timeout and now - last_adv_at >= args.idle_timeout:
+                    logging.warning('Idle timeout reached: %.1f seconds without advertisements', args.idle_timeout)
+                    break
+                if args.status_interval and now - last_adv_at >= args.status_interval and now - last_status_at >= args.status_interval:
+                    logging.info('idle: no advertisements for %.1f seconds; scanner still running', now - last_adv_at)
+                    last_status_at = now
+                if args.info_after and not info_sent_at and now - started_at >= args.info_after:
+                    logging.warning('Sending INFO during active scan at %.1f seconds', now - started_at)
+                    dv.command(Command.CMD_ID_INFO)
+                    info_sent_at = now
+                rssi, evtp, adtp, phys, mac, payload = dv.read_adv()
+                if info_sent_at and not info_timeout_reported:
+                    if Command.CMD_ID_INFO[0] not in dv.config_cmd:
+                        logging.warning('INFO during scan acknowledged')
+                        info_timeout_reported = True
+                    elif now - info_sent_at >= 2.0:
+                        logging.warning('INFO during scan not acknowledged within 2.0 seconds')
+                        info_timeout_reported = True
+                if payload:
+                    last_adv_at = time.time()
+                    if args.number:
+                        count += 1
+                        if count == args.number:
+                            break
+                if dv.config_still_running() > 3:
+                    logging.warning(
+                        "Commands not answered in time: %s. Retrying...", dv.config_cmd
+                    )
+                    dv.config_start()
+                    dv.black_white_list(
+                        white_list=white_list,
+                        black_list=black_list,
+                        start_cmd=start_scan_cmd
+                    )
+    except KeyboardInterrupt:
+        logging.warning('Interrupted')
+        exit_code = 130
+    finally:
+        if dv:
+            if scan_started:
+                dv.stop_scan()
+            dv.close()  # close the connection
+    sys.exit(exit_code)
+
+
+# Custom logging VERBOSE (5)
+logging.VERBOSE = 5
+logging.addLevelName(logging.VERBOSE, "VERBOSE")
+logging.Logger.verbose = lambda inst, msg, *args, **kwargs: inst.log(
+    logging.VERBOSE, msg, *args, **kwargs)
+logging.LoggerAdapter.verbose = lambda inst, msg, *args, **kwargs: inst.log(
+    logging.VERBOSE, msg, *args, **kwargs)
+logging.verbose = lambda msg, *args, **kwargs: logging.log(
+    logging.VERBOSE, msg, *args, **kwargs)
 
 if __name__ == '__main__':
-	main()
+    main()
