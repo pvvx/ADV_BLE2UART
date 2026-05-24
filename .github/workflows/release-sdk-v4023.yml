@@ -1,0 +1,56 @@
+name: Release TLSR825x (sdk-v4023)
+
+on:
+  push:
+    branches:
+      - sdk-v4023
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and SDK
+        working-directory: source/ble2uart
+        run: ./install.sh
+
+      - name: Build firmware
+        working-directory: source/ble2uart
+        run: ./build.sh
+
+      - name: Package release artifacts
+        run: |
+          mkdir -p out/release
+          cp source/ble2uart/TLSR825xScanner.bin out/release/
+          cp source/ble2uart/adv2uart.py out/release/
+          cp source/ble2uart/adv2uart_gui.py out/release/
+          tar -czf out/tlsr825x-sdk-v4023.tar.gz -C out/release .
+
+      - name: Create release notes
+        run: |
+          cat > out/release-notes-sdk-v4023.md << 'EOF'
+          Build package for Telink TLSR825x SoC.
+
+          Source branch used for compilation: sdk-v4023.
+
+          This package is generated from the latest toolchain, SDK, and firmware code currently maintained in branch sdk-v4023.
+          EOF
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tlsr825x-sdk-v4023-latest
+          name: TLSR825x SoC (sdk-v4023 latest)
+          body_path: out/release-notes-sdk-v4023.md
+          files: |
+            out/tlsr825x-sdk-v4023.tar.gz
+            source/ble2uart/TLSR825xScanner.bin
+          prerelease: true
+          make_latest: false
