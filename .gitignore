@@ -3,3 +3,11 @@
 /dist
 *.spec
 Telink_Tools.py
+
+# Local branch-specific workspace noise
+/source/CH582M/
+
+# ESP32-C3 local toolchain and build outputs
+/source/esp32-c3/.tooling/
+/source/esp32-c3/ble50_scan/__pycache__/
+/source/esp32-c3/ble50_scan/build/
