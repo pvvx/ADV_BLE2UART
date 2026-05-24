@@ -526,18 +526,13 @@ static void handle_version_command(void) {
 
 static void handle_vbat_command(void) {
 	u8 data[4] = {0};
-	int batt_mv = app_battery_power_get_mv();
-	int chip_temp_c = app_battery_power_get_temp_c();
-	u8 status = CMD_STATUS_OK;
+	u8 status = CMD_STATUS_DENIED;
 
-	if(batt_mv <= 0 || batt_mv > 6000) {
-		status = CMD_STATUS_DENIED;
-	} else {
-		data[0] = batt_mv;
-		data[1] = batt_mv >> 8;
-		data[2] = chip_temp_c;
-		data[3] = chip_temp_c >> 8;
-	}
+	/*
+	 * Telink SDK v4.0.2.3 does not expose public getters for direct VBAT
+	 * millivolt and chip temperature readback in this project configuration.
+	 * Keep protocol compatibility by returning a denied status with zeroed data.
+	 */
 
 	send_resp(CMD_ID_VBAT, status, data, sizeof(data));
 }
