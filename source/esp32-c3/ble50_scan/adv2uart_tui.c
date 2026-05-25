@@ -49,9 +49,9 @@ static const char *nav_labels[NAV_COUNT] = {
     "PHY1M", "CODED", "ACTIVE", "DUP", "RAND", "PRIV", "WINDOW"
 };
 
-#define ACTION_COUNT 11
+#define ACTION_COUNT 13
 static const char *action_labels[ACTION_COUNT] = {
-    "HELP", "QUIT", "SCAN", "GPIO", "BLE", "MAC", "INFO", "CLEAR", "VBAT", "LED ON", "LED OFF"
+    "HELP", "QUIT", "SCAN", "GPIO", "BLE", "MAC", "EVENTS", "TXADV", "INFO", "CLEAR", "VBAT", "LED ON", "LED OFF"
 };
 
 #define BOARD_LED_GPIO 8
@@ -169,9 +169,26 @@ typedef struct {
     bool         show_gpio_panel;
     int          gpio_cursor;        /* selected row in GPIO panel */
     bool         gpio_action_open;   /* action popup visible */
+    int          gpio_action_cursor;
     GpioPinState gpio_state[GPIO_PANEL_COUNT];
+    bool         gpio_out_known[GPIO_PANEL_COUNT];
+    bool         gpio_out_mode[GPIO_PANEL_COUNT];
     double       gpio_refresh_ts;
     float        gpio_refresh_interval;
+
+    bool         show_events_panel;
+    int          events_cursor;
+    uint32_t     gpioevt_mask;
+    TextRing     evt_ring;
+
+    bool         show_txadv_panel;
+    int          txadv_cursor;
+    int          txadv_phy;          /* 0=legacy 1M, 1=extended 1M, 2=coded */
+    float        txadv_interval_ms;
+    char         txadv_payload_hex[128];
+    bool         txadv_running;
+    char         txadv_last_status[96];
+    bool         crc_debug;
 
     int          main_cursor;        /* selected scan-cfg item (0..NAV_COUNT-1) */
     int          action_cursor;      /* selected pre-scan action item */
@@ -190,8 +207,14 @@ typedef struct {
 static void app_log(App *app, const char *fmt, ...);
 static int serial_open_port(const char *port, int baud);
 static void serial_set_dtr_rts(int fd, bool dtr, bool rts);
+static int parse_hex_pair(char hi, char lo);
 static void draw_box_unicode(int y, int x, int h, int w);
+static void draw_adv_line_soft_labels(int y, int x, int maxw, const char *line);
+static void draw_payload_alternating_bytes(int y, int x, int maxw, const char *payload, int start_byte, int total_bytes);
 static void draw_ble_panel(App *app);
+static void draw_events_panel(App *app);
+static void draw_txadv_panel(App *app);
+static void ensure_gpio_output_for_toggle(App *app, uint8_t pin);
 static void send_mac_cmd(App *app, uint8_t cmd, const char *input);
 static void sync_mac_lists_to_firmware(App *app);
 
@@ -679,7 +702,8 @@ static bool mac_list_remove_local(App *app, int list_id, int idx) {
     }
     snprintf(removed, sizeof(removed), "%s", arr[idx]);
     for (int i = idx; i + 1 < *count; ++i) {
-        snprintf(arr[i], sizeof(arr[i]), "%s", arr[i + 1]);
+        memmove(arr[i], arr[i + 1], sizeof(arr[i]));
+        arr[i][sizeof(arr[i]) - 1] = '\0';
     }
     (*count)--;
     if (*count < 0) {
@@ -852,6 +876,73 @@ static void send_gpioevt_cmd(App *app, uint8_t op, int with_pin, uint8_t pin) {
     }
 }
 
+static void evt_log(App *app, const char *fmt, ...) {
+    char msg[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    ring_add(&app->evt_ring, msg);
+}
+
+static int parse_hex_bytes(const char *text, uint8_t *out, int out_cap) {
+    char hex[256];
+    int n = 0;
+    for (int i = 0; text[i] != '\0' && n < (int)sizeof(hex) - 1; ++i) {
+        if (isxdigit((unsigned char)text[i])) {
+            hex[n++] = (char)toupper((unsigned char)text[i]);
+        }
+    }
+    if (n == 0 || (n % 2) != 0) {
+        return -1;
+    }
+    int bytes = n / 2;
+    if (bytes > out_cap) {
+        return -1;
+    }
+    for (int i = 0; i < bytes; ++i) {
+        out[i] = (uint8_t)parse_hex_pair(hex[i * 2], hex[i * 2 + 1]);
+    }
+    return bytes;
+}
+
+static void send_txadv_status(App *app) {
+    const uint8_t payload[] = {CMD_ID_TXADV, 2};
+    serial_send_payload(app, payload, sizeof(payload));
+}
+
+static void send_txadv_stop(App *app) {
+    const uint8_t payload[] = {CMD_ID_TXADV, 0};
+    serial_send_payload(app, payload, sizeof(payload));
+}
+
+static void send_txadv_start(App *app) {
+    uint8_t adv[31];
+    int adv_len = parse_hex_bytes(app->txadv_payload_hex, adv, (int)sizeof(adv));
+    if (adv_len < 0) {
+        app_log(app, "TXADV payload hex invalid (use even hex bytes, max 31 bytes)");
+        return;
+    }
+    if (app->txadv_interval_ms < 20.0f) {
+        app->txadv_interval_ms = 20.0f;
+    }
+    uint16_t units = (uint16_t)(app->txadv_interval_ms / 0.625f);
+    if (units < 0x20) {
+        units = 0x20;
+    }
+    uint8_t payload[64];
+    size_t len = 0;
+    payload[len++] = CMD_ID_TXADV;
+    payload[len++] = 1;
+    payload[len++] = (uint8_t)(app->txadv_phy & 0xFF);
+    payload[len++] = (uint8_t)(units & 0xFF);
+    payload[len++] = (uint8_t)((units >> 8) & 0xFF);
+    payload[len++] = (uint8_t)adv_len;
+    memcpy(payload + len, adv, (size_t)adv_len);
+    len += (size_t)adv_len;
+    serial_send_payload(app, payload, len);
+}
+
 static void draw_hline_acs(int y, int x, int width) {
     mvhline(y, x, ACS_HLINE, width);
 }
@@ -889,6 +980,19 @@ static void send_gpio_read_all(App *app) {
         if (gpio_analog[i]) {
             send_gpio_cmd(app, GPIO_OP_ANALOG_READ, gpio_pins[i], 0, 0, 0, 0);
         }
+    }
+}
+
+static void ensure_gpio_output_for_toggle(App *app, uint8_t pin) {
+    int idx = gpio_pin_index(pin);
+    if (idx < 0) {
+        return;
+    }
+    if (!app->gpio_out_known[idx] || !app->gpio_out_mode[idx]) {
+        send_gpio_cmd(app, GPIO_OP_CONFIG, pin, 3, 0, 1, 0);
+        app->gpio_out_known[idx] = true;
+        app->gpio_out_mode[idx] = true;
+        app_log(app, "GPIO%u auto-config to output before toggle", pin);
     }
 }
 
@@ -994,8 +1098,8 @@ static void draw_gpio_action_popup(App *app) {
 
     int pin_idx  = app->gpio_cursor;
     bool is_an   = gpio_analog[pin_idx];
-    int ph       = is_an ? 11 : 10;
-    int pw       = 42;
+    int ph       = is_an ? 14 : 13;
+    int pw       = 68;
     int py       = (h - ph) / 2;
     int px       = (w - pw) / 2;
     if (py < 4)  py = 4;
@@ -1007,18 +1111,175 @@ static void draw_gpio_action_popup(App *app) {
     mvprintw(py, px + 2, " %s — Action ", gpio_label[pin_idx]);
     attroff(A_BOLD | A_REVERSE);
 
-    int r = py + 1;
-    mvprintw(r++, px + 3, "[r]    Read digital level");
-    mvprintw(r++, px + 3, "[w]    Write level  (0 = LOW / 1 = HIGH)");
-    mvprintw(r++, px + 3, "[t]    Toggle level");
-    mvprintw(r++, px + 3, "[c]    Configure  (direction / pull)");
+    const char *items[8];
+    int count = 0;
+    items[count++] = "Read digital level";
+    items[count++] = "Write level  (0 = LOW / 1 = HIGH)";
+    items[count++] = "Toggle level";
+    items[count++] = "Blink (pulse)";
+    items[count++] = "Configure input/output + pull float/up/down";
     if (is_an) {
-        mvprintw(r++, px + 3, "[a]    Analog read  (ADC, 0-4095 -> mV)");
+        items[count++] = "Analog read  (ADC, 0-4095 -> mV)";
     }
-    mvprintw(r++, px + 3, "[s]    Query full status");
-    r++;
+    items[count++] = "Query full status";
+
+    if (app->gpio_action_cursor < 0) {
+        app->gpio_action_cursor = 0;
+    }
+    if (app->gpio_action_cursor >= count) {
+        app->gpio_action_cursor = count - 1;
+    }
+
+    int r = py + 1;
+    for (int i = 0; i < count; ++i) {
+        if (i == app->gpio_action_cursor) {
+            attron(A_REVERSE | A_BOLD);
+        }
+        mvprintw(r++, px + 3, "[%d]  %s", i + 1, items[i]);
+        if (i == app->gpio_action_cursor) {
+            attroff(A_REVERSE | A_BOLD);
+        }
+    }
+    r += 1;
     attron(A_DIM);
-    mvprintw(r, px + 3, "[ESC]  Cancel");
+    mvprintw(r++, px + 3, "Up/Down select  Enter execute  ESC cancel");
+    mvprintw(r, px + 3, "Quick keys: r w t c a s b");
+    attroff(A_DIM);
+}
+
+static void draw_events_panel(App *app) {
+    int h, w;
+    getmaxyx(stdscr, h, w);
+
+    int panel_y = 4;
+    int panel_h = h - panel_y - 1;
+    if (panel_h < 8) {
+        return;
+    }
+
+    draw_box_unicode(panel_y, 0, panel_h, w);
+    attron(A_BOLD);
+    mvprintw(panel_y, 2, " GPIO Events ");
+    attroff(A_BOLD);
+
+    int split_x = w > 56 ? 34 : (w / 2);
+    if (split_x < 24) {
+        split_x = 24;
+    }
+    if (split_x > w - 16) {
+        split_x = w - 16;
+    }
+
+    attron(A_BOLD | A_UNDERLINE);
+    mvprintw(panel_y + 1, 2, "Pin  Armed");
+    mvprintw(panel_y + 1, split_x + 2, "Events");
+    attroff(A_BOLD | A_UNDERLINE);
+
+    int rows = panel_h - 4;
+    int list_rows = GPIO_PANEL_COUNT;
+    if (list_rows > rows) {
+        list_rows = rows;
+    }
+    for (int i = 0; i < list_rows; ++i) {
+        uint8_t pin = gpio_pins[i];
+        bool armed = (app->gpioevt_mask & (1u << pin)) != 0;
+        int row = panel_y + 2 + i;
+        if (i == app->events_cursor) {
+            attron(A_REVERSE | A_BOLD);
+        }
+        mvprintw(row, 2, "GPIO%-2u %s", pin, armed ? "ON " : "OFF");
+        if (i == app->events_cursor) {
+            attroff(A_REVERSE | A_BOLD);
+        }
+    }
+
+    int evt_top = panel_y + 2;
+    int evt_h = panel_h - 4;
+    int evt_start = app->evt_ring.count - evt_h;
+    if (evt_start < 0) {
+        evt_start = 0;
+    }
+    for (int i = 0; i < evt_h; ++i) {
+        int idx = evt_start + i;
+        if (idx >= app->evt_ring.count) {
+            break;
+        }
+        int cap = (int)(sizeof(app->evt_ring.lines) / sizeof(app->evt_ring.lines[0]));
+        int ring_idx = (app->evt_ring.head - app->evt_ring.count + idx + cap) % cap;
+        mvprintw(evt_top + i, split_x + 2, "%.*s", w - split_x - 4, app->evt_ring.lines[ring_idx]);
+    }
+
+    attron(A_DIM);
+    mvprintw(panel_y + panel_h - 2, 2,
+             "Up/Down select pin  Enter toggle  e enable  d disable  g query mask  c clear all  ESC close");
+    attroff(A_DIM);
+}
+
+static const char *txadv_phy_label(int phy) {
+    switch (phy) {
+        case 0: return "Legacy 1M";
+        case 1: return "Ext 1M";
+        case 2: return "Coded";
+        default: return "Unknown";
+    }
+}
+
+static void draw_txadv_panel(App *app) {
+    int h, w;
+    getmaxyx(stdscr, h, w);
+
+    int panel_y = 4;
+    int panel_h = h - panel_y - 1;
+    if (panel_h < 10) {
+        return;
+    }
+
+    draw_box_unicode(panel_y, 0, panel_h, w);
+    attron(A_BOLD);
+    mvprintw(panel_y, 2, " TX Adv ");
+    attroff(A_BOLD);
+
+    const char *items[6] = {
+        "PHY",
+        "Interval (ms)",
+        "Payload (hex bytes)",
+        "Start",
+        "Stop",
+        "Status"
+    };
+
+    int row = panel_y + 2;
+    for (int i = 0; i < 6; ++i) {
+        if (i == app->txadv_cursor) {
+            attron(A_REVERSE | A_BOLD);
+        }
+        mvprintw(row + i, 2, "%-18s", items[i]);
+        if (i == app->txadv_cursor) {
+            attroff(A_REVERSE | A_BOLD);
+        }
+        if (i == 0) {
+            mvprintw(row + i, 24, "%s", txadv_phy_label(app->txadv_phy));
+        } else if (i == 1) {
+            mvprintw(row + i, 24, "%.1f", (double)app->txadv_interval_ms);
+        } else if (i == 2) {
+            mvprintw(row + i, 24, "%.*s", w - 28, app->txadv_payload_hex);
+        } else if (i == 3) {
+            mvprintw(row + i, 24, "Send CMD start");
+        } else if (i == 4) {
+            mvprintw(row + i, 24, "Send CMD stop");
+        } else if (i == 5) {
+            mvprintw(row + i, 24, "Send CMD query");
+        }
+    }
+
+    attron(A_BOLD);
+    mvprintw(panel_y + 10, 2, "Running: %s", app->txadv_running ? "yes" : "no");
+    attroff(A_BOLD);
+    mvprintw(panel_y + 11, 2, "Last status: %.*s", w - 6, app->txadv_last_status[0] ? app->txadv_last_status : "-");
+
+    attron(A_DIM);
+    mvprintw(panel_y + panel_h - 2, 2,
+             "Up/Down select  Left/Right PHY  Enter edit/execute  s start  x stop  i status  ESC close");
     attroff(A_DIM);
 }
 
@@ -1182,7 +1443,13 @@ static void draw_adv_detail_overlay(App *app) {
         if (chunk > text_w) {
             chunk = text_w;
         }
-        mvprintw(row++, x + 2, "%.*s", chunk, line + off);
+        char meta_line[1024];
+        if (chunk >= (int)sizeof(meta_line)) {
+            chunk = (int)sizeof(meta_line) - 1;
+        }
+        memcpy(meta_line, line + off, (size_t)chunk);
+        meta_line[chunk] = '\0';
+        draw_adv_line_soft_labels(row++, x + 2, text_w, meta_line);
     }
 
     if (row <= content_end) {
@@ -1202,18 +1469,59 @@ static void draw_adv_detail_overlay(App *app) {
             attroff(A_DIM);
         }
     } else {
-        for (int off = start_col; off < payload_len && row <= content_end; off += text_w) {
-            int chunk = payload_len - off;
-            if (chunk > text_w) {
-                chunk = text_w;
-            }
-            mvprintw(row++, x + 2, "%.*s", chunk, payload + off);
+        int payload_hex_len = payload_len;
+        int payload_bytes = payload_hex_len / 2;
+        int bytes_per_row = text_w / 2;
+        int start_byte = start_col / 2;
+        if (bytes_per_row < 1) {
+            bytes_per_row = 1;
+        }
+        for (int boff = start_byte; boff < payload_bytes && row <= content_end; boff += bytes_per_row) {
+            draw_payload_alternating_bytes(row++, x + 2, text_w, payload, boff, payload_bytes);
+        }
+        if ((payload_hex_len % 2) != 0 && row <= content_end) {
+            attron(A_DIM);
+            mvprintw(row, x + 2, "(warning: odd payload hex length)");
+            attroff(A_DIM);
         }
     }
 
     attron(A_DIM);
     mvprintw(y + box_h - 2, x + 2, "ESC resume live | Left/Right pan | Up/Down browse records");
     attroff(A_DIM);
+}
+
+static void draw_payload_alternating_bytes(int y, int x, int maxw, const char *payload, int start_byte, int total_bytes) {
+    int bytes_per_row = maxw / 2;
+    int printed = 0;
+    if (bytes_per_row < 1) {
+        return;
+    }
+
+    for (int i = 0; i < bytes_per_row && (start_byte + i) < total_bytes; ++i) {
+        int byte_idx = start_byte + i;
+        int p = byte_idx * 2;
+        char hi = payload[p];
+        char lo = payload[p + 1];
+
+        if ((byte_idx & 1) == 0) {
+            attron(A_DIM);
+        } else {
+            attron(A_BOLD);
+        }
+        mvaddch(y, x + printed, hi);
+        mvaddch(y, x + printed + 1, lo);
+        if ((byte_idx & 1) == 0) {
+            attroff(A_DIM);
+        } else {
+            attroff(A_BOLD);
+        }
+        printed += 2;
+    }
+
+    if (printed < maxw) {
+        mvhline(y, x + printed, ' ', maxw - printed);
+    }
 }
 
 static void draw_adv_line_soft_labels(int y, int x, int maxw, const char *line) {
@@ -1308,13 +1616,15 @@ static void draw_help_overlay(App *app) {
     mvprintw(row++, x + 2, "USB: U toggle connect on/off | default OFF unless CLI --connect | commands auto-connect when needed");
     mvprintw(row++, x + 2, "BLE panel: B quick toggle or Actions->[BLE] | s status | 1 connect 1M | 2 connect Coded | d disconnect | c cancel");
     mvprintw(row++, x + 2, "GPIO panel: ↑/↓ select pin | Enter open action | ESC/G close panel | j manual refresh");
-    mvprintw(row++, x + 2, "MAC panel: M quick toggle or Actions->[MAC] | ←/→ list | a add | e edit | d/del remove | c/C clear | S sync fw");
+    mvprintw(row++, x + 2, "Events panel: E quick toggle or Actions->[EVENTS] | Enter toggle pin | e enable | d disable | g query | c clear");
+    mvprintw(row++, x + 2, "TXADV panel: T quick toggle or Actions->[TXADV] | edit PHY/interval/payload | s start | x stop | i status");
+    mvprintw(row++, x + 2, "MAC panel: M open/close | ←/→ list | a add | e edit | d/del remove | c/C clear | S sync fw");
     mvprintw(row++, x + 2, "Info/list: i INFO | c clear MAC lists | w add whitelist | b add blacklist | v VBAT | X clear adv panel");
     mvprintw(row++, x + 2, "GPIO cmds: x read | y write | t toggle | f config [in out pull] | z analog read");
     mvprintw(row++, x + 2, "LED GPIO%d: n LED ON | o LED OFF | l LED toggle (active-low board LED)", BOARD_LED_GPIO);
     mvprintw(row++, x + 2, "Logs: L open/close fullscreen log | ESC close fullscreen");
     mvprintw(row++, x + 2, "GPIOEVT:   g query mask | e enable pin | u disable pin | k clear all");
-    mvprintw(row++, x + 2, "Numeric input: decimal (e.g. 9) or hex 0x (e.g. 0x09)");
+    mvprintw(row++, x + 2, "Numeric input: decimal (e.g. 9) or hex 0x (e.g. 0x09), ESC cancels prompts");
     mvprintw(row++, x + 2, "GPIO ops: 0 status, 1 read, 2 write, 3 toggle, 4 config, 7 analog");
 
     row++;
@@ -1324,7 +1634,7 @@ static void draw_help_overlay(App *app) {
     mvprintw(row++, x + 4, "op=2/3/4: echo pin state and LED flag");
 
     attron(A_DIM);
-    mvprintw(y + box_h - 2, x + 2, "q quit | h/? help | ncurses UI: bold/reverse/dim + Unicode ACS boxes");
+    mvprintw(y + box_h - 2, x + 2, "q quit | h/? help | ESC closes overlays");
     attroff(A_DIM);
 
     (void)app;
@@ -1427,8 +1737,10 @@ static void handle_command_response(App *app, const uint8_t *packet, size_t tota
                 uint32_t ts = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |
                               ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 24);
                 app_log(app, "GPIOEVT GPIO%u level=%u t=%u ms", pin, level, ts);
+                evt_log(app, "GPIO%u level=%u t=%u ms", pin, level, ts);
             } else {
                 app_log(app, "GPIOEVT short event");
+                evt_log(app, "GPIOEVT short event");
             }
         } else {
             uint32_t mask = 0;
@@ -1438,8 +1750,22 @@ static void handle_command_response(App *app, const uint8_t *packet, size_t tota
                        ((uint32_t)data[2] << 16) |
                        ((uint32_t)data[3] << 24);
             }
+            app->gpioevt_mask = mask;
             app_log(app, "GPIOEVT status=%s mask=0x%08X", status_name(index), (unsigned int)mask);
+            evt_log(app, "status=%s mask=0x%08X", status_name(index), (unsigned int)mask);
         }
+        return;
+    }
+
+    if (cmd == CMD_ID_TXADV) {
+        char hexbuf[192];
+        bytes_to_hex_str(data, data_len, hexbuf, sizeof(hexbuf));
+        snprintf(app->txadv_last_status, sizeof(app->txadv_last_status),
+                 "status=%s payload=%.56s", status_name(index), hexbuf);
+        if (data_len >= 1) {
+            app->txadv_running = data[0] ? true : false;
+        }
+        app_log(app, "TXADV %s", app->txadv_last_status);
         return;
     }
 
@@ -1471,15 +1797,24 @@ static void handle_command_response(App *app, const uint8_t *packet, size_t tota
             return;
         }
         /* op=0 status / op=1 read / op=2 write / op=3 toggle */
-        uint8_t level  = data_len >= 3 ? data[2] : 0;
+        bool has_level = data_len >= 3;
+        uint8_t level  = has_level ? data[2] : 0;
         uint8_t is_led = data_len >= 4 ? data[3] : 0;
-        if (idx >= 0) {
+        if (idx >= 0 && has_level) {
             app->gpio_state[idx].digital = level ? 1 : 0;
             app->gpio_state[idx].valid   = true;
             app->gpio_state[idx].ts      = now_sec();
+            if (op == GPIO_OP_CONFIG && data_len >= 6) {
+                app->gpio_out_known[idx] = true;
+                app->gpio_out_mode[idx] = data[4] ? true : false;
+            }
         }
         if (!app->show_gpio_panel) {
-            app_log(app, "GPIO op=%u pin=%u level=%u led=%u", op, pin, level, is_led);
+            if (has_level) {
+                app_log(app, "GPIO op=%u pin=%u level=%u led=%u", op, pin, level, is_led);
+            } else {
+                app_log(app, "GPIO op=%u pin=%u short response", op, pin);
+            }
         }
         return;
     }
@@ -1584,7 +1919,9 @@ static void parser_consume(App *app, const uint8_t *data, size_t data_len) {
         uint8_t payload_len = app->parser.buf[0];
         if (payload_len > MAX_ADV_PAYLOAD) {
             if (app->parser.synced) {
-                app_log(app, "CRC discard: 0x%02X", app->parser.buf[0]);
+                if (app->crc_debug) {
+                    app_log(app, "[CRC/DBG] discard: 0x%02X", app->parser.buf[0]);
+                }
             }
             memmove(app->parser.buf, app->parser.buf + 1, app->parser.len - 1);
             app->parser.len -= 1;
@@ -1608,7 +1945,7 @@ static void parser_consume(App *app, const uint8_t *data, size_t data_len) {
             app->parser.len -= total_len;
         } else {
             if (app->parser.synced) {
-                app_log(app, "CRC error, discard 0x%02X", app->parser.buf[0]);
+                app_log(app, "[CRC/WARN] error, discard 0x%02X", app->parser.buf[0]);
             }
             memmove(app->parser.buf, app->parser.buf + 1, app->parser.len - 1);
             app->parser.len -= 1;
@@ -1652,18 +1989,36 @@ static int prompt_input(const char *prompt, char *out, int out_sz) {
     getmaxyx(stdscr, h, w);
     (void)w;
     timeout(-1);
-    echo();
-    curs_set(1);
-    mvprintw(h - 1, 0, "%s", prompt);
-    clrtoeol();
-    int rc = getnstr(out, out_sz - 1);
     noecho();
+    curs_set(1);
+    out[0] = '\0';
+    int len = 0;
+
+    while (1) {
+        mvprintw(h - 1, 0, "%s%s", prompt, out);
+        clrtoeol();
+        int ch = getch();
+        if (ch == 27) {
+            out[0] = '\0';
+            curs_set(0);
+            timeout(30);
+            return -1;
+        }
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            break;
+        }
+        if ((ch == KEY_BACKSPACE || ch == 127 || ch == 8) && len > 0) {
+            out[--len] = '\0';
+            continue;
+        }
+        if (isprint(ch) && len < out_sz - 1) {
+            out[len++] = (char)ch;
+            out[len] = '\0';
+        }
+    }
+
     curs_set(0);
     timeout(30);
-    if (rc != OK) {
-        out[0] = '\0';
-        return -1;
-    }
     return 0;
 }
 
@@ -1711,6 +2066,9 @@ static bool handle_command_hotkeys(App *app, int ch) {
         app->show_gpio_panel = !app->show_gpio_panel;
         if (app->show_gpio_panel) {
             app->show_mac_panel = false;
+            app->show_ble_panel = false;
+            app->show_events_panel = false;
+            app->show_txadv_panel = false;
             app->gpio_action_open = false;
             send_gpio_read_all(app);
             app->gpio_refresh_ts = now_sec();
@@ -1719,13 +2077,16 @@ static bool handle_command_hotkeys(App *app, int ch) {
         app->show_mac_panel = !app->show_mac_panel;
         if (app->show_mac_panel) {
             app->show_gpio_panel = false;
+            app->show_ble_panel = false;
+            app->show_events_panel = false;
+            app->show_txadv_panel = false;
             app->gpio_action_open = false;
         }
     } else if (ch == 'j' || ch == 'J') {
         send_gpio_read_all(app);
         app->gpio_refresh_ts = now_sec();
         app_log(app, "GPIO read-all sent");
-    } else if (ch == 'e' || ch == 'E') {
+    } else if (ch == 'e') {
         char value[32] = {0};
         if (prompt_input("GPIOEVT enable pin: ", value, sizeof(value)) == 0) {
             uint8_t pin = 0;
@@ -1777,7 +2138,9 @@ static bool handle_command_hotkeys(App *app, int ch) {
         if (prompt_input("GPIO toggle pin: ", value, sizeof(value)) == 0) {
             uint8_t pin = 0;
             if (parse_u8(value, &pin)) {
+                ensure_gpio_output_for_toggle(app, pin);
                 send_gpio_cmd(app, GPIO_OP_TOGGLE, pin, 0, 0, 0, 0);
+                send_gpio_cmd(app, GPIO_OP_READ, pin, 0, 0, 0, 0);
             } else {
                 app_log(app, "Invalid pin number");
             }
@@ -1792,6 +2155,11 @@ static bool handle_command_hotkeys(App *app, int ch) {
                 const char *rest = strchr(value, ' ');
                 if (rest != NULL && parse_u8_triplet(rest + 1, &in, &out, &pull) && pull <= 2) {
                     send_gpio_cmd(app, GPIO_OP_CONFIG, pin, 3, in ? 1 : 0, out ? 1 : 0, pull);
+                        int idx = gpio_pin_index(pin);
+                        if (idx >= 0) {
+                            app->gpio_out_known[idx] = true;
+                            app->gpio_out_mode[idx] = out ? true : false;
+                        }
                 } else {
                     app_log(app, "Invalid config format");
                 }
@@ -1816,6 +2184,7 @@ static bool handle_command_hotkeys(App *app, int ch) {
         send_gpio_cmd(app, GPIO_OP_WRITE, BOARD_LED_GPIO, 1, 1, 0, 0);
         app_log(app, "LED OFF (GPIO%d active-low)", BOARD_LED_GPIO);
     } else if (ch == 'l') {
+        ensure_gpio_output_for_toggle(app, BOARD_LED_GPIO);
         send_gpio_cmd(app, GPIO_OP_TOGGLE, BOARD_LED_GPIO, 0, 0, 0, 0);
         app_log(app, "LED toggle (GPIO%d)", BOARD_LED_GPIO);
     } else if (ch == '1') {
@@ -1970,6 +2339,8 @@ static bool execute_action_cursor(App *app) {
             if (app->show_gpio_panel) {
                 app->show_mac_panel = false;
                 app->show_ble_panel = false;
+                app->show_events_panel = false;
+                app->show_txadv_panel = false;
                 app->gpio_action_open = false;
                 send_gpio_read_all(app);
                 app->gpio_refresh_ts = now_sec();
@@ -1980,6 +2351,8 @@ static bool execute_action_cursor(App *app) {
             if (app->show_ble_panel) {
                 app->show_mac_panel = false;
                 app->show_gpio_panel = false;
+                app->show_events_panel = false;
+                app->show_txadv_panel = false;
                 app->gpio_action_open = false;
             }
             break;
@@ -1988,29 +2361,53 @@ static bool execute_action_cursor(App *app) {
             if (app->show_mac_panel) {
                 app->show_gpio_panel = false;
                 app->show_ble_panel = false;
+                app->show_events_panel = false;
+                app->show_txadv_panel = false;
                 app->gpio_action_open = false;
             }
             break;
         case 6: {
+            app->show_events_panel = !app->show_events_panel;
+            if (app->show_events_panel) {
+                app->show_gpio_panel = false;
+                app->show_mac_panel = false;
+                app->show_ble_panel = false;
+                app->show_txadv_panel = false;
+                app->gpio_action_open = false;
+                send_gpioevt_cmd(app, GPIOEVT_OP_QUERY, 0, 0);
+            }
+            break;
+        }
+        case 7:
+            app->show_txadv_panel = !app->show_txadv_panel;
+            if (app->show_txadv_panel) {
+                app->show_gpio_panel = false;
+                app->show_mac_panel = false;
+                app->show_ble_panel = false;
+                app->show_events_panel = false;
+                app->gpio_action_open = false;
+            }
+            break;
+        case 8: {
             const uint8_t payload[] = {CMD_ID_INFO};
             serial_send_payload(app, payload, sizeof(payload));
             break;
         }
-        case 7: {
+        case 9: {
             const uint8_t payload[] = {CMD_ID_CLRM};
             serial_send_payload(app, payload, sizeof(payload));
             break;
         }
-        case 8: {
+        case 10: {
             const uint8_t payload[] = {CMD_ID_VBAT};
             serial_send_payload(app, payload, sizeof(payload));
             break;
         }
-        case 9:
+        case 11:
             send_gpio_cmd(app, GPIO_OP_WRITE, BOARD_LED_GPIO, 1, 0, 0, 0);
             app_log(app, "LED ON (GPIO%d active-low)", BOARD_LED_GPIO);
             break;
-        case 10:
+        case 12:
             send_gpio_cmd(app, GPIO_OP_WRITE, BOARD_LED_GPIO, 1, 1, 0, 0);
             app_log(app, "LED OFF (GPIO%d active-low)", BOARD_LED_GPIO);
             break;
@@ -2092,6 +2489,18 @@ static void draw_ui(App *app) {
                  " MAC lists: Up/Down select  Left/Right list  a add  e edit  d/Del remove  c clear active  C clear all  S sync  ESC/M close ");
         clrtoeol();
         attroff(A_REVERSE);
+    } else if (app->show_events_panel) {
+        attron(A_REVERSE);
+        mvprintw(3, 0,
+                 " Events panel: Up/Down pin  Enter toggle  e enable  d disable  g query mask  c clear all  ESC/E close ");
+        clrtoeol();
+        attroff(A_REVERSE);
+    } else if (app->show_txadv_panel) {
+        attron(A_REVERSE);
+        mvprintw(3, 0,
+                 " TXADV panel: Up/Down select  Left/Right PHY  Enter edit/exec  s start  x stop  i status  ESC/T close ");
+        clrtoeol();
+        attroff(A_REVERSE);
     } else if (app->show_ble_panel) {
         attron(A_REVERSE);
         mvprintw(3, 0,
@@ -2143,6 +2552,10 @@ static void draw_ui(App *app) {
 
     if (app->show_mac_panel) {
         draw_mac_lists_panel(app);
+    } else if (app->show_events_panel) {
+        draw_events_panel(app);
+    } else if (app->show_txadv_panel) {
+        draw_txadv_panel(app);
     } else if (app->show_ble_panel) {
         draw_ble_panel(app);
     } else if (app->show_gpio_panel) {
@@ -2234,11 +2647,11 @@ static void draw_ui(App *app) {
         int ring_idx = (app->log_ring.head - app->log_ring.count + idx + log_cap) % log_cap;
         mvprintw(log_top + i, 1, "%.*s", w - 3, app->log_ring.lines[ring_idx]);
     }
-    } /* end !show_mac_panel && !show_gpio_panel && !show_ble_panel */
+    } /* end non-panel main body */
 
     attron(A_DIM);
     {
-        const char *footer = "h/? full help | GPIO pin: decimal or 0x | ncurses: bold/reverse/dim + Unicode ACS boxes";
+        const char *footer = "h/? full help | GPIO pin: decimal or 0x | ESC cancella i prompt";
         int frame_w = w;
         int inner_w = frame_w - 4;
         if (inner_w > 0) {
@@ -2266,7 +2679,7 @@ static void draw_ui(App *app) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s [--port /dev/ttyUSB0] [--baud 2000000] [--pulse-reset] [--connect]\n"
+            "Usage: %s [--port /dev/ttyUSB0] [--baud 2000000] [--pulse-reset] [--connect] [--crc-debug]\n"
             "\n"
             "TUI commands:\n"
             "  h/? Toggle help\n"
@@ -2282,6 +2695,9 @@ static void print_usage(const char *prog) {
             "  k GPIOEVT clear all\n"
             "  U USB connect toggle on/off\n"
             "  B BLE panel quick toggle\n"
+            "  E Events panel quick toggle\n"
+            "  T TXADV panel quick toggle\n"
+            "  --crc-debug Verbose CRC discard logs\n"
             "  x GPIO digital read\n"
             "  X Clear advertisements panel\n"
             "  y GPIO digital write\n"
@@ -2372,7 +2788,8 @@ static bool send_conn_open(App *app, bool coded) {
         int src = (nbytes - 1 - i) * 2;
         payload[3 + i] = (uint8_t)parse_hex_pair(hex[src], hex[src + 1]);
     }
-    snprintf(app->ble_peer_mac, sizeof(app->ble_peer_mac), "%s", mac_s);
+    strncpy(app->ble_peer_mac, mac_s, sizeof(app->ble_peer_mac) - 1);
+    app->ble_peer_mac[sizeof(app->ble_peer_mac) - 1] = '\0';
     if (serial_send_payload(app, payload, 3 + (size_t)nbytes)) {
         app_log(app, "BLE connect request sent (%s)", coded ? "coded" : "1M");
         return true;
@@ -2385,6 +2802,7 @@ int main(int argc, char **argv) {
     int baud = 2000000;
     bool pulse_reset = false;
     bool cli_connect = false;
+    bool crc_debug = false;
 
     for (int i = 1; i < argc; ++i) {
         if ((strcmp(argv[i], "--port") == 0 || strcmp(argv[i], "-p") == 0) && i + 1 < argc) {
@@ -2395,6 +2813,8 @@ int main(int argc, char **argv) {
             pulse_reset = true;
         } else if (strcmp(argv[i], "--connect") == 0) {
             cli_connect = true;
+        } else if (strcmp(argv[i], "--crc-debug") == 0) {
+            crc_debug = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -2417,6 +2837,7 @@ int main(int argc, char **argv) {
     app.scan_start_cmd_ts = 0.0;
     app.usb_connected = false;
     app.usb_pulse_reset = pulse_reset;
+    app.crc_debug = crc_debug;
     app.adv_cursor = -1;
     app.adv_hscroll = 0;
     app.adv_follow_latest = true;
@@ -2426,11 +2847,22 @@ int main(int argc, char **argv) {
     app.gpio_refresh_interval = 2.0f;
     app.gpio_cursor = 0;
     app.gpio_action_open = false;
+    app.gpio_action_cursor = 0;
     app.main_cursor = 0;
     app.action_cursor = 0;
     app.nav_row = 1;
     app.show_mac_panel = false;
     app.show_ble_panel = false;
+    app.show_events_panel = false;
+    app.show_txadv_panel = false;
+    app.events_cursor = 0;
+    app.gpioevt_mask = 0;
+    app.txadv_cursor = 0;
+    app.txadv_phy = 0;
+    app.txadv_interval_ms = 100.0f;
+    snprintf(app.txadv_payload_hex, sizeof(app.txadv_payload_hex), "020106");
+    app.txadv_running = false;
+    app.txadv_last_status[0] = '\0';
     app.mac_active_list = 0;
     app.mac_cursor = 0;
     app.log_fullscreen = false;
@@ -2439,6 +2871,8 @@ int main(int argc, char **argv) {
     for (int gi = 0; gi < GPIO_PANEL_COUNT; ++gi) {
         app.gpio_state[gi].digital = -1;
         app.gpio_state[gi].adc_raw = -1;
+        app.gpio_out_known[gi] = false;
+        app.gpio_out_mode[gi] = false;
     }
 
     if (cli_connect) {
@@ -2510,9 +2944,30 @@ int main(int argc, char **argv) {
                 if (app.show_ble_panel) {
                     app.show_mac_panel = false;
                     app.show_gpio_panel = false;
+                    app.show_events_panel = false;
+                    app.show_txadv_panel = false;
                     app.gpio_action_open = false;
                     app.show_help = false;
                     app.log_fullscreen = false;
+                }
+            } else if (ch == 'E') {
+                app.show_events_panel = !app.show_events_panel;
+                if (app.show_events_panel) {
+                    app.show_mac_panel = false;
+                    app.show_gpio_panel = false;
+                    app.show_ble_panel = false;
+                    app.show_txadv_panel = false;
+                    app.gpio_action_open = false;
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_QUERY, 0, 0);
+                }
+            } else if (ch == 'T') {
+                app.show_txadv_panel = !app.show_txadv_panel;
+                if (app.show_txadv_panel) {
+                    app.show_mac_panel = false;
+                    app.show_gpio_panel = false;
+                    app.show_ble_panel = false;
+                    app.show_events_panel = false;
+                    app.gpio_action_open = false;
                 }
             } else if (app.show_help && esc_key) {
                 app.show_help = false;
@@ -2631,20 +3086,142 @@ int main(int argc, char **argv) {
                     serial_send_payload(&app, payload, sizeof(payload));
                 }
 
+            /* ---- GPIO events panel ---- */
+            } else if (app.show_events_panel) {
+                if (esc_key || ch == 'E') {
+                    app.show_events_panel = false;
+                } else if (ch == KEY_UP) {
+                    if (app.events_cursor > 0) {
+                        app.events_cursor--;
+                    }
+                } else if (ch == KEY_DOWN) {
+                    if (app.events_cursor < GPIO_PANEL_COUNT - 1) {
+                        app.events_cursor++;
+                    }
+                } else if (ch == 'g' || ch == 'G') {
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_QUERY, 0, 0);
+                } else if (ch == 'c' || ch == 'C') {
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_CLEAR, 0, 0);
+                } else if (ch == 'e') {
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_ENABLE, 1, gpio_pins[app.events_cursor]);
+                } else if (ch == 'd') {
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_DISABLE, 1, gpio_pins[app.events_cursor]);
+                } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+                    uint8_t pin = gpio_pins[app.events_cursor];
+                    bool armed = (app.gpioevt_mask & (1u << pin)) != 0;
+                    send_gpioevt_cmd(&app, armed ? GPIOEVT_OP_DISABLE : GPIOEVT_OP_ENABLE, 1, pin);
+                }
+
+            /* ---- TXADV panel ---- */
+            } else if (app.show_txadv_panel) {
+                if (esc_key || ch == 'T') {
+                    app.show_txadv_panel = false;
+                } else if (ch == KEY_UP) {
+                    if (app.txadv_cursor > 0) {
+                        app.txadv_cursor--;
+                    }
+                } else if (ch == KEY_DOWN) {
+                    if (app.txadv_cursor < 5) {
+                        app.txadv_cursor++;
+                    }
+                } else if (ch == KEY_LEFT && app.txadv_cursor == 0) {
+                    if (app.txadv_phy > 0) {
+                        app.txadv_phy--;
+                    }
+                } else if (ch == KEY_RIGHT && app.txadv_cursor == 0) {
+                    if (app.txadv_phy < 2) {
+                        app.txadv_phy++;
+                    }
+                } else if (ch == 's' || ch == 'S') {
+                    send_txadv_start(&app);
+                } else if (ch == 'x' || ch == 'X') {
+                    send_txadv_stop(&app);
+                } else if (ch == 'i' || ch == 'I') {
+                    send_txadv_status(&app);
+                } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+                    if (app.txadv_cursor == 0) {
+                        app.txadv_phy = (app.txadv_phy + 1) % 3;
+                    } else if (app.txadv_cursor == 1) {
+                        draw_ui(&app);
+                        char val[16] = {0};
+                        if (prompt_input("TXADV interval ms (>=20, ESC cancel): ", val, sizeof(val)) == 0) {
+                            float x = strtof(val, NULL);
+                            if (x >= 20.0f && x <= 10000.0f) {
+                                app.txadv_interval_ms = x;
+                            } else {
+                                app_log(&app, "Invalid interval range (20..10000)");
+                            }
+                        }
+                    } else if (app.txadv_cursor == 2) {
+                        draw_ui(&app);
+                        char hex[128] = {0};
+                        snprintf(hex, sizeof(hex), "%s", app.txadv_payload_hex);
+                        if (prompt_input("TXADV payload hex (ESC cancel): ", hex, sizeof(hex)) == 0) {
+                            uint8_t tmp[31];
+                            if (parse_hex_bytes(hex, tmp, (int)sizeof(tmp)) > 0) {
+                                snprintf(app.txadv_payload_hex, sizeof(app.txadv_payload_hex), "%s", hex);
+                            } else {
+                                app_log(&app, "Invalid payload hex");
+                            }
+                        }
+                    } else if (app.txadv_cursor == 3) {
+                        send_txadv_start(&app);
+                    } else if (app.txadv_cursor == 4) {
+                        send_txadv_stop(&app);
+                    } else if (app.txadv_cursor == 5) {
+                        send_txadv_status(&app);
+                    }
+                }
+
             /* ---- GPIO panel: action popup ---- */
             } else if (app.show_gpio_panel && app.gpio_action_open) {
                 uint8_t pin = gpio_pins[app.gpio_cursor];
                 bool is_an  = gpio_analog[app.gpio_cursor];
+                int action_count = is_an ? 7 : 6;
+                if (app.gpio_action_cursor < 0) {
+                    app.gpio_action_cursor = 0;
+                }
+                if (app.gpio_action_cursor >= action_count) {
+                    app.gpio_action_cursor = action_count - 1;
+                }
+
+                int selected = -1;
                 if (esc_key) { /* ESC */
                     app.gpio_action_open = false;
+                } else if (ch == KEY_UP) {
+                    if (app.gpio_action_cursor > 0) {
+                        app.gpio_action_cursor--;
+                    }
+                } else if (ch == KEY_DOWN) {
+                    if (app.gpio_action_cursor < action_count - 1) {
+                        app.gpio_action_cursor++;
+                    }
+                } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+                    selected = app.gpio_action_cursor;
                 } else if (ch == 'r') {
+                    selected = 0;
+                } else if (ch == 'w') {
+                    selected = 1;
+                } else if (ch == 't') {
+                    selected = 2;
+                } else if (ch == 'b') {
+                    selected = 3;
+                } else if (ch == 'c') {
+                    selected = 4;
+                } else if (ch == 'a' && is_an) {
+                    selected = 5;
+                } else if (ch == 's') {
+                    selected = is_an ? 6 : 5;
+                }
+
+                if (selected == 0) {
                     send_gpio_cmd(&app, GPIO_OP_READ, pin, 0, 0, 0, 0);
                     app.gpio_action_open = false;
-                } else if (ch == 'w') {
+                } else if (selected == 1) {
                     app.gpio_action_open = false;
                     draw_ui(&app);
                     char lvl_s[8] = {0};
-                    if (prompt_input("Write level (0/1): ", lvl_s, sizeof(lvl_s)) == 0) {
+                    if (prompt_input("Write level (0/1, ESC cancel): ", lvl_s, sizeof(lvl_s)) == 0) {
                         uint8_t lvl = 0;
                         if (parse_u8(lvl_s, &lvl) && (lvl == 0 || lvl == 1)) {
                             send_gpio_cmd(&app, GPIO_OP_WRITE, pin, 1, lvl, 0, 0);
@@ -2652,29 +3229,58 @@ int main(int argc, char **argv) {
                         } else {
                             app_log(&app, "Invalid level (use 0 or 1)");
                         }
+                    } else {
+                        app_log(&app, "GPIO write cancelled");
                     }
-                } else if (ch == 't') {
+                } else if (selected == 2) {
+                    ensure_gpio_output_for_toggle(&app, pin);
                     send_gpio_cmd(&app, GPIO_OP_TOGGLE, pin, 0, 0, 0, 0);
+                    send_gpio_cmd(&app, GPIO_OP_READ, pin, 0, 0, 0, 0);
                     app_log(&app, "GPIO%u toggle", pin);
                     app.gpio_action_open = false;
-                } else if (ch == 'c') {
+                } else if (selected == 3) {
+                    send_gpio_cmd(&app, GPIO_OP_WRITE, pin, 1, 1, 0, 0);
+                    send_gpio_cmd(&app, GPIO_OP_WRITE, pin, 1, 0, 0, 0);
+                    app_log(&app, "GPIO%u blink pulse", pin);
+                    app.gpio_action_open = false;
+                } else if (selected == 4) {
                     app.gpio_action_open = false;
                     draw_ui(&app);
-                    char cfg_s[32] = {0};
-                    if (prompt_input("Config: in out pull (e.g. 1 0 1): ", cfg_s, sizeof(cfg_s)) == 0) {
-                        uint8_t in = 0, out = 0, pull = 0;
-                        if (parse_u8_triplet(cfg_s, &in, &out, &pull) && pull <= 2) {
-                            send_gpio_cmd(&app, GPIO_OP_CONFIG, pin, 3, in ? 1 : 0, out ? 1 : 0, pull);
-                            app_log(&app, "GPIO%u config in=%u out=%u pull=%u", pin, in, out, pull);
-                        } else {
-                            app_log(&app, "Invalid config (in 0/1, out 0/1, pull 0-2)");
+                    char dir_s[8] = {0};
+                    char pull_s[16] = {0};
+                    if (prompt_input("Direction [i=input / o=output] (ESC cancel): ", dir_s, sizeof(dir_s)) != 0) {
+                        app_log(&app, "GPIO config cancelled");
+                    } else if (prompt_input("Pull [f=float / u=pull-up / d=pull-down] (ESC cancel): ", pull_s, sizeof(pull_s)) != 0) {
+                        app_log(&app, "GPIO config cancelled");
+                    } else {
+                        uint8_t in = (dir_s[0] == 'i' || dir_s[0] == 'I') ? 1 : 0;
+                        uint8_t out = (dir_s[0] == 'o' || dir_s[0] == 'O') ? 1 : 0;
+                        uint8_t pull = 0;
+                        if (pull_s[0] == 'u' || pull_s[0] == 'U') {
+                            pull = 1;
+                        } else if (pull_s[0] == 'd' || pull_s[0] == 'D') {
+                            pull = 2;
+                        } else if (!(pull_s[0] == 'f' || pull_s[0] == 'F')) {
+                            app_log(&app, "Invalid pull mode (use f/u/d)");
+                            continue;
                         }
+                        if (in == 0 && out == 0) {
+                            app_log(&app, "Invalid direction (use i or o)");
+                            continue;
+                        }
+                        send_gpio_cmd(&app, GPIO_OP_CONFIG, pin, 3, in, out, pull);
+                        int idx = gpio_pin_index(pin);
+                        if (idx >= 0) {
+                            app.gpio_out_known[idx] = true;
+                            app.gpio_out_mode[idx] = out ? true : false;
+                        }
+                        app_log(&app, "GPIO%u config in=%u out=%u pull=%u", pin, in, out, pull);
                     }
-                } else if (ch == 'a' && is_an) {
+                } else if (selected == 5 && is_an) {
                     send_gpio_cmd(&app, GPIO_OP_ANALOG_READ, pin, 0, 0, 0, 0);
                     app_log(&app, "GPIO%u analog read requested", pin);
                     app.gpio_action_open = false;
-                } else if (ch == 's') {
+                } else if (selected == (is_an ? 6 : 5)) {
                     send_gpio_cmd(&app, GPIO_OP_STATUS, pin, 0, 0, 0, 0);
                     app.gpio_action_open = false;
                 }
@@ -2687,6 +3293,7 @@ int main(int argc, char **argv) {
                     if (app.gpio_cursor < GPIO_PANEL_COUNT - 1) { app.gpio_cursor++; }
                 } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
                     app.gpio_action_open = true;
+                    app.gpio_action_cursor = 0;
                 } else if (esc_key || ch == 'G') {
                     app.show_gpio_panel   = false;
                     app.gpio_action_open  = false;
