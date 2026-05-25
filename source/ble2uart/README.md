@@ -121,6 +121,26 @@ Recompiling the firmware without `make clean` and copying the created TLSR825xSc
 make main-build
 ```
 
+### Compile `telink_tools.c` on Linux
+
+From `ADV_BLE2UART/source/ble2uart`:
+
+```bash
+gcc -Wall -Wextra -O2 telink_tools.c -o telink_tools
+```
+
+Run help:
+
+```bash
+./telink_tools
+```
+
+Example:
+
+```bash
+./telink_tools -p /dev/ttyUSB0 burn TLSR825xScanner.bin
+```
+
 Make all files, run TlsrMemInfo.py, do not copy the TLSR825xScanner.elf flash image to TLSR825xScanner.bin:
 
 ```
