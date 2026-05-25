@@ -202,6 +202,36 @@ mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart.c -o adv2uart.mips
 mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui.mips -lncurses
 ```
 
+### Build `linux_flasher.c` on Linux
+
+`linux_flasher.c` uses Espressif's `esp-serial-flasher` headers/libraries
+(`esp_loader.h`, `linux_port.h`, `example_common.h`, `md5_hash.h`).
+
+Tested workflow:
+
+```bash
+# from source/esp32-c3/ble50_scan
+git clone --depth 1 https://github.com/espressif/esp-serial-flasher.git .tooling/esp-serial-flasher
+cp linux_flasher.c .tooling/esp-serial-flasher/examples/linux_example/main.c
+
+cd .tooling/esp-serial-flasher/examples/linux_example
+mkdir -p build && cd build
+cmake -DCMAKE_C_FLAGS='-I../../../private_include' ..
+cmake --build .
+```
+
+Output binary:
+
+```text
+.tooling/esp-serial-flasher/examples/linux_example/build/linux_flasher
+```
+
+Run help:
+
+```bash
+.tooling/esp-serial-flasher/examples/linux_example/build/linux_flasher --help
+```
+
 Use `./adv2uart_tui --help` to list all keys and options.
 
 The GUI accepts `--device {esp32-c3, tb-03f-kit}` for profile-aware UI
