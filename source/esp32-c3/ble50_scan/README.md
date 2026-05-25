@@ -146,8 +146,14 @@ partition table (`0x8000`) and application (`0x10000`).
   tabs (Live adverts, MAC stats, GPIO, RF, Console, TX Adv, BLE Conn, Log)
   and a profile system that lets the same file drive both this firmware and
   the TLSR825x `ble2uart` firmware.
+- [`adv2uart.c`](adv2uart.c) — standalone C CLI equivalent of `adv2uart.py`.
+  Supports serial scan control, whitelist/blacklist handling, VBAT query,
+  GPIO event commands, scan timeout policies and runtime status output.
+- [`adv2uart_tui.c`](adv2uart_tui.c) — Linux ncurses TUI front-end in C.
+  Shows live advertisements and protocol logs, with keyboard controls for
+  Start/Stop scan, INFO, VBAT, white/black list updates, and GPIOEVT query.
 
-Both require Python 3.10+ with:
+Both Python programs require Python 3.10+ with:
 
 ```bash
 pip3 install pyserial construct
@@ -159,6 +165,44 @@ Run from `ble50_scan/`:
 python3 adv2uart.py COM3                 # CLI scanner with default 1M+Coded
 python3 adv2uart_gui.py --device esp32-c3 --port COM3 --connect
 ```
+
+Build and run the C TUI from `ble50_scan/`:
+
+```bash
+gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui -lncurses
+./adv2uart_tui --port /dev/ttyACM0 --baud 2000000
+```
+
+## C host programs
+
+The repository contains two host-side C programs:
+
+- [`adv2uart.c`](adv2uart.c): non-interactive CLI scanner/driver (Python
+  CLI equivalent).
+- [`adv2uart_tui.c`](adv2uart_tui.c): interactive ncurses terminal UI.
+
+Compile both from `ble50_scan/`:
+
+```bash
+gcc -Wall -Wextra -O2 adv2uart.c -o adv2uart
+gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui -lncurses
+```
+
+Quick run examples:
+
+```bash
+./adv2uart --port /dev/ttyACM0 --phy both --scan-window-ms 30
+./adv2uart_tui --port /dev/ttyACM0 --baud 2000000
+```
+
+Cross-compile note (MIPS/OpenWrt-like targets):
+
+```bash
+mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart.c -o adv2uart.mips
+mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui.mips -lncurses
+```
+
+Use `./adv2uart_tui --help` to list all keys and options.
 
 The GUI accepts `--device {esp32-c3, tb-03f-kit}` for profile-aware UI
 (default `esp32-c3`).
