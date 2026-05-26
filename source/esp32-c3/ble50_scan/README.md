@@ -152,6 +152,16 @@ partition table (`0x8000`) and application (`0x10000`).
 - [`adv2uart_tui.c`](adv2uart_tui.c) — Linux ncurses TUI front-end in C.
   Shows live advertisements and protocol logs, with keyboard controls for
   Start/Stop scan, INFO, VBAT, white/black list updates, and GPIOEVT query.
+- [`adv2uart_api.mjs`](adv2uart_api.mjs) — JavaScript protocol/API module
+  (CRC framing, parser, command builders, high-level API methods).
+- [`adv2uart.js`](adv2uart.js) — Node.js CLI equivalent of `adv2uart.py`
+  built on top of `adv2uart_api.mjs`.
+- [`adv2uart_web_gui.html`](adv2uart_web_gui.html) +
+  [`adv2uart_web_gui.js`](adv2uart_web_gui.js) — browser test GUI using
+  the Web Serial API (Chromium/Edge, secure context).
+- [`adv2uart_api.ts`](adv2uart_api.ts) — typed source for the JavaScript API
+  surface (discriminated unions and shared event/response shapes). This file is
+  currently source-only and is not part of the runtime build.
 
 Both Python programs require Python 3.10+ with:
 
@@ -165,6 +175,38 @@ Run from `ble50_scan/`:
 python3 adv2uart.py COM3                 # CLI scanner with default 1M+Coded
 python3 adv2uart_gui.py --device esp32-c3 --port COM3 --connect
 ```
+
+## JavaScript API, CLI and Web GUI
+
+### Node.js CLI (`adv2uart.js`)
+
+Requirements:
+
+```bash
+sudo apt-get install -y nodejs npm
+npm install serialport
+```
+
+Run examples:
+
+```bash
+node adv2uart.js --port /dev/ttyACM0 --phy both --scan-window-ms 30
+node adv2uart.js --port /dev/ttyACM0 --battery
+node adv2uart.js --port /dev/ttyACM0 --gpio-event 9 --gpio-event-only
+```
+
+### Browser test GUI (`adv2uart_web_gui.html`)
+
+Serve `ble50_scan/` with a local HTTP server and open the page in Chromium/Edge:
+
+```bash
+python3 -m http.server 8080
+# then open: http://localhost:8080/adv2uart_web_gui.html
+```
+
+The GUI uses `navigator.serial` and includes scan controls, MAC filters,
+GPIO/GPIOEVT tools, TXADV controls, BLE connection commands, live
+advertisements table and log panel.
 
 Build and run the C TUI from `ble50_scan/`:
 

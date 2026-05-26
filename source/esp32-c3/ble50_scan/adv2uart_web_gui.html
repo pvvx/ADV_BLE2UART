@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ADV_BLE2UART Web GUI</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --fg: #16202a;
+      --muted: #5f6b78;
+      --line: #d8e0ea;
+      --accent: #0969da;
+      --good: #22863a;
+      --warn: #b08800;
+      --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: linear-gradient(170deg, #eef5ff 0%, #f8fbff 40%, #ffffff 100%);
+      color: var(--fg);
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .wrap {
+      width: min(1500px, 96vw);
+      margin: 16px auto 24px;
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 12px;
+      height: calc(100vh - 40px);
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 8px 24px rgba(9, 105, 218, 0.06);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      letter-spacing: 0.2px;
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      row-gap: 10px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+    .row.controls {
+      align-items: flex-end;
+    }
+    .row.separated {
+      margin-top: 12px;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .field {
+      min-width: 0;
+    }
+    .field label {
+      display: block;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+    .grid > div > label,
+    .grid3 > div > label {
+      display: block;
+      margin-bottom: 4px;
+      white-space: nowrap;
+    }
+    .row.controls > label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      margin-bottom: 6px;
+    }
+    .checks {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      white-space: normal;
+      flex-wrap: wrap;
+    }
+    input, select, textarea, button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 13px;
+      font-family: var(--sans);
+      background: #fff;
+      color: var(--fg);
+    }
+    textarea {
+      width: 100%;
+      min-height: 70px;
+      font-family: var(--mono);
+      resize: vertical;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    button.warn {
+      background: #fff8e1;
+      border-color: #e8d39a;
+      color: #6f5600;
+    }
+    button.good {
+      background: #f0fff3;
+      border-color: #98d2a5;
+      color: #185f2a;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .grid3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .grid3.tight {
+      gap: 12px;
+      align-items: end;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+    }
+    .grid3.tight > div {
+      min-width: 0;
+    }
+    .tbOnly {
+      display: none;
+    }
+    .tbLedTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .tbLedTable td,
+    .tbLedTable th {
+      padding: 6px 4px;
+      border-bottom: 1px solid #eff4fa;
+      text-align: left;
+    }
+    .tbLedTable th {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .tbLedButtons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .monoInput {
+      font-family: var(--mono);
+    }
+    .leftCard {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      height: 100%;
+    }
+    .tabBar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+    .tabBtn {
+      border-radius: 999px;
+      padding: 6px 11px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #f6faff;
+      border: 1px solid #d6e6fb;
+      color: #25425f;
+    }
+    .tabBtn.active {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .tabPanels {
+      flex: 1;
+      min-height: 0;
+    }
+    .tabPanel {
+      display: none;
+      height: 100%;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .tabPanel.active {
+      display: block;
+    }
+    .rightCard {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) minmax(170px, 34vh);
+      gap: 10px;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    .advPanel {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .logPanel {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .rightTabBar {
+      display: none;
+      gap: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--line);
+    }
+    .rightTabBtn {
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #f6faff;
+      border: 1px solid #d6e6fb;
+      color: #25425f;
+    }
+    .rightTabBtn.active {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .stats {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-family: var(--mono);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      background: #f9fcff;
+    }
+    .chip strong { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    thead th {
+      position: sticky;
+      top: 0;
+      background: #f0f5fb;
+      z-index: 1;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 6px;
+      color: #34495f;
+    }
+    tbody td {
+      border-bottom: 1px solid #eff4fa;
+      padding: 6px;
+      white-space: nowrap;
+    }
+    tbody tr:nth-child(even) { background: #fbfdff; }
+    .tableWrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #log {
+      width: 100%;
+      min-height: 0;
+      height: auto;
+      flex: 1;
+      font-family: var(--mono);
+      font-size: 12px;
+      background: #0f1720;
+      color: #d1e7ff;
+      border-color: #0f1720;
+      resize: none;
+    }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media (max-height: 760px) and (min-width: 1121px) {
+      .rightCard {
+        display: flex;
+        flex-direction: column;
+      }
+      .rightTabBar {
+        display: flex;
+      }
+      .rightTabPanel {
+        display: none;
+        flex: 1;
+        min-height: 0;
+      }
+      .rightTabPanel.active {
+        display: flex;
+        flex-direction: column;
+      }
+      .tableWrap {
+        max-height: none;
+      }
+      .logPanel h2,
+      .advPanel h2 {
+        margin-top: 0;
+      }
+    }
+
+    @media (max-width: 1120px) {
+      body {
+        overflow: auto;
+      }
+      .wrap {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+      .leftCard,
+      .rightCard {
+        height: auto;
+      }
+      .tabBar {
+        display: none;
+      }
+      .tabPanels {
+        display: block;
+      }
+      .tabPanel {
+        display: block;
+        height: auto;
+        overflow: visible;
+        padding-right: 0;
+      }
+      .tableWrap {
+        max-height: 44vh;
+      }
+      #log {
+        height: 220px;
+        flex: none;
+      }
+      .grid3.tight {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card leftCard">
+      <h1>ADV_BLE2UART Web GUI</h1>
+      <div class="tabBar" id="leftTabs">
+        <button class="tabBtn active" data-tab="serial">Serial + Scan</button>
+        <button class="tabBtn" data-tab="gpio">GPIO + Events</button>
+        <button class="tabBtn" data-tab="ble">BLE + TX Adv</button>
+        <button class="tabBtn" data-tab="rf">RF</button>
+        <button class="tabBtn" data-tab="console">Console</button>
+        <button class="tabBtn" data-tab="mac">MAC + Basic</button>
+      </div>
+
+      <div class="tabPanels">
+        <section class="tabPanel active" data-panel="serial">
+          <h2>Serial</h2>
+          <div class="row controls">
+            <div class="field">
+              <label>Device</label>
+              <select id="deviceProfile" style="width:160px">
+                <option value="esp32-c3">ESP32-C3</option>
+                <option value="tb-03f-kit">TB-03F-KIT</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Baud</label>
+              <input id="baud" value="2000000" style="width:120px">
+            </div>
+            <label><input id="pulseReset" type="checkbox"> Pulse DTR/RTS reset</label>
+            <label><input id="crcDebug" type="checkbox"> CRC debug</label>
+          </div>
+          <div class="row">
+            <button id="connectBtn" class="primary">Connect</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+          </div>
+
+          <h2>Scan</h2>
+          <div class="row controls">
+            <div class="field">
+              <label>PHY</label>
+              <select id="phy" style="width:130px">
+                <option value="both">both</option>
+                <option value="1m">1m</option>
+                <option value="coded">coded</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Window ms</label>
+              <input id="scanWindowMs" value="30" style="width:100px">
+            </div>
+            <div class="field">
+              <label>Filters</label>
+              <div class="checks">
+                <label><input id="filterRandom" type="checkbox"> random filter</label>
+                <label><input id="filterPrivate" type="checkbox"> private filter</label>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <button id="scanStartBtn" class="good">Start scan</button>
+            <button id="scanStopBtn" class="warn">Stop scan</button>
+            <button id="clearAdvBtn">Clear adv view</button>
+          </div>
+
+          <p class="hint">Web Serial requires Chromium or Edge on a secure origin (https or localhost). Some browsers may require enabling the Web Serial flag.</p>
+        </section>
+
+        <section class="tabPanel" data-panel="gpio">
+          <h2>GPIO</h2>
+          <div class="grid">
+            <div>
+              <label>Pin (dec or hex)</label>
+              <input id="gpioPin" value="8">
+            </div>
+            <div>
+              <label>Level</label>
+              <select id="gpioLevel">
+                <option value="0">0</option>
+                <option value="1">1</option>
+              </select>
+            </div>
+          </div>
+          <div class="row controls separated">
+            <label><input id="gpioIn" type="checkbox"> in</label>
+            <label><input id="gpioOut" type="checkbox" checked> out</label>
+            <label>pull</label>
+            <select id="gpioPull" style="width:130px">
+              <option value="0">float</option>
+              <option value="1">pull-up</option>
+              <option value="2">pull-down</option>
+            </select>
+          </div>
+          <div class="row">
+            <button id="gpioReadBtn">Read</button>
+            <button id="gpioWriteBtn">Write</button>
+            <button id="gpioToggleBtn">Toggle</button>
+            <button id="gpioConfigBtn">Config</button>
+            <button id="gpioAnalogBtn">Analog read</button>
+          </div>
+
+          <h2>GPIO Events</h2>
+          <div class="row">
+            <label>Pin</label>
+            <input id="evtPin" value="9" style="width:80px">
+            <button id="evtEnableBtn">Enable</button>
+            <button id="evtDisableBtn">Disable</button>
+            <button id="evtQueryBtn">Query</button>
+            <button id="evtClearBtn">Clear</button>
+          </div>
+
+          <div id="tbLedSection" class="tbOnly">
+            <h2>TB-03F-KIT LEDs</h2>
+            <table class="tbLedTable">
+              <thead>
+                <tr>
+                  <th>LED</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Blue PC2</td>
+                  <td>
+                    <div class="tbLedButtons">
+                      <button data-led-pin="34" data-led-act="on">On</button>
+                      <button data-led-pin="34" data-led-act="off">Off</button>
+                      <button data-led-pin="34" data-led-act="toggle">Toggle</button>
+                      <button data-led-pin="34" data-led-act="blink">Blink</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Red PC3</td>
+                  <td>
+                    <div class="tbLedButtons">
+                      <button data-led-pin="35" data-led-act="on">On</button>
+                      <button data-led-pin="35" data-led-act="off">Off</button>
+                      <button data-led-pin="35" data-led-act="toggle">Toggle</button>
+                      <button data-led-pin="35" data-led-act="blink">Blink</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Green PC4</td>
+                  <td>
+                    <div class="tbLedButtons">
+                      <button data-led-pin="36" data-led-act="on">On</button>
+                      <button data-led-pin="36" data-led-act="off">Off</button>
+                      <button data-led-pin="36" data-led-act="toggle">Toggle</button>
+                      <button data-led-pin="36" data-led-act="blink">Blink</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Yellow PB4</td>
+                  <td>
+                    <div class="tbLedButtons">
+                      <button data-led-pin="20" data-led-act="on">On</button>
+                      <button data-led-pin="20" data-led-act="off">Off</button>
+                      <button data-led-pin="20" data-led-act="toggle">Toggle</button>
+                      <button data-led-pin="20" data-led-act="blink">Blink</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>White PB5</td>
+                  <td>
+                    <div class="tbLedButtons">
+                      <button data-led-pin="21" data-led-act="on">On</button>
+                      <button data-led-pin="21" data-led-act="off">Off</button>
+                      <button data-led-pin="21" data-led-act="toggle">Toggle</button>
+                      <button data-led-pin="21" data-led-act="blink">Blink</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="tabPanel" data-panel="ble">
+          <h2>TX Adv</h2>
+          <div class="grid3 tight">
+            <div>
+              <label>PHY</label>
+              <select id="txadvPhy">
+                <option value="0">Legacy 1M</option>
+                <option value="1">Extended 1M</option>
+                <option value="2">Extended Coded</option>
+              </select>
+            </div>
+            <div>
+              <label>Interval ms</label>
+              <input id="txadvInterval" value="100">
+            </div>
+            <div>
+              <label>Payload hex</label>
+              <input id="txadvPayload" value="020106" style="width:100%">
+            </div>
+          </div>
+          <div class="row separated">
+            <button id="txadvStartBtn">Start</button>
+            <button id="txadvStopBtn">Stop</button>
+            <button id="txadvStatusBtn">Status</button>
+          </div>
+
+          <h2>Connect BLE</h2>
+          <div class="grid3 tight">
+            <div>
+              <label>PHY</label>
+              <select id="connPhy">
+                <option value="1m">1M</option>
+                <option value="coded">Coded</option>
+              </select>
+            </div>
+            <div>
+              <label>Addr type</label>
+              <select id="connAddrType">
+                <option value="0">Public</option>
+                <option value="1">Random</option>
+              </select>
+            </div>
+            <div>
+              <label>Peer MAC</label>
+              <input id="connMac" placeholder="AA:BB:CC:DD:EE:FF" style="width:100%">
+            </div>
+          </div>
+          <div class="row separated">
+            <button id="connOpenBtn">Connect</button>
+            <button id="connStatusBtn">Status</button>
+            <button id="connDiscBtn">Disconnect</button>
+            <button id="connCancelBtn">Cancel</button>
+          </div>
+        </section>
+
+        <section class="tabPanel" data-panel="rf">
+          <h2>RF</h2>
+          <div class="row controls">
+            <div class="field">
+              <label>Local MAC</label>
+              <input id="rfLocalMac" class="monoInput" value="-" readonly style="width:180px">
+            </div>
+          </div>
+          <div class="row">
+            <button id="rfStatusBtn">Read status</button>
+          </div>
+          <div class="row controls separated">
+            <div class="field">
+              <label>BLE TX power</label>
+              <select id="rfPower" style="width:220px"></select>
+            </div>
+            <button id="rfPowerApplyBtn">Apply</button>
+          </div>
+          <div class="row controls separated">
+            <div class="field">
+              <label>XTAL cap (0..63)</label>
+              <input id="rfCap" value="0" style="width:90px">
+            </div>
+            <button id="rfCapApplyBtn">Apply</button>
+          </div>
+          <div class="row controls separated">
+            <div class="field">
+              <label>Primary channels</label>
+              <div class="checks">
+                <input id="rfCh0" value="37" style="width:64px">
+                <input id="rfCh1" value="38" style="width:64px">
+                <input id="rfCh2" value="39" style="width:64px">
+              </div>
+            </div>
+            <button id="rfChApplyBtn">Apply</button>
+          </div>
+          <div class="row controls separated">
+            <div class="field">
+              <label>Coded min window ms</label>
+              <input id="rfCodedMinMs" value="30" style="width:90px">
+            </div>
+            <button id="rfCodedApplyBtn">Apply</button>
+          </div>
+        </section>
+
+        <section class="tabPanel" data-panel="console">
+          <h2>Console</h2>
+          <div class="row">
+            <button id="uartStatusBtn">UART status</button>
+            <button id="uartPingBtn">Ping</button>
+            <input id="uartPingSeq" value="1" style="width:90px">
+          </div>
+          <div class="row controls separated">
+            <div class="field">
+              <label>Firmware baud index</label>
+              <select id="uartBaudIndex" style="width:160px">
+                <option value="0">0 - 2000000</option>
+                <option value="1">1 - 921600</option>
+                <option value="2">2 - 115200</option>
+              </select>
+            </div>
+            <button id="uartSetBaudBtn">Set firmware baud</button>
+          </div>
+
+          <h2 style="margin-top:10px">TXDATA</h2>
+          <div class="row controls">
+            <div class="field">
+              <label>ATT handle (hex)</label>
+              <input id="txdataHandle" class="monoInput" value="0012" style="width:110px">
+            </div>
+            <div class="field" style="flex:1 1 280px">
+              <label>Payload hex (max 20 bytes)</label>
+              <input id="txdataPayload" class="monoInput" value="48656C6C6F" style="width:100%">
+            </div>
+          </div>
+          <div class="row separated">
+            <button id="txdataSendBtn">Send ATT write</button>
+          </div>
+        </section>
+
+        <section class="tabPanel" data-panel="mac">
+          <h2>MAC Filters</h2>
+          <label>Whitelist (one per line or comma separated)</label>
+          <textarea id="whitelist" placeholder="AABBCCDDEEFF"></textarea>
+          <label>Blacklist (one per line or comma separated)</label>
+          <textarea id="blacklist" placeholder="112233445566"></textarea>
+          <div class="row">
+            <button id="applyMacBtn">Apply CLRM + lists</button>
+          </div>
+
+          <h2>Basic Commands</h2>
+          <div class="row">
+            <button id="infoBtn">INFO</button>
+            <button id="versionBtn">VERSION</button>
+            <button id="vbatBtn">VBAT</button>
+          </div>
+          <div class="grid" style="margin-top:8px">
+            <div>
+              <label>INFO output</label>
+              <input id="infoOut" class="monoInput" readonly value="-">
+            </div>
+            <div>
+              <label>VERSION output</label>
+              <input id="versionOut" class="monoInput" readonly value="-">
+            </div>
+          </div>
+          <div class="row separated">
+            <div class="field" style="flex:1 1 220px">
+              <label>VBAT output</label>
+              <input id="vbatOut" class="monoInput" readonly value="-" style="width:100%">
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="card rightCard">
+      <div class="rightTabBar" id="rightTabs">
+        <button class="rightTabBtn active" data-righttab="adv">Advertisements</button>
+        <button class="rightTabBtn" data-righttab="log">Log</button>
+      </div>
+
+      <div class="advPanel rightTabPanel active" data-rightpanel="adv">
+        <h2>Advertisements</h2>
+        <div class="stats">
+          <span class="chip">total: <strong id="statTotal">0</strong></span>
+          <span class="chip">1M/legacy: <strong id="stat1m">0</strong></span>
+          <span class="chip">coded: <strong id="statCoded">0</strong></span>
+        </div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>time</th>
+                <th>RSSI</th>
+                <th>evt</th>
+                <th>addr</th>
+                <th>phy</th>
+                <th>mac</th>
+                <th>len</th>
+                <th>payload</th>
+              </tr>
+            </thead>
+            <tbody id="advBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="logPanel rightTabPanel" data-rightpanel="log">
+        <h2>Log</h2>
+        <textarea id="log" readonly></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./adv2uart_web_gui.js"></script>
+</body>
+</html>
