@@ -15,3 +15,13 @@ ble50_scan/build/**
 __pycache__/
 *.pyc
 .vscode/
+
+# Compiled executables (host x86-64 and cross-compiled MIPS)
+ble50_scan/adv2uart
+ble50_scan/adv2uart_tui
+ble50_scan/*.mips
+
+ble50_scan/esptool.exe
+ble50_scan/build/
+ble50_scan/sdkconfig
+ble50_scan/sdkconfig.old

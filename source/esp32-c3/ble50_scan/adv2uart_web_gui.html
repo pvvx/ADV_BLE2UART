@@ -403,6 +403,9 @@
               <label>Device</label>
               <select id="deviceProfile" style="width:160px">
                 <option value="esp32-c3">ESP32-C3</option>
+                <option value="esp32-c6-gpio15">ESP32-C6 GPIO15 RGB</option>
+                <option value="esp32-c6-gpio8">ESP32-C6 GPIO8 RGB</option>
+                <option value="esp32-c6-noled">ESP32-C6 No LED</option>
                 <option value="tb-03f-kit">TB-03F-KIT</option>
               </select>
             </div>
@@ -491,6 +494,65 @@
             <button id="evtQueryBtn">Query</button>
             <button id="evtClearBtn">Clear</button>
           </div>
+
+          <div id="rgbSection" class="tbOnly">
+            <h2>RGB LED Colour</h2>
+            <div class="row controls">
+              <div class="field"><label>R</label><input id="rgbR" type="number" min="0" max="255" value="32" style="width:64px"></div>
+              <div class="field"><label>G</label><input id="rgbG" type="number" min="0" max="255" value="32" style="width:64px"></div>
+              <div class="field"><label>B</label><input id="rgbB" type="number" min="0" max="255" value="32" style="width:64px"></div>
+              <div class="field"><label>Picker</label><input id="rgbPicker" type="color" value="#202020" style="width:48px;height:32px;padding:2px"></div>
+            </div>
+            <div class="row controls">
+              <div class="field"><label>Brightness</label><input id="rgbBrightness" type="range" min="0" max="100" value="100" style="width:180px"></div>
+              <span id="rgbBrightnessVal">100%</span>
+            </div>
+            <div class="row">
+              <button id="rgbSetBtn">Set RGB</button>
+              <button id="rgbOffBtn">Off</button>
+            </div>
+          </div>
+
+          <h2>Board LED</h2>
+          <div class="row controls">
+            <div class="field">
+              <label>Blink count</label>
+              <input id="ledBlinkCount" type="number" min="1" max="10" value="3" style="width:70px">
+            </div>
+            <div class="field">
+              <label>Delay ms</label>
+              <input id="ledBlinkDelay" type="number" min="10" max="500" value="80" style="width:80px">
+            </div>
+          </div>
+          <div class="row">
+            <button id="ledOnBtn">On</button>
+            <button id="ledOffBtn">Off</button>
+            <button id="ledToggleBtn">Toggle</button>
+            <button id="ledBlinkBtn">Blink</button>
+            <button id="ledAllOffBtn">All OFF</button>
+            <button id="ledQueryBtn">Query state</button>
+          </div>
+          <div class="row">
+            <label>LED status: <span id="ledStatus" style="font-weight:600">-</span></label>
+            <label>Board mask: <span id="boardMask" class="monoInput" style="font-family:var(--mono)">-</span></label>
+          </div>
+
+          <h2>PWM</h2>
+          <div class="row controls">
+            <div class="field"><label>Pin</label><input id="pwmPin" value="8" style="width:70px"></div>
+            <div class="field"><label>Duty %</label><input id="pwmDuty" type="number" min="0" max="100" value="50" style="width:70px"></div>
+            <div class="field"><label>Period µs</label><input id="pwmPeriod" type="number" min="1" value="200" style="width:90px"></div>
+          </div>
+          <div class="row">
+            <button id="pwmStartBtn">Start PWM</button>
+            <button id="pwmOffBtn">PWM Off</button>
+          </div>
+
+          <h2>GPIO Status</h2>
+          <div class="row">
+            <button id="gpioReadAllBtn">Read all pins</button>
+          </div>
+          <div id="gpioStatusGrid" class="grid3" style="margin-top:4px;font-size:12px"></div>
 
           <div id="tbLedSection" class="tbOnly">
             <h2>TB-03F-KIT LEDs</h2>

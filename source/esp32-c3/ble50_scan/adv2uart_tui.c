@@ -81,6 +81,15 @@ static const char   *gpio_label_esp32_c3[GPIO_PANEL_COUNT]  = {
     "GPIO10","GPIO20","GPIO21"
 };
 
+// C6 Super Mini (RGB): SK6812 on GPIO15
+static const uint8_t gpio_pins_esp32_c6_sm[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,15,23};
+static const bool    gpio_analog_esp32_c6_sm[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
+static const char   *gpio_label_esp32_c6_sm[GPIO_PANEL_COUNT]  = {
+    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
+    "GPIO5","GPIO6","GPIO7","GPIO8","GPIO9(BOOT)",
+    "GPIO12","GPIO15(RGB)","GPIO23"
+};
+
 static const uint8_t gpio_pins_tb03f[6] = {0x07, 0x14, 0x15, 0x22, 0x23, 0x24};
 static const bool    gpio_analog_tb03f[6] = {0, 0, 0, 0, 0, 0};
 static const char   *gpio_label_tb03f[6] = {
@@ -90,6 +99,24 @@ static const char   *gpio_label_tb03f[6] = {
     "PC2(RGB Blue)",
     "PC3(RGB Red)",
     "PC4(RGB Green)",
+};
+
+// C6 variant: PWM LED on GPIO8 (active-low)
+static const uint8_t gpio_pins_c6_gpio8[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,13,23};
+static const bool    gpio_analog_c6_gpio8[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
+static const char   *gpio_label_c6_gpio8[GPIO_PANEL_COUNT]  = {
+    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
+    "GPIO5","GPIO6","GPIO7","GPIO8(LED)","GPIO9(BOOT)",
+    "GPIO12","GPIO13","GPIO23"
+};
+
+// C6 No LED
+static const uint8_t gpio_pins_c6_noled[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,13,23};
+static const bool    gpio_analog_c6_noled[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
+static const char   *gpio_label_c6_noled[GPIO_PANEL_COUNT]  = {
+    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
+    "GPIO5","GPIO6","GPIO7","GPIO8","GPIO9(BOOT)",
+    "GPIO12","GPIO13","GPIO23"
 };
 
 static const DeviceProfile device_esp32_c3 = {
@@ -109,6 +136,23 @@ static const DeviceProfile device_esp32_c3 = {
     .gpio_labels = gpio_label_esp32_c3,
 };
 
+static const DeviceProfile device_esp32_c6_gpio15 = {
+    .id = "esp32-c6-gpio15",
+    .label = "ESP32-C6 GPIO15 RGB",
+    .board_name = "ESP32-C6 (GPIO15 RGB)",
+    .board_led_gpio = 0x0F,
+    .board_led_active_low = false,
+    .supports_vbat = false,
+    .supports_txadv = true,
+    .supports_conn = true,
+    .supports_analog = true,
+    .supports_gpio_events = true,
+    .gpio_count = GPIO_PANEL_COUNT,
+    .gpio_pins = gpio_pins_esp32_c6_sm,
+    .gpio_analog = gpio_analog_esp32_c6_sm,
+    .gpio_labels = gpio_label_esp32_c6_sm,
+};
+
 static const DeviceProfile device_tb03f = {
     .id = "tb-03f-kit",
     .label = "TB-03F-KIT",
@@ -126,6 +170,40 @@ static const DeviceProfile device_tb03f = {
     .gpio_labels = gpio_label_tb03f,
 };
 
+static const DeviceProfile device_c6_gpio8 = {
+    .id = "esp32-c6-gpio8",
+    .label = "ESP32-C6 GPIO8 RGB",
+    .board_name = "ESP32-C6 (GPIO8 RGB)",
+    .board_led_gpio = 0x08,
+    .board_led_active_low = false,
+    .supports_vbat = false,
+    .supports_txadv = true,
+    .supports_conn = true,
+    .supports_analog = true,
+    .supports_gpio_events = true,
+    .gpio_count = GPIO_PANEL_COUNT,
+    .gpio_pins = gpio_pins_c6_gpio8,
+    .gpio_analog = gpio_analog_c6_gpio8,
+    .gpio_labels = gpio_label_c6_gpio8,
+};
+
+static const DeviceProfile device_c6_noled = {
+    .id = "esp32-c6-noled",
+    .label = "ESP32-C6 No LED",
+    .board_name = "ESP32-C6 (no LED)",
+    .board_led_gpio = 0xFF,
+    .board_led_active_low = false,
+    .supports_vbat = false,
+    .supports_txadv = true,
+    .supports_conn = true,
+    .supports_analog = true,
+    .supports_gpio_events = true,
+    .gpio_count = GPIO_PANEL_COUNT,
+    .gpio_pins = gpio_pins_c6_noled,
+    .gpio_analog = gpio_analog_c6_noled,
+    .gpio_labels = gpio_label_c6_noled,
+};
+
 static const DeviceProfile *g_device = &device_esp32_c3;
 
 static const DeviceProfile *find_device_profile(const char *id) {
@@ -137,6 +215,15 @@ static const DeviceProfile *find_device_profile(const char *id) {
     }
     if (strcmp(id, device_tb03f.id) == 0) {
         return &device_tb03f;
+    }
+    if (strcmp(id, device_esp32_c6_gpio15.id) == 0) {
+        return &device_esp32_c6_gpio15;
+    }
+    if (strcmp(id, device_c6_gpio8.id) == 0) {
+        return &device_c6_gpio8;
+    }
+    if (strcmp(id, device_c6_noled.id) == 0) {
+        return &device_c6_noled;
     }
     return NULL;
 }

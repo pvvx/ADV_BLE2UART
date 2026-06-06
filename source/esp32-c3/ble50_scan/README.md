@@ -80,17 +80,27 @@ Tested on WSL2 (Ubuntu 22.04) and native Linux. Install once:
 sudo apt-get install -y git python3 python3-venv cmake ninja-build
 ```
 
+> **Note:** BLE configuration defaults are stored in
+> [`ble50_scan/sdkconfig.defaults`](ble50_scan/sdkconfig.defaults). These are
+> merged automatically by `idf.py set-target`, ensuring Bluetooth and
+> BLE 5.0 features are enabled regardless of the target chip. If you need
+> to customise BLE settings, edit `sdkconfig.defaults` or run
+> `idf.py menuconfig` after the build is configured.
+
 ### One-shot install of the local toolchain
 
 From `source/esp32-c3/`:
 
 ```bash
-./install.sh
+./install.sh                                          # default: esp32c3 + supermini-c3
+./install.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
+ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./install.sh  # via env vars
 ```
 
-This clones ESP-IDF v6.0.1 into `.tooling/esp-idf-v6.0.1/` and installs the
-RISC-V toolchain and Python virtualenv into `.tooling/espressif/`. Re-running
-the script is idempotent. To wipe both:
+This clones ESP-IDF v6.0.1 into `.tooling/esp-idf-v6.0.1/`, installs the
+toolchain for the selected target (default `esp32c3`) and Python virtualenv
+into `.tooling/espressif/`, and downloads the latest `esptool.exe` (Windows)
+into `ble50_scan/`. Re-running the script is idempotent. To wipe both:
 
 ```bash
 ./install.sh clean
@@ -101,8 +111,29 @@ the script is idempotent. To wipe both:
 From `source/esp32-c3/`:
 
 ```bash
-./build.sh
+./build.sh                                          # default: esp32c3 + supermini-c3 (clean build)
+./build.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
+./build.sh --device esp32c6 --config esp32-c6-gpio8    # RGB on GPIO8
+./build.sh --device esp32c6 --config esp32-c6-noled    # no LED
+ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./build.sh  # via env vars
 ```
+
+For **fast incremental rebuilds** (skips the clean step, only recompiles
+changed files):
+
+```bash
+./build.sh --incremental                            # quick rebuild, default target
+./build.sh -i --device esp32c6 --config esp32-c6-gpio15
+```
+
+Note: `--incremental` / `-i` is safe when only source files changed; if you
+changed the `sdkconfig` or board configuration, do a full (clean) build.
+
+The build automatically detects the current target in `sdkconfig` and runs
+`idf.py set-target` if the target has changed. BLE configuration defaults
+are stored in `ble50_scan/sdkconfig.defaults` and board-specific settings
+in `boards/` (e.g. `boards/esp32-c6-gpio15.conf`) — both are merged
+automatically by the build system.
 
 Produces:
 
@@ -111,6 +142,20 @@ ble50_scan/build/ble50_scan.bin            (application)
 ble50_scan/build/bootloader/bootloader.bin
 ble50_scan/build/partition_table/partition-table.bin
 ```
+
+### Board configurations
+
+Board-specific pin mappings are stored as Kconfig fragments in `boards/`:
+
+| Board config       | Target chip | Board LED                        | BOOT button | HW version |
+|--------------------|-------------|----------------------------------|-------------|------------|
+| `supermini-c3`     | `esp32c3`   | GPIO8 (PWM, active-low)          | GPIO9       | `0xC3`     |
+| `esp32-c6-gpio15`  | `esp32c6`   | GPIO15 (SK6812 RGB via RMT)      | GPIO9       | `0xC6`     |
+| `esp32-c6-gpio8`   | `esp32c6`   | GPIO8 (SK6812 RGB via RMT)       | GPIO9       | `0xC6`     |
+| `esp32-c6-noled`   | `esp32c6`   | none                             | GPIO9       | `0xC6`     |
+
+The RGB LED on ESP32-C6 Super Mini shows **blue** for 1M/legacy advertisements
+and **green** for Coded PHY advertisements.
 
 For incremental rebuilds after the first clean build:
 
@@ -130,12 +175,18 @@ Then from a Windows CMD prompt:
 
 ```cmd
 pushd <output of wslpath -w ble50_scan>
-flash.cmd COM3
+flash.cmd COM3              # ESP32-C3 (default)
+flash.cmd COM7 esp32c6      # ESP32-C6
+flash.cmd COM9 esp32h2      # ESP32-H2, etc.
 popd
 ```
 
-`flash.cmd` calls `esptool.exe` with the bootloader (offset `0x0`),
-partition table (`0x8000`) and application (`0x10000`).
+`flash.cmd` calls `esptool.exe` (v5.3.0, downloaded from
+[GitHub releases](https://github.com/espressif/esptool/releases))
+with the bootloader (offset `0x0`), partition table (`0x8000`) and
+application (`0x10000`). The chip type defaults to `esp32c3` and can be
+overridden with the second argument — use `flash.cmd COM7 esp32c6` for
+an ESP32-C6 board.
 
 ## Host tools
 

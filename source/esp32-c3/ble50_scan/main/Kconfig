@@ -1,0 +1,146 @@
+menu "Board Configuration"
+
+config BOARD_SUPERMINI_C3
+    bool "ESP32-C3 Super Mini"
+    default y
+    help
+        Default board: ESP32-C3 Super Mini.
+        Board LED on GPIO8 (active-low simple LED), BOOT button on GPIO9.
+
+config BOARD_SUPERMINI_C6
+    bool "ESP32-C6 Super Mini"
+    help
+        ESP32-C6 Super Mini (board config: esp32-c6-gpio15).
+        SK6812 RGB LED on GPIO15 via RMT, BOOT button on GPIO9.
+
+endmenu
+
+menu "Board LED Configuration"
+
+choice BOARD_LED_TYPE
+    prompt "Board LED type"
+    default BOARD_LED_TYPE_PWM
+    help
+        Type of LED used on the board.
+
+config BOARD_LED_TYPE_PWM
+    bool "Simple PWM LED"
+    help
+        Standard single-colour LED driven by LEDC PWM.
+        Used on ESP32-C3 Super Mini (GPIO8, active-low).
+
+config BOARD_LED_TYPE_RGB
+    bool "WS2812 RGB LED"
+    depends on BOARD_SUPERMINI_C6
+    help
+        Addressable RGB LED (WS2812) driven by RMT.
+        Used on ESP32-C6 Super Mini (GPIO8).
+
+endchoice
+
+config BOARD_LED_GPIO
+    int "Board LED GPIO number"
+    default 8
+    help
+        GPIO pin used for the board status LED.
+        ESP32-C3 Super Mini: GPIO8 (active-low simple LED, default).
+        ESP32-C6 Super Mini: GPIO15 (SK6812 RGB LED).
+
+config BOARD_LED_ACTIVE_LOW
+    bool "Board LED is active-low (PWM type only)"
+    default y
+    depends on BOARD_LED_TYPE_PWM
+    help
+        Set if the board LED is active-low (HIGH = OFF, LOW = ON). Only for PWM-type LEDs.
+
+config BOARD_LED_IDLE_LEVEL
+    int "Board LED idle level"
+    default 1
+    help
+        Idle level of the board LED. 1 = OFF (for active-low LED), 0 = ON.
+
+config BOARD_LED_PULSE_US
+    int "Board LED pulse duration (μs)"
+    default 25000
+    range 1000 1000000
+    help
+        Duration of the activity pulse on the board LED in microseconds.
+
+config BOARD_HW_VERSION
+    hex "Hardware version byte"
+    default 0xC6 if BOARD_SUPERMINI_C6
+    default 0xC3
+    range 0x00 0xFF
+    help
+        Hardware version reported in INFO responses.
+        0xC3 for ESP32-C3 Super Mini, 0xC6 for ESP32-C6 Super Mini.
+
+endmenu
+
+menu "Board Supported GPIOs"
+
+config BOARD_GPIO_0
+    bool "GPIO0"
+    default y
+config BOARD_GPIO_1
+    bool "GPIO1"
+    default y
+config BOARD_GPIO_2
+    bool "GPIO2"
+    default y
+config BOARD_GPIO_3
+    bool "GPIO3"
+    default y
+config BOARD_GPIO_4
+    bool "GPIO4"
+    default y
+config BOARD_GPIO_5
+    bool "GPIO5"
+    default y
+config BOARD_GPIO_6
+    bool "GPIO6"
+    default y
+config BOARD_GPIO_7
+    bool "GPIO7"
+    default y
+config BOARD_GPIO_8
+    bool "GPIO8"
+    default y
+config BOARD_GPIO_9
+    bool "GPIO9"
+    default y
+config BOARD_GPIO_10
+    bool "GPIO10"
+    default y if BOARD_SUPERMINI_C3
+config BOARD_GPIO_12
+    bool "GPIO12"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_13
+    bool "GPIO13"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_14
+    bool "GPIO14"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_15
+    bool "GPIO15"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_18
+    bool "GPIO18"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_19
+    bool "GPIO19"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_20
+    bool "GPIO20"
+    default y
+config BOARD_GPIO_21
+    bool "GPIO21"
+    default y
+config BOARD_GPIO_22
+    bool "GPIO22"
+    default y if BOARD_SUPERMINI_C6
+config BOARD_GPIO_23
+    bool "GPIO23"
+    default y if BOARD_SUPERMINI_C6
+
+endmenu

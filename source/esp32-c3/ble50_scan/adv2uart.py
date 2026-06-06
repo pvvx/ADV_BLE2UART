@@ -745,6 +745,13 @@ def main():
         help='add one or more MAC addresses or prefixes to the firmware whitelist before scan start'
     )
     parser.add_argument(
+        '--device',
+        dest='device',
+        default='esp32-c3',
+        choices=['esp32-c3', 'esp32-c6-gpio15', 'esp32-c6-gpio8', 'esp32-c6-noled', 'tb-03f-kit'],
+        help='device profile (default: esp32-c3)'
+    )
+    parser.add_argument(
         '--blacklist',
         '--backlist',
         dest='blacklist',

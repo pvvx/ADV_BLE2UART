@@ -26,6 +26,7 @@ export const GPIO_OP = {
   PWM: 5,
   PWM_OFF: 6,
   ANALOG_READ: 7,
+  RGB: 8,        // set WS2812 RGB colour: (pin, R, G, B)
 };
 
 export const GPIOEVT_OP = {
@@ -754,6 +755,13 @@ export class Adv2UartApi {
   async gpioPwmOff(pin) {
     const p = pin & 0xff;
     return this.request(new Uint8Array([CMD.GPIO, GPIO_OP.PWM_OFF, p]), 4000, {
+      matcher: (evt) => evt?.data?.length < 2 || evt?.data?.[0] === p || evt?.data?.[1] === p,
+    });
+  }
+
+  async gpioRgb(pin, red, green, blue) {
+    const p = pin & 0xff;
+    return this.request(new Uint8Array([CMD.GPIO, GPIO_OP.RGB, p, red & 0xff, green & 0xff, blue & 0xff]), 4000, {
       matcher: (evt) => evt?.data?.length < 2 || evt?.data?.[0] === p || evt?.data?.[1] === p,
     });
   }

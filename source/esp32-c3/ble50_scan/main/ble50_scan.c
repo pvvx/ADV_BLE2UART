@@ -43,14 +43,23 @@
 #include "driver/ledc.h"
 #include "driver/usb_serial_jtag.h"
 #include "hal/usb_serial_jtag_ll.h"
+#include "rgb_led.h"
 
 
 #ifndef BOARD_LED_GPIO
+#ifdef CONFIG_BOARD_LED_GPIO
+#define BOARD_LED_GPIO          ((gpio_num_t)CONFIG_BOARD_LED_GPIO)
+#else
 #define BOARD_LED_GPIO          GPIO_NUM_8
+#endif
 #endif
 
 #define SW_VERSION              0x02
+#ifdef CONFIG_BOARD_HW_VERSION
+#define HW_VERSION              CONFIG_BOARD_HW_VERSION
+#else
 #define HW_VERSION              0xC3
+#endif
 
 #define HEAD_CRC_ADD_LEN        13
 #define FRAME_DATA_LEN          6
@@ -68,19 +77,20 @@
 #define UART_BAUD_RATE_COUNT    3
 #define FILTER_LIST_CAPACITY    64
 #define CODED_SCAN_UNIT_10MS    16
-#define GPIO_BOARD_LED_BIT      0x0001u
+#ifdef CONFIG_BOARD_LED_IDLE_LEVEL
+#define BOARD_LED_IDLE_LEVEL    CONFIG_BOARD_LED_IDLE_LEVEL
+#else
 #define BOARD_LED_IDLE_LEVEL    1
+#endif
+#ifdef CONFIG_BOARD_LED_PULSE_US
+#define BOARD_LED_PULSE_US      CONFIG_BOARD_LED_PULSE_US
+#else
 #define BOARD_LED_PULSE_US      25000
+#endif
 
-// Hardware PWM (LEDC) backing for the board LED.
-// The Super Mini board LED is active-low: GPIO=high → LED off, GPIO=low → LED on.
-// With 8-bit LEDC duty the counter wraps at 2^8 = 256 ticks per period.
-//   duty = 256 → pin always HIGH (no LOW pulse at all) → LED fully OFF
-//   duty = 255 → pin LOW for 1/256 of period → LED VISIBLY DIM at idle (avoid)
-//   duty = 0   → pin always LOW → LED fully ON (max brightness)
-//   duty = 230 → pin LOW for ~10% of period → LED ~10% brightness
-// LED_DUTY_OFF MUST be 2^resolution to suppress idle bleed-through; ESP-IDF
-// LEDC accepts `(1 << duty_resolution)` as the "always one level" sentinel.
+// Hardware PWM (LEDC) backing for the board LED (PWM type only).
+// For RGB type the LED is driven via RMT (see rgb_led.c).
+#ifndef CONFIG_BOARD_LED_TYPE_RGB
 #define LED_PWM_FREQ_HZ         5000
 #define LED_PWM_TIMER           LEDC_TIMER_0
 #define LED_PWM_MODE            LEDC_LOW_SPEED_MODE
@@ -90,6 +100,7 @@
 #define LED_DUTY_OFF            LED_DUTY_FULL
 #define LED_DUTY_DIM            248u   // ~3% on time — faint blink for 1M / legacy / 2M adv
 #define LED_DUTY_BRIGHT         0u     // 100% — max brightness, used for Coded PHY adv
+#endif
 
 #define GPIO_OP_ANALOG_READ     7
 #define TXADV_INSTANCE          0
@@ -206,6 +217,9 @@ static conn_runtime_t s_conn = {
 
 static esp_timer_handle_t s_board_led_timer = NULL;
 static volatile uint8_t s_board_led_idle_level = BOARD_LED_IDLE_LEVEL;
+static bool s_rgb_led_ready = false;
+static bool s_rgb_led_on = false;   // tracks whether user has turned the RGB LED on via GPIO write
+static SemaphoreHandle_t s_rgb_mutex = NULL;  // protects rgb_led_set/off from concurrent tasks
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static SemaphoreHandle_t s_gap_sync_sem = NULL;
 static volatile esp_bt_status_t s_gap_sync_status = ESP_BT_STATUS_SUCCESS;
@@ -996,7 +1010,10 @@ static inline bool is_analog_gpio(uint8_t pin_code)
 
 static inline uint16_t board_mask(void)
 {
-    return GPIO_BOARD_LED_BIT;
+    if ((uint8_t)BOARD_LED_GPIO < 16) {
+        return (uint16_t)(1u << (uint8_t)BOARD_LED_GPIO);
+    }
+    return 0;
 }
 
 static bool is_supported_gpio(uint8_t pin_code);
@@ -1075,18 +1092,15 @@ static bool read_gpio_analog(uint8_t pin_code, uint16_t *raw_value)
     return true;
 }
 
+#ifndef CONFIG_BOARD_LED_TYPE_RGB
 static inline void board_led_set_duty(uint32_t duty)
 {
-    // Two register writes — hardware PWM keeps running autonomously,
-    // so this has no measurable impact on the BLE RX path.
     ledc_set_duty(LED_PWM_MODE, LED_PWM_CHANNEL, duty);
     ledc_update_duty(LED_PWM_MODE, LED_PWM_CHANNEL);
 }
 
 static inline uint32_t board_led_idle_duty(void)
 {
-    // s_board_led_idle_level encodes the digital idle level set via the GPIO
-    // command from the host: 1 == HIGH (active-low LED OFF), 0 == LOW (LED ON).
     return s_board_led_idle_level ? LED_DUTY_OFF : LED_DUTY_BRIGHT;
 }
 
@@ -1104,6 +1118,48 @@ static void set_board_led_idle_level(uint8_t level)
     }
     board_led_set_duty(board_led_idle_duty());
 }
+#else /* RGB LED version */
+/* Forward declarations — defined below after set_board_led_idle_level. */
+static inline void safe_rgb_led_set(uint8_t r, uint8_t g, uint8_t b);
+static inline void safe_rgb_led_off(void);
+
+static void set_board_led_idle_level(uint8_t level)
+{
+    s_board_led_idle_level = level ? 1 : 0;
+    if (s_board_led_timer != NULL) {
+        esp_timer_stop(s_board_led_timer);
+    }
+    if (!s_rgb_led_on) {
+        if (level) {
+            safe_rgb_led_off();
+        } else {
+            safe_rgb_led_set(0, 0, 32); // dim blue when idle-on
+        }
+    }
+}
+
+/* Lock around rgb_led_set / rgb_led_off because these call RMT functions
+ * that are NOT thread-safe.  Both the BLE callback (esp_gap_cb) and the
+ * io_task can call indicate_board_activity / GPIO-handler code paths. */
+static inline void safe_rgb_led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_rgb_led_ready) return;
+    if (s_rgb_mutex != NULL && xSemaphoreTake(s_rgb_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        rgb_led_set(r, g, b);
+        xSemaphoreGive(s_rgb_mutex);
+    }
+}
+static inline void safe_rgb_led_off(void)
+{
+    safe_rgb_led_set(0, 0, 0);
+}
+
+static void rgb_led_timer_cb(void *arg)
+{
+    (void)arg;
+    safe_rgb_led_off();
+}
+#endif
 
 // Pulse the LED to indicate adv reception. When the host has configured the
 // LED to be off in idle (idle_level == 1, the default), the pulse uses two
@@ -1115,21 +1171,34 @@ static void set_board_led_idle_level(uint8_t level)
 // visible against the bright background.
 static void indicate_board_activity(uint8_t primary_phy)
 {
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+    if (s_rgb_led_ready) {
+        if (primary_phy == 3) {
+            safe_rgb_led_set(0, 32, 0);   // green — Coded PHY
+        } else {
+            safe_rgb_led_set(0, 0, 32);   // blue  — 1M / legacy
+        }
+        if (s_board_led_timer != NULL) {
+            esp_timer_stop(s_board_led_timer);
+            esp_timer_start_once(s_board_led_timer, BOARD_LED_PULSE_US);
+        }
+    }
+#else
     uint32_t pulse_duty;
     if (s_board_led_idle_level == 0) {
-        // Idle is fully ON — pulse must contrast by dimming briefly.
         pulse_duty = LED_DUTY_DIM;
     } else {
         pulse_duty = (primary_phy == 3) ? LED_DUTY_BRIGHT : LED_DUTY_DIM;
     }
-
     board_led_set_duty(pulse_duty);
     if (s_board_led_timer != NULL) {
         esp_timer_stop(s_board_led_timer);
         esp_timer_start_once(s_board_led_timer, BOARD_LED_PULSE_US);
     }
+#endif
 }
 
+#ifndef CONFIG_BOARD_LED_TYPE_RGB
 static void init_board_led_pwm(void)
 {
     ledc_timer_config_t timer_cfg = {
@@ -1152,23 +1221,74 @@ static void init_board_led_pwm(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ch_cfg));
 }
+#endif /* !CONFIG_BOARD_LED_TYPE_RGB (init_board_led_pwm) */
 
 static bool is_supported_gpio(uint8_t pin_code)
 {
     switch (pin_code) {
+#ifdef CONFIG_BOARD_GPIO_0
     case 0:
+#endif
+#ifdef CONFIG_BOARD_GPIO_1
     case 1:
+#endif
+#ifdef CONFIG_BOARD_GPIO_2
     case 2:
+#endif
+#ifdef CONFIG_BOARD_GPIO_3
     case 3:
+#endif
+#ifdef CONFIG_BOARD_GPIO_4
     case 4:
+#endif
+#ifdef CONFIG_BOARD_GPIO_5
     case 5:
+#endif
+#ifdef CONFIG_BOARD_GPIO_6
     case 6:
+#endif
+#ifdef CONFIG_BOARD_GPIO_7
     case 7:
+#endif
+#ifdef CONFIG_BOARD_GPIO_8
     case 8:
+#endif
+#ifdef CONFIG_BOARD_GPIO_9
     case 9:
+#endif
+#ifdef CONFIG_BOARD_GPIO_10
     case 10:
+#endif
+#ifdef CONFIG_BOARD_GPIO_12
+    case 12:
+#endif
+#ifdef CONFIG_BOARD_GPIO_13
+    case 13:
+#endif
+#ifdef CONFIG_BOARD_GPIO_14
+    case 14:
+#endif
+#ifdef CONFIG_BOARD_GPIO_15
+    case 15:
+#endif
+#ifdef CONFIG_BOARD_GPIO_18
+    case 18:
+#endif
+#ifdef CONFIG_BOARD_GPIO_19
+    case 19:
+#endif
+#ifdef CONFIG_BOARD_GPIO_20
     case 20:
+#endif
+#ifdef CONFIG_BOARD_GPIO_21
     case 21:
+#endif
+#ifdef CONFIG_BOARD_GPIO_22
+    case 22:
+#endif
+#ifdef CONFIG_BOARD_GPIO_23
+    case 23:
+#endif
         return true;
     default:
         return false;
@@ -1558,7 +1678,11 @@ static void fill_gpio_response(uint8_t op, uint8_t pin_code, uint8_t *resp)
     resp[1] = pin_code;
     if (is_supported_gpio(pin_code)) {
         if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+            resp[2] = s_rgb_led_on ? 1 : 0;
+#else
             resp[2] = s_board_led_idle_level ? 1 : 0;
+#endif
         } else {
             resp[2] = gpio_get_level((gpio_num_t)pin_code) ? 1 : 0;
         }
@@ -1885,9 +2009,19 @@ static void handle_gpio_command(const uint8_t *cmd_buf, int len)
             break;
         }
         if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+            if (cmd_buf[3]) {
+                s_rgb_led_on = true;
+                safe_rgb_led_set(32, 32, 32);   // ON = white
+            } else {
+                s_rgb_led_on = false;
+                safe_rgb_led_off();             // OFF
+            }
+#else
             // Board LED is driven by LEDC; calling apply_gpio_config() here
             // would gpio_config() the pin and detach the LEDC PWM output.
             set_board_led_idle_level(cmd_buf[3] ? 1 : 0);
+#endif
         } else {
             apply_gpio_config(pin_code, 0, 1, 0);
             gpio_set_level((gpio_num_t)pin_code, cmd_buf[3] ? 1 : 0);
@@ -1895,7 +2029,16 @@ static void handle_gpio_command(const uint8_t *cmd_buf, int len)
         break;
     case 3:
         if (pin_code == (uint8_t)BOARD_LED_GPIO) {
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+            s_rgb_led_on = !s_rgb_led_on;
+            if (s_rgb_led_on) {
+                safe_rgb_led_set(32, 32, 32);   // ON = white
+            } else {
+                safe_rgb_led_off();             // OFF
+            }
+#else
             set_board_led_idle_level(s_board_led_idle_level ? 0 : 1);
+#endif
         } else {
             apply_gpio_config(pin_code, 0, 1, 0);
             gpio_set_level((gpio_num_t)pin_code, !gpio_get_level((gpio_num_t)pin_code));
@@ -1919,6 +2062,21 @@ static void handle_gpio_command(const uint8_t *cmd_buf, int len)
         if (!read_gpio_analog(pin_code, &analog_raw)) {
             status = CMD_STATUS_DENIED;
         }
+        break;
+    case 8: // GPIO_OP_RGB — set WS2812 colour (pin, R, G, B)
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+        if (len < 8) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (pin_code != (uint8_t)BOARD_LED_GPIO) {
+            status = CMD_STATUS_PIN;
+            break;
+        }
+        safe_rgb_led_set(cmd_buf[3], cmd_buf[4], cmd_buf[5]);
+#else
+        status = CMD_STATUS_DENIED;
+#endif
         break;
     default:
         status = CMD_STATUS_ARGS;
@@ -2185,25 +2343,34 @@ static void io_task(void *arg)
     };
 	ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_serial_config));
 
-	while (1) {
-		int len = usb_serial_jtag_read_bytes(read_buf, sizeof(read_buf), 3 / portTICK_PERIOD_MS);
-		// Drain any pending GPIO events whether or not we just read a command.
-		// At a 3 ms read tick this runs ~330x/s, fast enough that the queue
-		// (16 slots) never overflows for realistic button-press / GPIO activity.
-		drain_gpio_event_queue();
-		if (len <= 2 || crcFast(read_buf, len) != 0) {
-			continue;
-		}
-
-        if (read_buf[0] != CMD_ID_GPIO || len < 5 || read_buf[2] != (uint8_t)BOARD_LED_GPIO) {
-            // Host-command indicator: low-intensity flicker (same level as 1M adv).
-            indicate_board_activity(ESP_BLE_GAP_PRI_PHY_1M);
+    static bool s_init_msg_sent = false;
+    while (1) {
+        int len = usb_serial_jtag_read_bytes(read_buf, sizeof(read_buf), 3 / portTICK_PERIOD_MS);
+        if (!s_init_msg_sent) {
+            s_init_msg_sent = true;
+            send_debug_print("Board LED: %s gpio=%d%s",
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+                s_rgb_led_ready ? "RGB" : "RGB-FAIL",
+#else
+                "PWM",
+#endif
+                (uint8_t)BOARD_LED_GPIO,
+                is_supported_gpio((uint8_t)BOARD_LED_GPIO) ? "" : " (unsupported!)");
+        }
+        // Drain any pending GPIO events whether or not we just read a command.
+        // At a 3 ms read tick this runs ~330x/s, fast enough that the queue
+        // (16 slots) never overflows for realistic button-press / GPIO activity.
+        drain_gpio_event_queue();
+        if (len <= 2 || crcFast(read_buf, len) != 0) {
+            continue;
         }
 
-		switch (read_buf[0]) {
-		case CMD_ID_INFO:
+        switch (read_buf[0]) {
+        case CMD_ID_INFO:
 			esp_read_mac(read_buf, ESP_MAC_BT);
-			send_cmd_response(CMD_ID_INFO, SW_VERSION, read_buf, FRAME_DATA_LEN);
+			// byte[6] = rgb_led_ready flag (protocol extension for debug)
+			read_buf[6] = s_rgb_led_ready ? 0x01 : 0x00;
+			send_cmd_response(CMD_ID_INFO, SW_VERSION, read_buf, FRAME_DATA_LEN + 1);
 			break;
 		case CMD_ID_SCAN:
 			handle_scan_command(read_buf, len);
@@ -2325,18 +2492,39 @@ void app_main(void)
     s_gap_sync_sem = xSemaphoreCreateBinary();
     if (is_supported_gpio((uint8_t)BOARD_LED_GPIO)) {
         const esp_timer_create_args_t board_led_timer_args = {
+#ifndef CONFIG_BOARD_LED_TYPE_RGB
             .callback = restore_board_led_idle_level,
+#else
+            .callback = rgb_led_timer_cb,  // RGB: restore turns LED off
+#endif
             .arg = NULL,
             .dispatch_method = ESP_TIMER_TASK,
             .name = "board_led",
         };
 
         ESP_ERROR_CHECK(esp_timer_create(&board_led_timer_args, &s_board_led_timer));
+#ifdef CONFIG_BOARD_LED_TYPE_RGB
+        esp_err_t rgb_ret = rgb_led_init();
+        if (rgb_ret != ESP_OK) {
+            ESP_LOGE(GATTC_TAG, "rgb_led_init failed (0x%x) — RGB LED will not work", rgb_ret);
+            s_rgb_led_ready = false;
+        } else {
+            ESP_LOGI(GATTC_TAG, "RGB LED initialized on GPIO%d", CONFIG_BOARD_LED_GPIO);
+            s_rgb_led_ready = true;
+            s_rgb_mutex = xSemaphoreCreateMutex();
+        }
+        send_debug_print("RGB: %s gpio=%d supported=1",
+            s_rgb_led_ready ? "OK" : "FAIL",
+            (uint8_t)BOARD_LED_GPIO);
+#else
         // Hardware PWM: pin matrix is routed to LEDC, duty changes are O(1)
         // register writes. No CPU/interrupt overhead during PWM cycles, so the
         // BLE RX path is not impacted.
         init_board_led_pwm();
+#endif
         set_board_led_idle_level(BOARD_LED_IDLE_LEVEL);
+    } else {
+        send_debug_print("RGB: gpio=%d NOT supported!", (uint8_t)BOARD_LED_GPIO);
     }
 
     init_adc_inputs();

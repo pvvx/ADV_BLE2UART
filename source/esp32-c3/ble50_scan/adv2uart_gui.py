@@ -14,7 +14,7 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import colorchooser, filedialog, messagebox, ttk
 except ImportError as exc:
     raise SystemExit("Tkinter is required. Install the Python Tcl/Tk package for your OS.") from exc
 
@@ -254,8 +254,275 @@ TB_03F_KIT_PROFILE = DeviceProfile(
     ),
 )
 
+ESP32_C6_GPIO15_PROFILE = DeviceProfile(
+    profile_id="esp32-c6-gpio15",
+    label="ESP32-C6 GPIO15 RGB",
+    board_frame_title="ESP32-C6 GPIO15 / RGB LED",
+    board_help_text="ESP32-C6 Super Mini: SK6812 RGB LED on GPIO15 (blue=1M, green=Coded), BOOT button on GPIO9.",
+    rf_frame_title="ESP32-C6 BLE Scan / RF",
+    rf_note="Custom scan channels are not available in the current ESP32-C6 firmware.",
+    status_pin_label="GPIO15 (RGB)",
+    led_status_label="RGB LED (GPIO15)",
+    board_mask_label="Board feature mask",
+    direct_blink_label="Blink RGB LED",
+    vbat_note="VBAT command is not supported by the current ESP32-C6 firmware",
+    uart_note="Baud-rate change is intentionally denied on the native ESP32-C6 USB Serial/JTAG transport.",
+    default_gpio_pin="RGB LED GPIO15",
+    default_rf_power_label="ESP_PWR_LVL_P3 (+3 dBm)",
+    board_led_pin_id=0x0F,
+    board_led_active_low=False,
+    status_pin_id=0x0F,
+    status_pin_active_low=False,
+    status_pin_active_label="RGB on",
+    status_pin_inactive_label="RGB off",
+    supports_vbat=False,
+    uart_set_baud_supported=False,
+    rf_cap_supported=False,
+    rf_channels_supported=False,
+    supports_txadv=True,
+    supports_conn=True,
+    supports_analog=True,
+    supports_gpio_events=True,
+    allow_general_gpio_write=True,
+    led_mask_mode=False,
+    legacy_reset_default=False,
+    board_pins={
+        "RGB LED GPIO15": 0x0F,
+        "GPIO0": 0x00,
+        "GPIO1": 0x01,
+        "GPIO2": 0x02,
+        "GPIO3": 0x03,
+        "GPIO4": 0x04,
+        "GPIO5": 0x05,
+        "GPIO6": 0x06,
+        "GPIO7": 0x07,
+        "GPIO8": 0x08,
+        "BOOT / GPIO9": 0x09,
+        "GPIO12": 0x0C,
+        "GPIO13": 0x0D,
+        "GPIO18": 0x12,
+        "GPIO19": 0x13,
+        "GPIO20": 0x14,
+        "GPIO21": 0x15,
+        "GPIO22": 0x16,
+        "GPIO23": 0x17,
+    },
+    gpio_pulls={
+        "Float": 0,
+        "Pull-up": 1,
+        "Pull-down": 2,
+    },
+    led_bits={
+        "RGB LED GPIO15": 0x01,
+    },
+    led_pin_codes={
+        0x01: 0x0F,
+    },
+    hw_version_labels={
+        0xC6: "ESP32-C6 GPIO15",
+    },
+    firmware_bauds=(2000000, 921600, 115200),
+    rf_power_options=(
+        ("ESP_PWR_LVL_N24 (-24 dBm)", 0),
+        ("ESP_PWR_LVL_N21 (-21 dBm)", 1),
+        ("ESP_PWR_LVL_N18 (-18 dBm)", 2),
+        ("ESP_PWR_LVL_N15 (-15 dBm)", 3),
+        ("ESP_PWR_LVL_N12 (-12 dBm)", 4),
+        ("ESP_PWR_LVL_N9 (-9 dBm)", 5),
+        ("ESP_PWR_LVL_N6 (-6 dBm)", 6),
+        ("ESP_PWR_LVL_N3 (-3 dBm)", 7),
+        ("ESP_PWR_LVL_N0 (0 dBm)", 8),
+        ("ESP_PWR_LVL_P3 (+3 dBm)", 9),
+        ("ESP_PWR_LVL_P6 (+6 dBm)", 10),
+        ("ESP_PWR_LVL_P9 (+9 dBm)", 11),
+        ("ESP_PWR_LVL_P12 (+12 dBm)", 12),
+        ("ESP_PWR_LVL_P15 (+15 dBm)", 13),
+        ("ESP_PWR_LVL_P18 (+18 dBm)", 14),
+        ("ESP_PWR_LVL_P20 (+20 dBm)", 15),
+    ),
+)
+
+ESP32_C6_GPIO8_PROFILE = DeviceProfile(
+    profile_id="esp32-c6-gpio8",
+    label="ESP32-C6 GPIO8 RGB",
+    board_frame_title="ESP32-C6 GPIO8 / RGB LED",
+    board_help_text="ESP32-C6 Mini: SK6812 RGB LED on GPIO8 (blue=1M, green=Coded), BOOT button on GPIO9.",
+    rf_frame_title="ESP32-C6 BLE Scan / RF",
+    rf_note="Custom scan channels are not available in the current ESP32-C6 firmware.",
+    status_pin_label="GPIO8 (RGB)",
+    led_status_label="RGB LED (GPIO8)",
+    board_mask_label="Board feature mask",
+    direct_blink_label="Blink RGB LED",
+    vbat_note="VBAT command is not supported by the current ESP32-C6 firmware",
+    uart_note="Baud-rate change is intentionally denied on the native ESP32-C6 USB Serial/JTAG transport.",
+    default_gpio_pin="RGB LED GPIO8",
+    default_rf_power_label="ESP_PWR_LVL_P3 (+3 dBm)",
+    board_led_pin_id=0x08,
+    board_led_active_low=False,
+    status_pin_id=0x08,
+    status_pin_active_low=False,
+    status_pin_active_label="RGB on",
+    status_pin_inactive_label="RGB off",
+    supports_vbat=False,
+    uart_set_baud_supported=False,
+    rf_cap_supported=False,
+    rf_channels_supported=False,
+    supports_txadv=True,
+    supports_conn=True,
+    supports_analog=True,
+    supports_gpio_events=True,
+    allow_general_gpio_write=True,
+    led_mask_mode=False,
+    legacy_reset_default=False,
+    board_pins={
+        "RGB LED GPIO8": 0x08,
+        "GPIO0": 0x00,
+        "GPIO1": 0x01,
+        "GPIO2": 0x02,
+        "GPIO3": 0x03,
+        "GPIO4": 0x04,
+        "GPIO5": 0x05,
+        "GPIO6": 0x06,
+        "GPIO7": 0x07,
+        "BOOT / GPIO9": 0x09,
+        "GPIO10": 0x0A,
+        "GPIO12": 0x0C,
+        "GPIO13": 0x0D,
+        "GPIO14": 0x0E,
+        "GPIO15": 0x0F,
+        "GPIO18": 0x12,
+        "GPIO19": 0x13,
+        "GPIO20": 0x14,
+        "GPIO21": 0x15,
+        "GPIO22": 0x16,
+        "GPIO23": 0x17,
+    },
+    gpio_pulls={
+        "Float": 0,
+        "Pull-up": 1,
+        "Pull-down": 2,
+    },
+    led_bits={
+        "RGB LED GPIO8": 0x01,
+    },
+    led_pin_codes={
+        0x01: 0x08,
+    },
+    hw_version_labels={
+        0xC6: "ESP32-C6 GPIO8",
+    },
+    firmware_bauds=(2000000, 921600, 115200),
+    rf_power_options=(
+        ("ESP_PWR_LVL_N24 (-24 dBm)", 0),
+        ("ESP_PWR_LVL_N21 (-21 dBm)", 1),
+        ("ESP_PWR_LVL_N18 (-18 dBm)", 2),
+        ("ESP_PWR_LVL_N15 (-15 dBm)", 3),
+        ("ESP_PWR_LVL_N12 (-12 dBm)", 4),
+        ("ESP_PWR_LVL_N9 (-9 dBm)", 5),
+        ("ESP_PWR_LVL_N6 (-6 dBm)", 6),
+        ("ESP_PWR_LVL_N3 (-3 dBm)", 7),
+        ("ESP_PWR_LVL_N0 (0 dBm)", 8),
+        ("ESP_PWR_LVL_P3 (+3 dBm)", 9),
+        ("ESP_PWR_LVL_P6 (+6 dBm)", 10),
+        ("ESP_PWR_LVL_P9 (+9 dBm)", 11),
+        ("ESP_PWR_LVL_P12 (+12 dBm)", 12),
+        ("ESP_PWR_LVL_P15 (+15 dBm)", 13),
+        ("ESP_PWR_LVL_P18 (+18 dBm)", 14),
+        ("ESP_PWR_LVL_P20 (+20 dBm)", 15),
+    ),
+)
+
+ESP32_C6_NOLED_PROFILE = DeviceProfile(
+    profile_id="esp32-c6-noled",
+    label="ESP32-C6 No LED",
+    board_frame_title="ESP32-C6 GPIO (no board LED)",
+    board_help_text="ESP32-C6 generic: no on-board LED. GPIO read/write/configure works on safe pins.",
+    rf_frame_title="ESP32-C6 BLE Scan / RF",
+    rf_note="Custom scan channels are not available in the current ESP32-C6 firmware.",
+    status_pin_label="GPIO9 (BOOT)",
+    led_status_label="(no LED)",
+    board_mask_label="Board feature mask",
+    direct_blink_label="(no LED)",
+    vbat_note="VBAT command is not supported by the current ESP32-C6 firmware",
+    uart_note="Baud-rate change is intentionally denied on the native ESP32-C6 USB Serial/JTAG transport.",
+    default_gpio_pin="GPIO0",
+    default_rf_power_label="ESP_PWR_LVL_P3 (+3 dBm)",
+    board_led_pin_id=0xFF,
+    board_led_active_low=False,
+    status_pin_id=0x09,
+    status_pin_active_low=False,
+    status_pin_active_label="High",
+    status_pin_inactive_label="Low",
+    supports_vbat=False,
+    uart_set_baud_supported=False,
+    rf_cap_supported=False,
+    rf_channels_supported=False,
+    supports_txadv=True,
+    supports_conn=True,
+    supports_analog=True,
+    supports_gpio_events=True,
+    allow_general_gpio_write=True,
+    led_mask_mode=False,
+    legacy_reset_default=False,
+    board_pins={
+        "GPIO0": 0x00,
+        "GPIO1": 0x01,
+        "GPIO2": 0x02,
+        "GPIO3": 0x03,
+        "GPIO4": 0x04,
+        "GPIO5": 0x05,
+        "GPIO6": 0x06,
+        "GPIO7": 0x07,
+        "GPIO8": 0x08,
+        "BOOT / GPIO9": 0x09,
+        "GPIO10": 0x0A,
+        "GPIO12": 0x0C,
+        "GPIO13": 0x0D,
+        "GPIO14": 0x0E,
+        "GPIO15": 0x0F,
+        "GPIO18": 0x12,
+        "GPIO19": 0x13,
+        "GPIO20": 0x14,
+        "GPIO21": 0x15,
+        "GPIO22": 0x16,
+        "GPIO23": 0x17,
+    },
+    gpio_pulls={
+        "Float": 0,
+        "Pull-up": 1,
+        "Pull-down": 2,
+    },
+    led_bits={},
+    led_pin_codes={},
+    hw_version_labels={
+        0xC6: "ESP32-C6 No LED",
+    },
+    firmware_bauds=(2000000, 921600, 115200),
+    rf_power_options=(
+        ("ESP_PWR_LVL_N24 (-24 dBm)", 0),
+        ("ESP_PWR_LVL_N21 (-21 dBm)", 1),
+        ("ESP_PWR_LVL_N18 (-18 dBm)", 2),
+        ("ESP_PWR_LVL_N15 (-15 dBm)", 3),
+        ("ESP_PWR_LVL_N12 (-12 dBm)", 4),
+        ("ESP_PWR_LVL_N9 (-9 dBm)", 5),
+        ("ESP_PWR_LVL_N6 (-6 dBm)", 6),
+        ("ESP_PWR_LVL_N3 (-3 dBm)", 7),
+        ("ESP_PWR_LVL_N0 (0 dBm)", 8),
+        ("ESP_PWR_LVL_P3 (+3 dBm)", 9),
+        ("ESP_PWR_LVL_P6 (+6 dBm)", 10),
+        ("ESP_PWR_LVL_P9 (+9 dBm)", 11),
+        ("ESP_PWR_LVL_P12 (+12 dBm)", 12),
+        ("ESP_PWR_LVL_P15 (+15 dBm)", 13),
+        ("ESP_PWR_LVL_P18 (+18 dBm)", 14),
+        ("ESP_PWR_LVL_P20 (+20 dBm)", 15),
+    ),
+)
+
 DEVICE_PROFILES = {
     ESP32_C3_PROFILE.profile_id: ESP32_C3_PROFILE,
+    ESP32_C6_GPIO15_PROFILE.profile_id: ESP32_C6_GPIO15_PROFILE,
+    ESP32_C6_GPIO8_PROFILE.profile_id: ESP32_C6_GPIO8_PROFILE,
+    ESP32_C6_NOLED_PROFILE.profile_id: ESP32_C6_NOLED_PROFILE,
     TB_03F_KIT_PROFILE.profile_id: TB_03F_KIT_PROFILE,
 }
 DEFAULT_DEVICE_PROFILE_ID = ESP32_C3_PROFILE.profile_id
@@ -923,6 +1190,9 @@ class SerialClient:
 
     def command_gpio_pwm_off(self, pin_id: int):
         self.send(bytes((CMD_ID_GPIO, 6, pin_id & 0xFF)))
+
+    def command_gpio_rgb(self, pin_id: int, red: int, green: int, blue: int):
+        self.send(bytes((CMD_ID_GPIO, 8, pin_id & 0xFF, red & 0xFF, green & 0xFF, blue & 0xFF)))
 
     def command_uart_status(self):
         self.send(bytes((CMD_ID_UART, 0)))
@@ -1756,6 +2026,34 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Button(blink_frame, text=DEVICE_DIRECT_BLINK_LABEL, command=lambda: self.led_blink_mask(LED_ALL_MASK)).pack(side=tk.LEFT)
         ttk.Button(blink_frame, text="All off", command=self.led_all_off).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(blink_frame, text="Query state", command=self.led_query_state).pack(side=tk.LEFT, padx=(6, 0))
+
+        # RGB colour picker + brightness (visible for RGB-capable profiles)
+        if DEVICE_PROFILE.profile_id in ("esp32-c6-gpio15", "esp32-c6-gpio8"):
+            rgb_frame = ttk.LabelFrame(parent, text="RGB LED Colour")
+            rgb_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+            rgb_frame.columnconfigure(8, weight=1)
+            ttk.Label(rgb_frame, text="R").grid(row=0, column=0, padx=(8, 2), pady=6)
+            self.rgb_r_var = tk.IntVar(value=32)
+            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_r_var, width=4).grid(row=0, column=1, padx=(0, 4), pady=6)
+            ttk.Label(rgb_frame, text="G").grid(row=0, column=2, padx=(4, 2), pady=6)
+            self.rgb_g_var = tk.IntVar(value=32)
+            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_g_var, width=4).grid(row=0, column=3, padx=(0, 4), pady=6)
+            ttk.Label(rgb_frame, text="B").grid(row=0, column=4, padx=(4, 2), pady=6)
+            self.rgb_b_var = tk.IntVar(value=32)
+            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_b_var, width=4).grid(row=0, column=5, padx=(0, 4), pady=6)
+            ttk.Button(rgb_frame, text="Set RGB", command=self._send_rgb).grid(row=0, column=6, padx=(0, 4), pady=6)
+            ttk.Button(rgb_frame, text="Picker", command=self._pick_rgb_color).grid(row=0, column=7, padx=(0, 4), pady=6)
+            ttk.Button(rgb_frame, text="Off", command=lambda: self.safe_command(lambda: self.client.command_gpio_rgb(BOARD_LED_PIN_ID, 0, 0, 0))).grid(row=0, column=8, padx=(0, 8), pady=6)
+
+            # Brightness slider (scales RGB values before sending)
+            bright_frame = ttk.Frame(rgb_frame)
+            bright_frame.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 6))
+            ttk.Label(bright_frame, text="Brightness").pack(side=tk.LEFT, padx=(0, 6))
+            self.rgb_bright_var = tk.IntVar(value=100)
+            ttk.Scale(bright_frame, from_=0, to=100, variable=self.rgb_bright_var,
+                      orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Label(bright_frame, textvariable=self.rgb_bright_var, width=3).pack(side=tk.LEFT)
+            ttk.Label(bright_frame, text="%").pack(side=tk.LEFT)
 
         status_frame = ttk.LabelFrame(parent, text="Status pins")
         status_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
@@ -3425,6 +3723,25 @@ class AdvBle2UartGui(tk.Tk):
     def led_query_state(self):
         """Refresh LED state by reading all board GPIO pins through CMD_ID_GPIO."""
         self.gpio_read_all()
+
+    def _send_rgb(self):
+        """Send RGB colour to the WS2812 board LED (GPIO_OP_RGB, op=8).
+        Brightness slider scales the RGB values proportionally."""
+        bright = max(1, min(100, self.rgb_bright_var.get())) / 100.0
+        r = max(0, min(255, round(self.rgb_r_var.get() * bright)))
+        g = max(0, min(255, round(self.rgb_g_var.get() * bright)))
+        b = max(0, min(255, round(self.rgb_b_var.get() * bright)))
+        self.safe_command(lambda: self.client.command_gpio_rgb(BOARD_LED_PIN_ID, r, g, b))
+
+    def _pick_rgb_color(self):
+        """Open a colour picker dialog; on OK set the R/G/B spinboxes and send."""
+        c = colorchooser.askcolor(title="Pick RGB colour", parent=self)
+        if c and c[0]:
+            r, g, b = (max(0, min(255, round(v))) for v in c[0])
+            self.rgb_r_var.set(r)
+            self.rgb_g_var.set(g)
+            self.rgb_b_var.set(b)
+            self._send_rgb()
 
     def rf_coded_50pct_of_window(self):
         """Set Coded PHY min window to 50 % of the current scan window."""

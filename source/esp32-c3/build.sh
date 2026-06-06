@@ -4,6 +4,60 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
+usage() {
+    cat <<'EOF'
+Usage:  ./build.sh [--device <target>] [--config <board>] [--incremental]
+        ./build.sh --help
+
+Options:
+  --device <target>    Target chip (esp32c3, esp32c6, esp32h2, ...).
+                       Default: esp32c3 (or $ESP_TARGET env var).
+  --config <board>     Board configuration (supermini-c3, supermini-c6, ...).
+                       Default: supermini-c3 (or $BOARD_CONFIG env var).
+  --incremental, -i    Skip clean build; recompile only changed files (faster).
+  --help               Show this help message.
+
+Available board configs:
+  supermini-c3        ESP32-C3 Super Mini (default)
+  esp32-c6-gpio15     ESP32-C6 (SK6812 RGB LED via RMT on GPIO15)
+  esp32-c6-gpio8      ESP32-C6 (SK6812 RGB LED via RMT on GPIO8)
+  esp32-c6-noled      ESP32-C6 (no on-board LED)
+  (add your own: boards/<name>.conf)
+EOF
+}
+
+# Parse arguments
+ESP_TARGET="${ESP_TARGET:-}"
+BOARD_CONFIG="${BOARD_CONFIG:-}"
+INCREMENTAL=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device)
+            shift
+            ESP_TARGET="${1:-}"
+            ;;
+        --config)
+            shift
+            BOARD_CONFIG="${1:-}"
+            ;;
+        --incremental|-i)
+            INCREMENTAL=true
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+: "${ESP_TARGET:=esp32c3}"
+: "${BOARD_CONFIG:=supermini-c3}"
+
 resolve_path() {
     case "$1" in
         /*)
@@ -73,16 +127,87 @@ export CMAKE_C_COMPILER="$RISCV_GCC"
 export CMAKE_CXX_COMPILER="$RISCV_GXX"
 export CMAKE_ASM_COMPILER="$RISCV_GCC"
 
-echo "==> Running a clean firmware build"
-rm -rf "$PROJECT_DIR_PATH/build"
+# Map board config to config file
+BOARD_CONFIG_FILE="$PROJECT_DIR_PATH/boards/${BOARD_CONFIG}.conf"
+if [[ ! -f "$BOARD_CONFIG_FILE" ]]; then
+    echo "Board configuration not found: $BOARD_CONFIG_FILE" >&2
+    echo "Available: $(ls "$PROJECT_DIR_PATH/boards/"*.conf 2>/dev/null | sed 's|.*/||;s|\.conf||' | tr '\n' ' ')" >&2
+    exit 1
+fi
+
+# SDKCONFIG_DEFAULTS: base settings + board-specific overrides
+export SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/${BOARD_CONFIG}.conf"
+
+echo "==> Target: $ESP_TARGET, Board: $BOARD_CONFIG"
+# Detect current target from sdkconfig
+SDKCONFIG="$PROJECT_DIR_PATH/sdkconfig"
+CURRENT_TARGET=""
+if [[ -f "$SDKCONFIG" ]]; then
+    CURRENT_TARGET="$(grep '^CONFIG_IDF_TARGET=' "$SDKCONFIG" | sed 's/^CONFIG_IDF_TARGET="//;s/"$//')"
+fi
+
+NEED_SET_TARGET=false
+
+# If target changed, run set-target first
+if [[ -n "$CURRENT_TARGET" && "$CURRENT_TARGET" != "$ESP_TARGET" ]]; then
+    echo "==> sdkconfig was generated for '$CURRENT_TARGET', switching to '$ESP_TARGET'"
+    NEED_SET_TARGET=true
+fi
+
+# Content-hash of the board config file: saves the md5sum after a successful build
+# and compares it on subsequent runs.  This catches renames, edits, and any change
+# that timestamp -nt alone would miss (e.g. file edited then reverted, or renamed
+# while preserving mtime).
+BOARD_CONFIG_HASH_FILE="$PROJECT_DIR_PATH/build/.board_config_hash"
+if [[ -f "$SDKCONFIG" ]]; then
+    CURRENT_HASH="$(md5sum "$BOARD_CONFIG_FILE" 2>/dev/null | awk '{print $1}')"
+    SAVED_HASH="$(cat "$BOARD_CONFIG_HASH_FILE" 2>/dev/null || true)"
+    if [[ -n "$CURRENT_HASH" && "$CURRENT_HASH" != "$SAVED_HASH" ]]; then
+        echo "==> Board config '$BOARD_CONFIG.conf' content changed, re-running set-target"
+        NEED_SET_TARGET=true
+    fi
+fi
+
+# Legacy timestamp check: if board config file is newer than sdkconfig, regenerate
+if [[ -f "$SDKCONFIG" && "$BOARD_CONFIG_FILE" -nt "$SDKCONFIG" ]]; then
+    echo "==> Board config '$BOARD_CONFIG.conf' is newer than sdkconfig, re-running set-target"
+    NEED_SET_TARGET=true
+fi
+
+if [ "$NEED_SET_TARGET" = true ]; then
+    echo "==> Removing stale sdkconfig to force fresh generation from defaults"
+    rm -f "$SDKCONFIG"
+    rm -f "${SDKCONFIG}.old"
+    rm -rf "$PROJECT_DIR_PATH/build"
+    export IDF_TARGET="$ESP_TARGET"
+    "$IDF_PYTHON" "$ESP_IDF_DIR_PATH/tools/idf.py" \
+        -C "$PROJECT_DIR_PATH" \
+        -B "$PROJECT_DIR_PATH/build" \
+        set-target "$ESP_TARGET"
+fi
+
+BUILD_TYPE="clean"
+if [ "$INCREMENTAL" = true ]; then
+    BUILD_TYPE="incremental"
+fi
+echo "==> Running a $BUILD_TYPE firmware build"
+if [ "$INCREMENTAL" != true ]; then
+    rm -rf "$PROJECT_DIR_PATH/build"
+fi
+export IDF_TARGET="$ESP_TARGET"
 "$IDF_PYTHON" "$ESP_IDF_DIR_PATH/tools/idf.py" \
     -C "$PROJECT_DIR_PATH" \
     -B "$PROJECT_DIR_PATH/build" \
     -G "Unix Makefiles" \
     build
 
+# Save board config hash for future content-change detection
+mkdir -p "$(dirname "$BOARD_CONFIG_HASH_FILE")"
+md5sum "$BOARD_CONFIG_FILE" 2>/dev/null | awk '{print $1}' > "$BOARD_CONFIG_HASH_FILE" || true
+
 echo
 echo "Build completed. Generated files:"
 echo "  $PROJECT_DIR/build/ble50_scan.bin"
 echo "  $PROJECT_DIR/build/bootloader/bootloader.bin"
 echo "  $PROJECT_DIR/build/partition_table/partition-table.bin"
+echo "Target chip: $ESP_TARGET"

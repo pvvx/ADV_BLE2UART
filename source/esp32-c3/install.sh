@@ -12,6 +12,8 @@ ESP_TOOLS_DIR="${ESP_TOOLS_DIR:-$WORK_DIR/espressif}"
 ESP_IDF_JOBS="${ESP_IDF_JOBS:-8}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PROJECT_DIR="${PROJECT_DIR:-ble50_scan}"
+ESPTOOL_VERSION="${ESPTOOL_VERSION:-v5.3.0}"
+ESP_TARGET="${ESP_TARGET:-}"
 PYTHON_VERSION="$($PYTHON_BIN - <<'PY'
 import sys
 print(f"{sys.version_info.major}.{sys.version_info.minor}")
@@ -24,8 +26,21 @@ export IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$ESP_TOOLS_DIR/python_env/idf
 usage() {
     cat <<'EOF'
 Usage:
-  ./install.sh        Install prerequisites and the local ESP-IDF toolchain
-  ./install.sh clean  Remove the local toolchain and clean generated build files
+  ./install.sh                     Install prerequisites and the local ESP-IDF toolchain
+  ./install.sh clean               Remove the local toolchain and clean generated build files
+  ./install.sh --device <target>   Install toolchain for the specified chip target
+  ./install.sh --config <board>    Select board configuration
+
+Options:
+  --device <target>   Target chip (esp32c3, esp32c6, esp32h2, ...).
+                      Default: esp32c3 (or $ESP_TARGET env var).
+  --config <board>    Board configuration (supermini-c3, supermini-c6, ...).
+                      Default: supermini-c3 (or $BOARD_CONFIG env var).
+  --help              Show this help message.
+
+Available board configs:
+  supermini-c3        ESP32-C3 Super Mini (default)
+  supermini-c6        ESP32-C6 Super Mini
 EOF
 }
 
@@ -39,20 +54,40 @@ clean_workspace() {
     echo "Clean completed."
 }
 
-case "${1:-}" in
-    "")
-        ;;
+# Parse arguments
+ACTION=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device)
+            shift
+            ESP_TARGET="${1:-}"
+            ;;
+        --config)
+            shift
+            BOARD_CONFIG="${1:-}"
+            ;;
+        clean)
+            ACTION=clean
+            ;;
+        --help|-h|help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+: "${ESP_TARGET:=esp32c3}"
+: "${BOARD_CONFIG:=supermini-c3}"
+
+case "$ACTION" in
     clean)
         clean_workspace
         exit 0
-        ;;
-    -h|--help|help)
-        usage
-        exit 0
-        ;;
-    *)
-        usage >&2
-        exit 1
         ;;
 esac
 
@@ -86,8 +121,8 @@ fi
 git -C "$ESP_IDF_DIR" submodule sync --recursive
 git -C "$ESP_IDF_DIR" -c protocol.version=2 submodule update --init --recursive --depth 1 --jobs "$ESP_IDF_JOBS"
 
-echo "==> Installing ESP32-C3 toolchain"
-"$PYTHON_BIN" "$ESP_IDF_DIR/tools/idf_tools.py" install --targets=esp32c3
+echo "==> Installing $ESP_TARGET toolchain"
+"$PYTHON_BIN" "$ESP_IDF_DIR/tools/idf_tools.py" install --targets="$ESP_TARGET"
 
 if [[ ! -x "$IDF_PYTHON_ENV_PATH/bin/python" ]]; then
     echo "==> Creating ESP-IDF Python environment"
@@ -102,6 +137,20 @@ fi
 echo "==> Installing ESP-IDF Python packages"
 "$PYTHON_BIN" "$ESP_IDF_DIR/tools/idf_tools.py" install-python-env --features=core
 
+echo "==> Installing esptool $ESPTOOL_VERSION (Windows)"
+ESPTOOL_ZIP="esptool-$ESPTOOL_VERSION-windows-amd64.zip"
+ESPTOOL_URL="https://github.com/espressif/esptool/releases/download/$ESPTOOL_VERSION/$ESPTOOL_ZIP"
+ESPTOOL_TMPDIR="$(mktemp -d)"
+if wget -q "$ESPTOOL_URL" -O "$ESPTOOL_TMPDIR/$ESPTOOL_ZIP"; then
+    unzip -q -o "$ESPTOOL_TMPDIR/$ESPTOOL_ZIP" -d "$ESPTOOL_TMPDIR"
+    cp "$ESPTOOL_TMPDIR/esptool-windows-amd64/esptool.exe" "$PROJECT_DIR/esptool.exe"
+    echo "  -> esptool.exe installed in $PROJECT_DIR/"
+else
+    echo "  -> WARNING: could not download esptool $ESPTOOL_VERSION from GitHub."
+    echo "     You can manually place esptool.exe in $PROJECT_DIR/"
+fi
+rm -rf "$ESPTOOL_TMPDIR"
+
 cat <<EOF
 
 Installation completed.
@@ -110,6 +159,8 @@ Repository root: .
 ESP-IDF directory: $ESP_IDF_DIR
 Tools directory: $IDF_TOOLS_PATH
 Python environment: $IDF_PYTHON_ENV_PATH
+esptool: $PROJECT_DIR/esptool.exe ($ESPTOOL_VERSION)
+Target chip: $ESP_TARGET
 
 Next steps:
   ./build.sh
