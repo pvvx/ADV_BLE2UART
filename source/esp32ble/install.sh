@@ -34,14 +34,38 @@ Usage:
 Options:
   --device <target>   Target chip (esp32c3, esp32c6, esp32h2, ...).
                       Default: esp32c3 (or $ESP_TARGET env var).
-  --config <board>    Board configuration (supermini-c3, supermini-c6, ...).
+  --config <board>    Board configuration (supermini-c3, esp32-c6-gpio15, ...).
                       Default: supermini-c3 (or $BOARD_CONFIG env var).
   --help              Show this help message.
 
 Available board configs:
-  supermini-c3        ESP32-C3 Super Mini (default)
-  supermini-c6        ESP32-C6 Super Mini
 EOF
+    list_board_configs
+    cat <<'EOF'
+  (add your own: boards/<name>.conf)
+EOF
+}
+
+# List available board configurations from the boards/ directory
+list_board_configs() {
+    local boards_dir="$PROJECT_DIR/boards"
+    if [[ -d "$boards_dir" ]]; then
+        for f in "$boards_dir"/*.conf; do
+            if [[ -f "$f" ]]; then
+                name="$(basename "$f" .conf)"
+                # Extract the second line (first comment) as a short description
+                desc="$(sed -n '2p' "$f" 2>/dev/null | sed 's/^# //' || true)"
+                if [[ -z "$desc" ]]; then
+                    desc="Custom board configuration"
+                fi
+                if [[ "$name" == "${BOARD_CONFIG:-supermini-c3}" ]]; then
+                    printf "  %-20s %s (default)\n" "$name" "$desc"
+                else
+                    printf "  %-20s %s\n" "$name" "$desc"
+                fi
+            fi
+        done
+    fi
 }
 
 clean_workspace() {
@@ -83,6 +107,18 @@ while [[ $# -gt 0 ]]; do
 done
 : "${ESP_TARGET:=esp32c3}"
 : "${BOARD_CONFIG:=supermini-c3}"
+
+# Validate board config (skip for clean action)
+if [[ "$ACTION" != "clean" ]]; then
+    BOARD_CONFIG_FILE="$PROJECT_DIR/boards/${BOARD_CONFIG}.conf"
+    if [[ ! -f "$BOARD_CONFIG_FILE" ]]; then
+        echo "Error: Board configuration not found: $BOARD_CONFIG_FILE" >&2
+        echo "Available board configs:" >&2
+        list_board_configs >&2
+        exit 1
+    fi
+fi
+export BOARD_CONFIG
 
 case "$ACTION" in
     clean)

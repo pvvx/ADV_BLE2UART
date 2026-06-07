@@ -4,6 +4,30 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
+PROJECT_DIR="${PROJECT_DIR:-ble50_scan}"
+
+# List available board configurations from the boards/ directory
+list_board_configs() {
+    local boards_dir="$PROJECT_DIR/boards"
+    if [[ -d "$boards_dir" ]]; then
+        for f in "$boards_dir"/*.conf; do
+            if [[ -f "$f" ]]; then
+                name="$(basename "$f" .conf)"
+                # Extract the second line (first comment) as a short description
+                desc="$(sed -n '2p' "$f" 2>/dev/null | sed 's/^# //' || true)"
+                if [[ -z "$desc" ]]; then
+                    desc="Custom board configuration"
+                fi
+                if [[ "$name" == "${BOARD_CONFIG:-supermini-c3}" ]]; then
+                    printf "  %-20s %s (default)\n" "$name" "$desc"
+                else
+                    printf "  %-20s %s\n" "$name" "$desc"
+                fi
+            fi
+        done
+    fi
+}
+
 usage() {
     cat <<'EOF'
 Usage:  ./build.sh [--device <target>] [--config <board>] [--incremental]
@@ -12,16 +36,15 @@ Usage:  ./build.sh [--device <target>] [--config <board>] [--incremental]
 Options:
   --device <target>    Target chip (esp32c3, esp32c6, esp32h2, ...).
                        Default: esp32c3 (or $ESP_TARGET env var).
-  --config <board>     Board configuration (supermini-c3, supermini-c6, ...).
+  --config <board>     Board configuration (supermini-c3, esp32-c6-gpio15, ...).
                        Default: supermini-c3 (or $BOARD_CONFIG env var).
   --incremental, -i    Skip clean build; recompile only changed files (faster).
   --help               Show this help message.
 
 Available board configs:
-  supermini-c3        ESP32-C3 Super Mini (default)
-  esp32-c6-gpio15     ESP32-C6 (SK6812 RGB LED via RMT on GPIO15)
-  esp32-c6-gpio8      ESP32-C6 (SK6812 RGB LED via RMT on GPIO8)
-  esp32-c6-noled      ESP32-C6 (no on-board LED)
+EOF
+    list_board_configs
+    cat <<'EOF'
   (add your own: boards/<name>.conf)
 EOF
 }
@@ -69,7 +92,6 @@ resolve_path() {
     esac
 }
 
-PROJECT_DIR="${PROJECT_DIR:-ble50_scan}"
 ESP_IDF_VERSION="${ESP_IDF_VERSION:-v6.0.1}"
 ESP_IDF_SERIES="$(printf '%s' "${ESP_IDF_VERSION#v}" | cut -d. -f1,2)"
 WORK_DIR="${WORK_DIR:-.tooling}"
@@ -131,7 +153,8 @@ export CMAKE_ASM_COMPILER="$RISCV_GCC"
 BOARD_CONFIG_FILE="$PROJECT_DIR_PATH/boards/${BOARD_CONFIG}.conf"
 if [[ ! -f "$BOARD_CONFIG_FILE" ]]; then
     echo "Board configuration not found: $BOARD_CONFIG_FILE" >&2
-    echo "Available: $(ls "$PROJECT_DIR_PATH/boards/"*.conf 2>/dev/null | sed 's|.*/||;s|\.conf||' | tr '\n' ' ')" >&2
+    echo "Available board configs:" >&2
+    list_board_configs >&2
     exit 1
 fi
 
@@ -147,6 +170,12 @@ if [[ -f "$SDKCONFIG" ]]; then
 fi
 
 NEED_SET_TARGET=false
+
+# First build (no sdkconfig yet): run set-target to apply board config
+if [[ ! -f "$SDKCONFIG" ]]; then
+    echo "==> No sdkconfig found — running set-target for fresh configuration"
+    NEED_SET_TARGET=true
+fi
 
 # If target changed, run set-target first
 if [[ -n "$CURRENT_TARGET" && "$CURRENT_TARGET" != "$ESP_TARGET" ]]; then
@@ -198,7 +227,6 @@ export IDF_TARGET="$ESP_TARGET"
 "$IDF_PYTHON" "$ESP_IDF_DIR_PATH/tools/idf.py" \
     -C "$PROJECT_DIR_PATH" \
     -B "$PROJECT_DIR_PATH/build" \
-    -G "Unix Makefiles" \
     build
 
 # Save board config hash for future content-change detection

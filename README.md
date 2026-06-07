@@ -25,9 +25,9 @@ Firmware --- UartInterface --- USBD --- USBH --- UART --- adv2uart
 
 The following Wireless [SoC](https://en.wikipedia.org/wiki/System_on_a_chip) solutions are implemented:
 
-- [Telink TLSR825x](source/ble2uart/README.md)
-- [ESP32-C3 USB](source/esp32-c3/ble50_scan/README.md)
-- [CH582/CH583 USB](source/CH582M_SCAN)
+- [Telink TLSR825x USB UART](source/ble2uart/README.md)
+- [ESP32 BLE USB UART](source/esp32ble/ble50_scan/README.md)
+- [CH582/CH583 USB UART](source/CH582M_SCAN)
 
 Check related README documents for further details on each implementation.
 

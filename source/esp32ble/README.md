@@ -5,12 +5,15 @@ Use WSL (Ubuntu) to build. Run all commands from this directory.
 ## Quick start
 
 ```bash
-./install.sh                          # default: esp32c3 + supermini-c3 board
-./install.sh --device esp32c6 --config supermini-c6   # for ESP32-C6 Super Mini
+./install.sh                                            # default: esp32c3 + supermini-c3
+./install.sh --device esp32c6 --config esp32-c6-gpio15  # for ESP32-C6 Super Mini (RGB GPIO15)
 
-./build.sh                            # build (default target)
-./build.sh --device esp32c6 --config supermini-c6     # build for C6
+./build.sh                                              # build (default target)
+./build.sh --device esp32c6 --config esp32-c6-gpio15    # build for C6
 ```
+
+Both `install.sh` and `build.sh` accept the same `--device` and `--config` options.
+Run `./install.sh --help` or `./build.sh --help` to see all available board configurations.
 
 ## Fast rebuild (after first build)
 

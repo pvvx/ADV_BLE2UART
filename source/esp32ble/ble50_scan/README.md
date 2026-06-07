@@ -89,13 +89,16 @@ sudo apt-get install -y git python3 python3-venv cmake ninja-build
 
 ### One-shot install of the local toolchain
 
-From `source/esp32-c3/`:
+From `source/esp32ble/`:
 
 ```bash
-./install.sh                                          # default: esp32c3 + supermini-c3
+./install.sh                                              # default: esp32c3 + supermini-c3
 ./install.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
 ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./install.sh  # via env vars
 ```
+
+> The `--config` option accepts any board name from the `boards/` directory.
+> Run `./install.sh --help` to see all available configurations.
 
 This clones ESP-IDF v6.0.1 into `.tooling/esp-idf-v6.0.1/`, installs the
 toolchain for the selected target (default `esp32c3`) and Python virtualenv
@@ -108,15 +111,19 @@ into `ble50_scan/`. Re-running the script is idempotent. To wipe both:
 
 ### Clean firmware build
 
-From `source/esp32-c3/`:
+From `source/esp32ble/`:
 
 ```bash
-./build.sh                                          # default: esp32c3 + supermini-c3 (clean build)
+./build.sh                                              # default: esp32c3 + supermini-c3 (clean build)
 ./build.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
 ./build.sh --device esp32c6 --config esp32-c6-gpio8    # RGB on GPIO8
 ./build.sh --device esp32c6 --config esp32-c6-noled    # no LED
 ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./build.sh  # via env vars
 ```
+
+> The `--config` and `--device` options work identically in `install.sh` and
+> `build.sh`. Run `./build.sh --help` to see all available board configurations
+> (dynamically generated from `boards/*.conf`).
 
 For **fast incremental rebuilds** (skips the clean step, only recompiles
 changed files):
@@ -145,7 +152,10 @@ ble50_scan/build/partition_table/partition-table.bin
 
 ### Board configurations
 
-Board-specific pin mappings are stored as Kconfig fragments in `boards/`:
+Board-specific pin mappings are stored as Kconfig fragments in `boards/`.
+Both `install.sh` and `build.sh` accept the `--config <name>` option, and you
+can list all available configs with `--help` (the list is generated dynamically
+from `boards/*.conf`).
 
 | Board config       | Target chip | Board LED                        | BOOT button | HW version |
 |--------------------|-------------|----------------------------------|-------------|------------|
@@ -303,7 +313,7 @@ mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui.mips -lnc
 Tested workflow:
 
 ```bash
-# from source/esp32-c3/ble50_scan
+# from source/esp32ble/ble50_scan
 git clone --depth 1 https://github.com/espressif/esp-serial-flasher.git .tooling/esp-serial-flasher
 cp linux_flasher.c .tooling/esp-serial-flasher/examples/linux_example/main.c
 
