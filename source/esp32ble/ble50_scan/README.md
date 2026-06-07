@@ -174,6 +174,17 @@ from `boards/*.conf`).
 The RGB LED on ESP32-C6 Super Mini shows **blue** for 1M/legacy advertisements
 and **green** for Coded PHY advertisements.
 
+**Manual RGB control:**
+- **GUI** (`adv2uart_gui.py`): use the RGB panel (R/G/B spinboxes, colour picker,
+  brightness slider, "Set RGB" / "Off" buttons).
+- **CLI / protocol**: send GPIO op 8 — wire format
+  `[0x06, 0x08, pin_id, R, G, B]` where each colour channel is 0–255.
+  Example with `adv2uart.py` in interactive Python:
+  ```python
+  dv.command(b'\x06\x08\x0f\x40\x00\x20')  # purple (R=64, G=0, B=32) on GPIO15
+  dv.command(b'\x06\x08\x0f\x00\x00\x00')  # off
+  ```
+
 For incremental rebuilds after the first clean build:
 
 ```bash
@@ -449,30 +460,46 @@ human-readable diagnostic string in `data[..]`.
 
 Combined op-mux for raw GPIO operations. Payload `[op, pin_id, ...]`:
 
-| `op` | Operation              | Extra payload         | Notes                                |
+| `op` | Operation              | Extra payload         | Response / Notes                     |
 |------|------------------------|-----------------------|--------------------------------------|
-| 0    | status query           | —                     | echoes current pin state              |
-| 1    | read level             | —                     | response `data[2]` = 0/1              |
-| 2    | write level            | `[level]`             | applies `output_en=1`; LED uses LEDC  |
-| 3    | toggle level           | —                     | LED uses LEDC                         |
-| 4    | configure              | `[in,out,pull]`       | `pull`: 0=float, 1=up, 2=down         |
-| 7    | analog read (ADC1)     | —                     | 12-bit raw 0..4095 in `data[2..3]`    |
+| 0    | status query           | —                     | echoes current pin state             |
+| 1    | read level             | —                     | `data[2]` = 0/1                      |
+| 2    | write level            | `[level]`             | applies `output_en=1`                |
+| 3    | toggle level           | —                     | —                                    |
+| 4    | configure              | `[in,out,pull]`       | `pull`: 0=float, 1=up, 2=down        |
+| 7    | analog read (ADC1)     | —                     | 12-bit raw 0..4095 in `data[2..3]`   |
+| 8    | set RGB colour         | `[R, G, B]`          | WS2812 only; each channel 0–255      |
+
+All GPIO responses share a common footer:
+- `data[3]` = 1 if the pin is the board LED pin, else 0
+- `data[4..5]` = board GPIO mask (LE uint16, bitmask of available pins)
+
+**Op 2/3 on the board LED pin:**
+- **Non-RGB boards** (e.g. ESP32-C3): the LED is driven by the LEDC PWM
+  peripheral. Ops 2/3 go through the PWM duty-update path so the
+  bidirectional brightness scheme is preserved.
+- **RGB boards** (e.g. ESP32-C6 with `CONFIG_BOARD_LED_TYPE_RGB`): op 2 turns
+  the RGB LED on (white, 32×32×32) or off; op 3 toggles it.
+
+**Op 8** (`set RGB colour`) is available only on boards with a WS2812 RGB LED.
+The pin_id must be the board LED GPIO (`BOARD_LED_GPIO`). Returns `Denied` on
+non-RGB boards.
 
 Supported pins on ESP32-C3 Super Mini:
 `GPIO0 GPIO1 GPIO2 GPIO3 GPIO4 GPIO5 GPIO6 GPIO7 GPIO8(LED) GPIO9(BOOT) GPIO10 GPIO20 GPIO21`.
 Analog reads are valid only on `GPIO0..GPIO4` (ADC1 channels).
 
-The LED pin (GPIO8) is owned by the LEDC peripheral; ops 2/3/4 on it go
-through the PWM duty-update path so the bidirectional brightness scheme is
-preserved.
+Supported pins on ESP32-C6 GPIO15:
+`GPIO0 GPIO1 GPIO2 GPIO3 GPIO4 GPIO5 GPIO6 GPIO7 GPIO8 GPIO9(BOOT) GPIO10 GPIO12 GPIO15(RGB) GPIO23`.
+Analog reads are valid only on `GPIO0..GPIO4` (ADC1 channels).
 
 ### 0x08 — `UART`
 
 Inspect / attempt to change the host transport baud rate.
 
-| `op` | Operation               | Behaviour on ESP32-C3                            |
+| `op` | Operation               | Response / Notes                                |
 |------|-------------------------|--------------------------------------------------|
-| 0    | status query            | returns current index + table size               |
+| 0    | status query            | `data[0]=op`, `data[1]=baud_index`, `data[2]=table_size`, `data[3..5]=baud_rate` (LE 24-bit) |
 | 1    | echo / store request    | returns `OK`                                     |
 | 2    | set baud                | returns `Denied` (USB SJTAG ignores baud)        |
 
@@ -480,9 +507,9 @@ Inspect / attempt to change the host transport baud rate.
 
 RF-stack control.
 
-| `op` | Action                          | Parameters                        |
+| `op` | Action                          | Parameters / Response             |
 |------|---------------------------------|-----------------------------------|
-| 0    | status query                    | —                                 |
+| 0    | status query                    | `data[0]=power_index`, `data[1]=xtal_cap`, `data[2..4]=scan_channels`, `data[5]=coded_min_units` |
 | 1    | set TX power level              | `[esp_power_level_t]` 0..15       |
 | 2    | XTAL capacitance trim           | `Denied` (no software trim on C3) |
 | 3    | custom adv channels             | `Denied` (HW-fixed to 37,38,39)   |
@@ -492,7 +519,9 @@ RF-stack control.
 
 Returns HW/SDK metadata:
 - `byte[1]` = SW_VERSION (firmware-defined, currently 0x02)
-- `data[0]` = HW_VERSION (0xC3 for ESP32-C3)
+- `data[0]` = HW_VERSION (e.g. 0xC3 for ESP32-C3, 0xC6 for ESP32-C6)
+- `data[1]` = reserved (0x00)
+- `data[2]` = reserved (0x01)
 - `data[3..5]` = ESP-IDF major/minor/patch
 
 ### 0x0B — `TXADV`
@@ -554,7 +583,8 @@ the frame only flows device→host.
 
 ### 0x0F — `VBAT`
 
-`Denied` on ESP32-C3: the C3 has no internal supply-voltage sensor (unlike
+`Denied` on all current ESP32 targets: neither the ESP32-C3 nor ESP32-C6
+have an internal supply-voltage sensor accessible to the firmware (unlike
 TLSR825x). Connect an external divider to one of `GPIO0..GPIO4` and use
 `GPIO op=7` (analog read) instead.
 
@@ -580,8 +610,11 @@ distinguish them from command acks:
 
 Internally the firmware uses a `gpio_isr_handler_add()` per pin, queues
 events into a 16-slot FreeRTOS queue from the ISR, and drains the queue
-on each iteration of the `io_task` loop (≈ every 3 ms). The BOARD_LED
-pin (GPIO8) cannot be armed — the LEDC peripheral owns it.
+on each iteration of the `io_task` loop (≈ every 3 ms).
+
+The board LED pin cannot be armed for GPIO events:
+- **Non-RGB boards** (e.g. ESP32-C3, GPIO8): the LEDC peripheral owns it.
+- **RGB boards** (e.g. ESP32-C6 GPIO15): the RMT peripheral owns it.
 
 ## Repository layout
 
