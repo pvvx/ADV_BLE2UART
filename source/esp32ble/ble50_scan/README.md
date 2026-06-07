@@ -157,6 +157,13 @@ Both `install.sh` and `build.sh` accept the `--config <name>` option, and you
 can list all available configs with `--help` (the list is generated dynamically
 from `boards/*.conf`).
 
+<p align="center">
+  <img src="esp32-c3-supermini.webp" alt="ESP32-C3 SuperMini" width="45%"/>
+  <img src="esp32-c6-gpio15.jpg.avif" alt="ESP32-C6 (GPIO15 RGB)" width="45%"/>
+  <br/>
+  <em>Left: ESP32-C3 SuperMini (default) &nbsp;&nbsp;|&nbsp;&nbsp; Right: ESP32-C6 (SK6812 RGB on GPIO15)</em>
+</p>
+
 | Board config       | Target chip | Board LED                        | BOOT button | HW version |
 |--------------------|-------------|----------------------------------|-------------|------------|
 | `supermini-c3`     | `esp32c3`   | GPIO8 (PWM, active-low)          | GPIO9       | `0xC3`     |

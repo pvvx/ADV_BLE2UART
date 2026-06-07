@@ -17,44 +17,77 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install toolchain and SDK
+      - name: Install toolchain and SDK (ESP32-C3)
         working-directory: source/esp32ble
         run: ./install.sh
 
-      - name: Build firmware
+      - name: Install toolchain for ESP32-C6
+        working-directory: source/esp32ble
+        run: ./install.sh --device esp32c6
+
+      # ── Build for ESP32-C3 (default) ──────────────────────────
+      - name: Build firmware (ESP32-C3)
         working-directory: source/esp32ble
         run: ./build.sh
 
+      - name: Stage ESP32-C3 artifacts
+        run: |
+          mkdir -p out/c3
+          cp source/esp32ble/ble50_scan/build/ble50_scan.bin       out/c3/ble50_scan-esp32c3.bin
+          cp source/esp32ble/ble50_scan/build/bootloader/bootloader.bin  out/c3/bootloader-esp32c3.bin
+          cp source/esp32ble/ble50_scan/build/partition_table/partition-table.bin out/c3/partition-table-esp32c3.bin
+
+      # ── Build for ESP32-C6 (GPIO15) ───────────────────────────
+      - name: Build firmware (ESP32-C6 GPIO15)
+        working-directory: source/esp32ble
+        run: ./build.sh --device esp32c6 --config esp32-c6-gpio15
+
+      - name: Stage ESP32-C6 artifacts
+        run: |
+          mkdir -p out/c6
+          cp source/esp32ble/ble50_scan/build/ble50_scan.bin       out/c6/ble50_scan-esp32c6-gpio15.bin
+          cp source/esp32ble/ble50_scan/build/bootloader/bootloader.bin  out/c6/bootloader-esp32c6-gpio15.bin
+          cp source/esp32ble/ble50_scan/build/partition_table/partition-table.bin out/c6/partition-table-esp32c6-gpio15.bin
+
+      # ── Create final release bundle ───────────────────────────
       - name: Package release artifacts
         run: |
           mkdir -p out/release
-          cp source/esp32ble/ble50_scan/build/ble50_scan.bin out/release/
-          cp source/esp32ble/ble50_scan/build/bootloader/bootloader.bin out/release/
-          cp source/esp32ble/ble50_scan/build/partition_table/partition-table.bin out/release/
-          cp source/esp32ble/ble50_scan/adv2uart.py out/release/
-          cp source/esp32ble/ble50_scan/adv2uart_gui.py out/release/
+          cp out/c3/*.bin out/release/
+          cp out/c6/*.bin out/release/
+          cp source/esp32ble/ble50_scan/adv2uart.py       out/release/
+          cp source/esp32ble/ble50_scan/adv2uart_gui.py   out/release/
           tar -czf out/esp32ble-latest.tar.gz -C out/release .
 
       - name: Create release notes
         run: |
           cat > out/release-notes-esp32ble.md << 'EOF'
-          Build package for ESP32 BLE (ESP32-C3 SoC).
+          Build package for ESP32 BLE — dual-target release.
 
-          Source branch used for compilation: esp32-c3.
+          Source branch: esp32-c3
 
-          This package is generated from the latest toolchain, SDK, and firmware code currently maintained in branch esp32-c3.
+          **Included firmware:**
+          - `ble50_scan-esp32c3.bin` — ESP32-C3 SuperMini (default)
+          - `ble50_scan-esp32c6-gpio15.bin` — ESP32-C6 (SK6812 RGB on GPIO15)
+
+          Each target also ships its own `bootloader-*.bin` and `partition-table-*.bin`.
+
+          This package is generated from the latest toolchain, SDK, and firmware code maintained in branch esp32-c3.
           EOF
 
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: esp32ble-latest
-          name: ESP32 BLE (ESP32-C3 SoC) latest
+          name: ESP32 BLE (ESP32-C3 / ESP32-C6) latest
           body_path: out/release-notes-esp32ble.md
           files: |
             out/esp32ble-latest.tar.gz
-            source/esp32ble/ble50_scan/build/ble50_scan.bin
-            source/esp32ble/ble50_scan/build/bootloader/bootloader.bin
-            source/esp32ble/ble50_scan/build/partition_table/partition-table.bin
+            out/c3/ble50_scan-esp32c3.bin
+            out/c3/bootloader-esp32c3.bin
+            out/c3/partition-table-esp32c3.bin
+            out/c6/ble50_scan-esp32c6-gpio15.bin
+            out/c6/bootloader-esp32c6-gpio15.bin
+            out/c6/partition-table-esp32c6-gpio15.bin
           prerelease: true
           make_latest: false
