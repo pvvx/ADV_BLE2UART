@@ -547,21 +547,46 @@ GATT central operations. Generates up to 3 spontaneous responses per
 request: the synchronous ack, the asynchronous `ESP_GATTC_OPEN_EVT`
 outcome, and the `ESP_GATTC_DISCONNECT_EVT` cleanup.
 
-| `op` | Action                  | Parameters                              |
-|------|-------------------------|-----------------------------------------|
-| 0    | status query            | —                                       |
-| 1    | open (1M PHY)           | `[addr_type, peer_addr[6]]`             |
-| 2    | open (Coded PHY)        | `[addr_type, peer_addr[6]]`             |
-| 3    | disconnect              | —                                       |
-| 4    | cancel pending open     | —                                       |
+| `op` | Action                  | Parameters                              | Notes                              |
+|------|-------------------------|-----------------------------------------|------------------------------------|
+| 0    | status query            | —                                       | returns current state              |
+| 1    | open (1M PHY)           | `[addr_type, peer_addr[6]]`             |                                    |
+| 2    | open (Coded PHY)        | `[addr_type, peer_addr[6]]`             |                                    |
+| 3    | disconnect              | —                                       |                                    |
+| 4    | cancel pending open     | —                                       |                                    |
+| 5    | discover all services   | —                                       | triggers full enumeration (async)  |
+| 6    | read characteristic     | `[0, handle_lo, handle_hi]`             | response via spontaneous frame     |
+| 7    | write with response     | `[0, handle_lo, handle_hi, len, data]`  | ATT Write Request                  |
+| 8    | read descriptor         | `[0, handle_lo, handle_hi]`             | response via spontaneous frame     |
+| 9    | write descriptor        | `[0, handle_lo, handle_hi, len, data]`  |                                    |
+| 10   | exchange MTU            | `[0, mtu_lo, mtu_hi]`                   | re-negotiates ATT MTU              |
+| 11   | pair                    | —                                       | initiates pairing                  |
+| 12   | unpair                  | —                                       | removes bond + disconnects         |
 
 `addr_type`: 0 = PUBLIC, 1 = RANDOM. `peer_addr` is LE on-wire.
 
-Response payload:
+**Response payload** (ops 0–4, synchronous):
 - `data[0]` — current `conn_state` (0 = Idle, 1 = Connecting, 2 = Connected)
 - `data[1]` — `peer_addr_type`
 - `data[2..3]` — discovered notify-characteristic handle (LE)
 - `data[4..5]` — connection interval in 1.25 ms units (LE)
+
+**Spontaneous discovery events** (triggered by op 5):
+When discovery completes, the firmware sends one or more frames with
+`CMD_ID_CONN` and the high bit of `byte[2]` set (`0x80`). `byte[2] & 0x7F`
+identifies the sub-type:
+
+| Sub-type | Name          | `data[]` content                                |
+|----------|---------------|-------------------------------------------------|
+| 0        | Service       | `[is_primary, start_handle_lo, start_handle_hi, end_handle_lo, end_handle_hi, uuid...]` |
+| 1        | Characteristic| `[handle_lo, handle_hi, properties, uuid...]`   |
+| 2        | Descriptor    | `[handle_lo, handle_hi, uuid...]`               |
+| 3        | Complete      | empty (marks end of discovery)                  |
+
+**Spontaneous read responses** (ops 6, 8):
+The result is delivered asynchronously in a frame with `CMD_ID_CONN` and
+`byte[2]` = status code (0 = OK, 3 = Denied). The payload contains:
+`[handle_lo, handle_hi, value_len, value...]`.
 
 ### 0x0D — `TXDATA`
 
@@ -626,13 +651,98 @@ ble50_scan/
 │   ├── ble50_scan.c   firmware sources
 │   ├── crc.c, crc.h   CRC-16/ARC implementation
 │   └── CMakeLists.txt component descriptor
-├── adv2uart.py        Python CLI scanner / driver library
-├── adv2uart_gui.py    Tk-based GUI front-end (dual device profiles)
-├── sdkconfig          pinned ESP-IDF configuration
-├── flash.cmd          Windows one-shot flasher (uses esptool.exe)
-├── esptool.exe        Windows esptool used by flash.cmd
-└── build/             generated; only the three .bin files are tracked
+├── adv2uart.py            Python CLI scanner / driver library
+├── adv2uart_gui.py        Tk-based GUI front-end (dual device profiles)
+├── bleak_adv2uart.py      Bleak backend (Scanner + Client)
+├── scan_bleak.py           CLI scanner using Bleak + adv2uart backend
+├── sdkconfig              pinned ESP-IDF configuration
+├── flash.cmd              Windows one-shot flasher (uses esptool.exe)
+├── esptool.exe            Windows esptool used by flash.cmd
+└── build/                 generated; only the three .bin files are tracked
 ```
+
+## Bleak backend (`bleak_adv2uart.py`)
+
+A complete `BleakScanner` / `BleakClient` backend for the [Bleak](https://github.com/hbldh/bleak)
+library is provided in [`bleak_adv2uart.py`](bleak_adv2uart.py). It lets
+existing Bleak-based code work transparently over the ESP32's USB serial
+link instead of a local BLE adapter.
+
+```python
+from bleak import BleakScanner, BleakClient
+from ble50_scan.bleak_adv2uart import BleakScannerAdv2Uart, BleakClientAdv2Uart
+
+# Scan via ESP32
+scanner = BleakScanner(backend=BleakScannerAdv2Uart)
+devices = await scanner.discover()
+
+# Connect via ESP32 as GATT client
+client = BleakClient(devices[0].address, backend=BleakClientAdv2Uart)
+async with client:
+    # Services are discovered automatically on connect
+    for svc in client.services:
+        print(svc)
+```
+
+**Capabilities:**
+- **Scanner** (full): receives BLE advertisements forwarded by the ESP32 and
+  reconstructs `AdvertisementData` with MAC, RSSI, PHY, AD fields.
+- **Client** (full): connect/disconnect, service discovery (services +
+  characteristics + descriptors), read/write characteristic, read/write
+  descriptor, MTU exchange, pair/unpair, notification reception.
+
+Requires `pyserial`:
+
+```bash
+pip install pyserial bleak
+```
+
+The serial port defaults to `/dev/ttyACM0` (override via `ADV2UART_PORT`
+environment variable or `port=` kwarg).
+
+## Scan client (`scan_bleak.py`)
+
+[`scan_bleak.py`](scan_bleak.py) is a ready-to-use command-line scanner built
+on top of the Bleak backend.  It connects to the ESP32 over USB Serial,
+streams received BLE advertisements to the console, and supports MAC
+address filtering via the ESP32's built-in white/black list.
+
+```
+Usage:  scan_bleak.py [options]
+
+Options:
+  --port, -p <port>     Serial port (default: /dev/ttyACM0 or $ADV2UART_PORT)
+  --baud, -b <baud>     Serial baud rate (default: 2000000)
+  --timeout, -t <sec>   Scan duration in seconds (default: 10)
+  --unique, -u          Show only the first sighting of each device
+  --raw, -r             Append raw AD payload hex column
+  --no-name             Hide the device name column
+  --whitelist, -w <mac> Only show devices matching this MAC/prefix (repeatable)
+  --blacklist <mac>     Exclude devices matching this MAC/prefix (repeatable)
+  --verbose, -v         Enable debug logging
+```
+
+**Examples:**
+
+```bash
+# Scan for 30 seconds, one entry per device
+python3 scan_bleak.py --port COM7 --timeout 30 --unique
+
+# Whitelist — only show devices with a matching MAC prefix
+python3 scan_bleak.py --port COM7 -w "A4:C1:38" -w "11:22:33"
+
+# Blacklist — hide devices with a given OUI
+python3 scan_bleak.py --port COM7 --blacklist "DE:AD:BE:EF"
+
+# Whitelist + blacklist combined
+python3 scan_bleak.py --port COM7 -w "A4:C1:38" --blacklist "FF:00"
+
+# Show raw advertisement payload hex
+python3 scan_bleak.py --port COM7 --raw
+```
+
+The whitelist/blacklist entries are sent to the ESP32 firmware before
+scanning starts, so filtering happens on-device and reduces USB traffic.
 
 ## See also
 

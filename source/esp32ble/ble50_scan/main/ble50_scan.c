@@ -136,6 +136,34 @@ enum {
     GPIOEVT_OP_CLEAR   = 3,  // disarm every pin
 };
 
+// CMD_ID_CONN sub-operations (extended for full GATT client support).
+enum {
+    CONN_OP_STATUS     = 0,
+    CONN_OP_OPEN_1M    = 1,
+    CONN_OP_OPEN_CODED = 2,
+    CONN_OP_DISCONNECT = 3,
+    CONN_OP_CANCEL     = 4,
+    CONN_OP_DISCOVER   = 5,  // discover all services + characteristics + descriptors
+    CONN_OP_READ_CHAR  = 6,  // read GATT characteristic
+    CONN_OP_WRITE_RSP  = 7,  // write characteristic with response
+    CONN_OP_READ_DESCR = 8,  // read GATT descriptor
+    CONN_OP_WRITE_DESCR= 9,  // write GATT descriptor
+    CONN_OP_MTU_EXCH   = 10, // exchange MTU
+    CONN_OP_PAIR       = 11, // pair (send security request)
+    CONN_OP_UNPAIR     = 12, // unpair / remove bond
+};
+
+// Sub-flags for CMD_ID_CONN spontaneous discovery events (byte[2] high bit).
+#define CONN_EVENT_FLAG         0x80
+
+// CMD_ID_CONN spontaneous discovery sub-types (in data[0]).
+enum {
+    CONN_DISCOV_SERVICE        = 0,
+    CONN_DISCOV_CHAR           = 1,
+    CONN_DISCOV_DESCR          = 2,
+    CONN_DISCOV_COMPLETE       = 3,
+};
+
 enum {
     CMD_STATUS_OK     = 0,
     CMD_STATUS_ARGS   = 1,
@@ -223,6 +251,9 @@ static SemaphoreHandle_t s_rgb_mutex = NULL;  // protects rgb_led_set/off from c
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static SemaphoreHandle_t s_gap_sync_sem = NULL;
 static volatile esp_bt_status_t s_gap_sync_status = ESP_BT_STATUS_SUCCESS;
+static SemaphoreHandle_t s_conn_sem = NULL;       // synchronises connection operations
+static uint16_t s_pending_read_handle = 0;         // handle for pending read
+static bool s_discovery_running = false;           // service discovery in progress
 
 #define USE_TXT_OUT 0
 #define USE_CONNECT 1
@@ -247,6 +278,9 @@ static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp
 static void clear_conn_runtime(void);
 static void send_conn_response(uint8_t status);
 static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint8_t *value, uint16_t value_len);
+static void send_cmd_response_bytes(uint8_t cmd, uint8_t id, const uint8_t *data, uint8_t len);
+static void send_discovery_event(uint8_t sub_type, const uint8_t *data, uint8_t data_len);
+static void send_read_char_response(uint8_t status, uint16_t handle, const uint8_t *value, uint16_t value_len);
 static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr);
 
 static esp_bt_uuid_t remote_filter_service_uuid = {
@@ -450,18 +484,24 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             }
         }
         break;
-    case ESP_GATTC_CFG_MTU_EVT:
+    case ESP_GATTC_CFG_MTU_EVT: {
+        uint8_t mtu_resp[2];
         if (param->cfg_mtu.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG,"config mtu failed, error status = %x", param->cfg_mtu.status);
             send_conn_response(CMD_STATUS_OK);
             break;
         }
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_CFG_MTU_EVT, Status %d, MTU %d, conn_id %d", param->cfg_mtu.status, param->cfg_mtu.mtu, param->cfg_mtu.conn_id);
+        // Report MTU value back to host.
+        mtu_resp[0] = param->cfg_mtu.mtu & 0xFF;
+        mtu_resp[1] = param->cfg_mtu.mtu >> 8;
+        send_cmd_response_bytes(CMD_ID_CONN, CMD_STATUS_OK, mtu_resp, 2);
         esp_err_t search_ret = esp_ble_gattc_search_service(gattc_if, param->cfg_mtu.conn_id, &remote_filter_service_uuid);
         if (search_ret != ESP_OK) {
             ESP_LOGE(GATTC_TAG, "search service request failed, error code = %x", search_ret);
         }
         break;
+    }
     case ESP_GATTC_DIS_SRVC_CMPL_EVT:
         if (param->dis_srvc_cmpl.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "discover service failed, status %d", param->dis_srvc_cmpl.status);
@@ -472,6 +512,20 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     case ESP_GATTC_SEARCH_RES_EVT: {
         ESP_LOGI(GATTC_TAG, "SEARCH RES: conn_id = %x is primary service %d", p_data->search_res.conn_id, p_data->search_res.is_primary);
         ESP_LOGI(GATTC_TAG, "start handle %d end handle %d current handle value %d", p_data->search_res.start_handle, p_data->search_res.end_handle, p_data->search_res.srvc_id.inst_id);
+        // Report discovered service to host (if discovery was host-triggered).
+        if (s_discovery_running) {
+            uint8_t buf[12] = {0};
+            buf[0] = p_data->search_res.is_primary ? 1 : 0;
+            buf[1] = p_data->search_res.start_handle & 0xFF;
+            buf[2] = p_data->search_res.start_handle >> 8;
+            buf[3] = p_data->search_res.end_handle & 0xFF;
+            buf[4] = p_data->search_res.end_handle >> 8;
+            // Copy UUID (up to 6 bytes: 2 for 16-bit, 6 for 128-bit).
+            uint8_t uuid_len = p_data->search_res.srvc_id.uuid.len;
+            if (uuid_len > 6) uuid_len = 6;
+            memcpy(&buf[5], &p_data->search_res.srvc_id.uuid.uuid.uuid16, uuid_len);
+            send_discovery_event(CONN_DISCOV_SERVICE, buf, 5 + uuid_len);
+        }
         if (p_data->search_res.srvc_id.uuid.len == ESP_UUID_LEN_16 && p_data->search_res.srvc_id.uuid.uuid.uuid16 == REMOTE_SERVICE_UUID) {
             ESP_LOGI(GATTC_TAG, "UUID16: %x", p_data->search_res.srvc_id.uuid.uuid.uuid16);
             get_service = true;
@@ -483,6 +537,10 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
     case ESP_GATTC_SEARCH_CMPL_EVT:
         if (p_data->search_cmpl.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "search service failed, error status = %x", p_data->search_cmpl.status);
+            if (s_discovery_running) {
+                s_discovery_running = false;
+                send_discovery_event(CONN_DISCOV_COMPLETE, NULL, 1);
+            }
             break;
         }
         if(p_data->search_cmpl.searched_service_source == ESP_GATT_SERVICE_FROM_REMOTE_DEVICE) {
@@ -491,6 +549,70 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             ESP_LOGI(GATTC_TAG, "Get service information from flash");
         } else {
             ESP_LOGI(GATTC_TAG, "unknown service source");
+        }
+        // Enumerate characteristics & descriptors for discovered services.
+        // We stored service start/end handles during SEARCH_RES_EVT; now
+        // iterate through all handles in the discovered range.
+        if (s_discovery_running) {
+            // The search callback provides each service via SEARCH_RES_EVT
+            // which we already report to the host.  Here we enumerate
+            // characteristics for the full range using get_attr_count +
+            // get_all_char per service.
+            // For simplicity, scan the whole 0x0001..0xFFFF handle range.
+            uint16_t start = 0x0001;
+            uint16_t end   = 0xFFFF;
+            uint16_t svc_count = 0;
+            if (esp_ble_gattc_get_attr_count(gattc_if,
+                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                    ESP_GATT_DB_CHARACTERISTIC, start, end,
+                    INVALID_HANDLE, &svc_count) == ESP_GATT_OK && svc_count > 0) {
+                esp_gattc_char_elem_t *chr_list = malloc(sizeof(esp_gattc_char_elem_t) * svc_count);
+                if (chr_list) {
+                    uint16_t out_chr = svc_count;
+                    if (esp_ble_gattc_get_all_char(gattc_if,
+                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                            start, end, chr_list, &out_chr, 0) == ESP_GATT_OK) {
+                        for (uint16_t ci = 0; ci < out_chr; ci++) {
+                            uint8_t chr_buf[10] = {0};
+                            chr_buf[0] = chr_list[ci].char_handle & 0xFF;
+                            chr_buf[1] = chr_list[ci].char_handle >> 8;
+                            chr_buf[2] = chr_list[ci].properties;
+                            uint8_t cu_len = chr_list[ci].uuid.len;
+                            if (cu_len > 6) cu_len = 6;
+                            memcpy(&chr_buf[3], &chr_list[ci].uuid.uuid.uuid16, cu_len);
+                            send_discovery_event(CONN_DISCOV_CHAR, chr_buf, 3 + cu_len);
+                            // Enumerate descriptors for this characteristic.
+                            uint16_t desc_count = 0;
+                            if (esp_ble_gattc_get_attr_count(gattc_if,
+                                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                    ESP_GATT_DB_DESCRIPTOR, start, end,
+                                    chr_list[ci].char_handle, &desc_count) == ESP_GATT_OK && desc_count > 0) {
+                                esp_gattc_descr_elem_t *desc_list = malloc(sizeof(esp_gattc_descr_elem_t) * desc_count);
+                                if (desc_list) {
+                                    uint16_t out_desc = desc_count;
+                                    if (esp_ble_gattc_get_all_descr(gattc_if,
+                                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                            chr_list[ci].char_handle, desc_list, &out_desc, 0) == ESP_GATT_OK) {
+                                        for (uint16_t di = 0; di < out_desc; di++) {
+                                            uint8_t d_buf[8] = {0};
+                                            d_buf[0] = desc_list[di].handle & 0xFF;
+                                            d_buf[1] = desc_list[di].handle >> 8;
+                                            uint8_t du_len = desc_list[di].uuid.len;
+                                            if (du_len > 6) du_len = 6;
+                                            memcpy(&d_buf[2], &desc_list[di].uuid.uuid.uuid16, du_len);
+                                            send_discovery_event(CONN_DISCOV_DESCR, d_buf, 2 + du_len);
+                                        }
+                                    }
+                                    free(desc_list);
+                                }
+                            }
+                        }
+                    }
+                    free(chr_list);
+                }
+            }
+            s_discovery_running = false;
+            send_discovery_event(CONN_DISCOV_COMPLETE, NULL, 1);
         }
         if (get_service){
             uint16_t count  = 0;
@@ -617,6 +739,28 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         ESP_LOG_BUFFER_HEX(GATTC_TAG, p_data->notify.value, p_data->notify.value_len);
         send_rxdata_response(p_data->notify.is_notify, p_data->notify.handle,
                              p_data->notify.value, p_data->notify.value_len);
+        break;
+    case ESP_GATTC_READ_CHAR_EVT:
+        ESP_LOGI(GATTC_TAG, "ESP_GATTC_READ_CHAR_EVT, status=%d", p_data->read.status);
+        if (p_data->read.status == ESP_GATT_OK) {
+            send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
+                                    p_data->read.value, p_data->read.value_len);
+        } else {
+            send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+        }
+        s_pending_read_handle = 0;
+        if (s_conn_sem) xSemaphoreGive(s_conn_sem);
+        break;
+    case ESP_GATTC_READ_DESCR_EVT:
+        ESP_LOGI(GATTC_TAG, "ESP_GATTC_READ_DESCR_EVT, status=%d", p_data->read.status);
+        if (p_data->read.status == ESP_GATT_OK) {
+            send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
+                                    p_data->read.value, p_data->read.value_len);
+        } else {
+            send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+        }
+        s_pending_read_handle = 0;
+        if (s_conn_sem) xSemaphoreGive(s_conn_sem);
         break;
     case ESP_GATTC_WRITE_DESCR_EVT:
         if (p_data->write.status != ESP_GATT_OK){
@@ -957,6 +1101,41 @@ static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint
     }
 
     send_cmd_response_bytes(CMD_ID_RXDATA, opcode, resp, 3 + truncated_len);
+}
+
+/* ── New send helpers for extended CONN ops ───────────────────────────────── */
+
+static void send_discovery_event(uint8_t sub_type, const uint8_t *data, uint8_t data_len)
+{
+    // Spontaneous discovery event: byte[2] has CONN_EVENT_FLAG set.
+    uint8_t resp[FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN] = {0};
+    uint8_t truncated = data_len;
+
+    if (truncated > FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN) {
+        truncated = FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN;
+    }
+    resp[0] = sub_type;
+    if (truncated > 1) {
+        memcpy(&resp[1], data, truncated - 1);
+    }
+    send_cmd_response_bytes(CMD_ID_CONN, CONN_EVENT_FLAG | sub_type, resp, truncated);
+}
+
+static void send_read_char_response(uint8_t status, uint16_t handle, const uint8_t *value, uint16_t value_len)
+{
+    uint8_t resp[FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN] = {0};
+    uint8_t truncated = value_len;
+
+    if (truncated > FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN - 3) {
+        truncated = FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN - 3;
+    }
+    resp[0] = handle & 0xFF;
+    resp[1] = handle >> 8;
+    resp[2] = truncated;
+    if (truncated > 0 && value != NULL) {
+        memcpy(&resp[3], value, truncated);
+    }
+    send_cmd_response_bytes(CMD_ID_CONN, status, resp, 3 + truncated);
 }
 
 static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr)
@@ -2190,10 +2369,11 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
     uint8_t op = len >= 4 ? cmd_buf[1] : 0xFF;
 
     switch (op) {
-    case 0:
+    case CONN_OP_STATUS:
         break;
-    case 1:
-    case 2:
+
+    case CONN_OP_OPEN_1M:
+    case CONN_OP_OPEN_CODED:
         if (len < 11) {
             status = CMD_STATUS_ARGS;
             break;
@@ -2202,13 +2382,16 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
             break;
         }
-        if (!start_conn_request(op == 2 ? 1 : 0, cmd_buf[2], &cmd_buf[3])) {
+        if (!start_conn_request(op == CONN_OP_OPEN_CODED ? 1 : 0,
+                                cmd_buf[2], &cmd_buf[3])) {
             clear_conn_runtime();
             status = CMD_STATUS_DENIED;
         }
         break;
-    case 3:
-        if (s_conn.state != CONN_STATE_CONNECTED || gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+
+    case CONN_OP_DISCONNECT:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
             status = CMD_STATUS_DENIED;
             break;
         }
@@ -2217,12 +2400,13 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
         }
         break;
-    case 4: {
+
+    case CONN_OP_CANCEL: {
         esp_ble_gattc_cancel_open_params_t cancel_params = {
             .gattc_if = gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
         };
-
-        if (s_conn.state != CONN_STATE_CONNECTING || gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+        if (s_conn.state != CONN_STATE_CONNECTING ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
             status = CMD_STATUS_DENIED;
             break;
         }
@@ -2232,6 +2416,164 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
         }
         break;
     }
+
+    case CONN_OP_DISCOVER:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        s_discovery_running = true;
+        {
+            // Search for all services (no UUID filter).
+            esp_ble_gattc_search_service(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                         gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                         NULL);
+        }
+        break;
+
+    case CONN_OP_READ_CHAR:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (len < 6) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        {
+            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            s_pending_read_handle = handle;
+            esp_err_t ret = esp_ble_gattc_read_char(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                     gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                                     handle,
+                                                     ESP_GATT_AUTH_REQ_NONE);
+            if (ret != ESP_OK) {
+                s_pending_read_handle = 0;
+                status = CMD_STATUS_DENIED;
+            }
+        }
+        break;
+
+    case CONN_OP_WRITE_RSP:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (len < 6 || len < 6 + cmd_buf[3]) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        {
+            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            esp_err_t ret = esp_ble_gattc_write_char(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                     gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                                     handle,
+                                                     cmd_buf[4],
+                                                     (uint8_t *)(len > 5 ? &cmd_buf[5] : NULL),
+                                                     ESP_GATT_WRITE_TYPE_RSP,
+                                                     ESP_GATT_AUTH_REQ_NONE);
+            if (ret != ESP_OK) {
+                status = CMD_STATUS_DENIED;
+            }
+        }
+        break;
+
+    case CONN_OP_READ_DESCR:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (len < 6) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        {
+            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            s_pending_read_handle = handle;
+            esp_err_t ret = esp_ble_gattc_read_char_descr(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                           gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                                           handle,
+                                                           ESP_GATT_AUTH_REQ_NONE);
+            if (ret != ESP_OK) {
+                s_pending_read_handle = 0;
+                status = CMD_STATUS_DENIED;
+            }
+        }
+        break;
+
+    case CONN_OP_WRITE_DESCR:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        if (len < 6 || len < 6 + cmd_buf[3]) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        {
+            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            esp_err_t ret = esp_ble_gattc_write_char_descr(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                           gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                                                           handle,
+                                                           cmd_buf[4],
+                                                           (uint8_t *)(len > 5 ? &cmd_buf[5] : NULL),
+                                                           ESP_GATT_WRITE_TYPE_RSP,
+                                                           ESP_GATT_AUTH_REQ_NONE);
+            if (ret != ESP_OK) {
+                status = CMD_STATUS_DENIED;
+            }
+        }
+        break;
+
+    case CONN_OP_MTU_EXCH:
+        if (s_conn.state != CONN_STATE_CONNECTED ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        {
+            esp_err_t ret = esp_ble_gattc_send_mtu_req(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                                       gl_profile_tab[PROFILE_A_APP_ID].conn_id);
+            if (ret != ESP_OK) {
+                status = CMD_STATUS_DENIED;
+            }
+        }
+        break;
+
+    case CONN_OP_PAIR:
+        if (s_conn.state != CONN_STATE_CONNECTED) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        {
+            // Initiate encryption / pairing with the connected peer.
+            esp_ble_set_encryption(gl_profile_tab[PROFILE_A_APP_ID].remote_bda,
+                                   ESP_BLE_SEC_ENCRYPT_MITM);
+        }
+        break;
+
+    case CONN_OP_UNPAIR:
+        // Remove bond information for the connected peer.
+        if (s_conn.state != CONN_STATE_CONNECTED) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        {
+            // Disconnect first, then remove bond.
+            if (gl_profile_tab[PROFILE_A_APP_ID].gattc_if != ESP_GATT_IF_NONE) {
+                esp_ble_gattc_close(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                                    gl_profile_tab[PROFILE_A_APP_ID].conn_id);
+            }
+            esp_ble_remove_bond_device(gl_profile_tab[PROFILE_A_APP_ID].remote_bda);
+            clear_conn_runtime();
+        }
+        break;
+
     default:
         status = CMD_STATUS_ARGS;
         break;
@@ -2490,6 +2832,7 @@ void app_main(void)
     refresh_scan_params();
     current_power_index();
     s_gap_sync_sem = xSemaphoreCreateBinary();
+    s_conn_sem = xSemaphoreCreateBinary();
     if (is_supported_gpio((uint8_t)BOARD_LED_GPIO)) {
         const esp_timer_create_args_t board_led_timer_args = {
 #ifndef CONFIG_BOARD_LED_TYPE_RGB
