@@ -38,7 +38,6 @@ _scan_start = 0.0
 
 def on_advertisement(device, advertisement_data):
     """Detection callback — called for every advertisement the ESP32 forwards."""
-    global _scan_start
     rssi = advertisement_data.rssi if advertisement_data.rssi is not None else -100
     name = advertisement_data.local_name or device.name or "?"
     mac = device.address
