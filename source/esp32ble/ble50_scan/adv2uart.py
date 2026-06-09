@@ -748,8 +748,26 @@ def main():
         '--device',
         dest='device',
         default='esp32-c3',
-        choices=['esp32-c3', 'esp32-c6-gpio15', 'esp32-c6-gpio8', 'esp32-c6-noled', 'tb-03f-kit'],
-        help='device profile (default: esp32-c3)'
+        help='device profile id (default: esp32-c3). Known: esp32-c3, tb-03f-kit'
+    )
+    parser.add_argument(
+        '--led-gpio',
+        type=int,
+        default=None,
+        help='override regular LED GPIO (overrides device profile)'
+    )
+    parser.add_argument(
+        '--rgb-gpio',
+        type=int,
+        default=None,
+        help='override RGB LED GPIO'
+    )
+    parser.add_argument(
+        '--led-active-low',
+        type=int,
+        default=None,
+        choices=[0, 1],
+        help='override LED active-low polarity (0=active-high, 1=active-low)'
     )
     parser.add_argument(
         '--blacklist',

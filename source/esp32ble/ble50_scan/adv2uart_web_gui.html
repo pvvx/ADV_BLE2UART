@@ -403,11 +403,14 @@
               <label>Device</label>
               <select id="deviceProfile" style="width:160px">
                 <option value="esp32-c3">ESP32-C3</option>
-                <option value="esp32-c6-gpio15">ESP32-C6 GPIO15 RGB</option>
-                <option value="esp32-c6-gpio8">ESP32-C6 GPIO8 RGB</option>
-                <option value="esp32-c6-noled">ESP32-C6 No LED</option>
+                <option value="esp32-c6">ESP32-C6</option>
+                <option value="esp32-h2">ESP32-H2</option>
+                <option value="esp32-s3">ESP32-S3</option>
                 <option value="tb-03f-kit">TB-03F-KIT</option>
               </select>
+              <span style="font-size:10px;color:#888;display:block;margin-top:2px">
+                URL params: ?led_gpio=N&amp;rgb_gpio=N&amp;led_active_low=0|1
+              </span>
             </div>
             <div class="field">
               <label>Baud</label>
@@ -498,6 +501,9 @@
           <div id="rgbSection" class="tbOnly">
             <h2>RGB LED Colour</h2>
             <div class="row controls">
+              <div class="field"><label>GPIO</label>
+                <select id="rgbGpioSelect" style="width:80px"></select>
+              </div>
               <div class="field"><label>R</label><input id="rgbR" type="number" min="0" max="255" value="32" style="width:64px"></div>
               <div class="field"><label>G</label><input id="rgbG" type="number" min="0" max="255" value="32" style="width:64px"></div>
               <div class="field"><label>B</label><input id="rgbB" type="number" min="0" max="255" value="32" style="width:64px"></div>

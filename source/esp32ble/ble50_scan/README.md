@@ -92,13 +92,14 @@ sudo apt-get install -y git python3 python3-venv cmake ninja-build
 From `source/esp32ble/`:
 
 ```bash
-./install.sh                                              # default: esp32c3 + supermini-c3
-./install.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
-ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./install.sh  # via env vars
+./install.sh                                              # default: esp32c3
+./install.sh --device esp32c6 --rgb 15 --adv rgb         # RGB on GPIO15 via RMT
+./install.sh --device esp32c3 --led 8 --adv led           # regular LED on GPIO8
+ESP_TARGET=esp32c6 LED_GPIO=8 RGB_GPIO=15 ADV_MODE=rgb ./install.sh  # via env vars
 ```
 
-> The `--config` option accepts any board name from the `boards/` directory.
-> Run `./install.sh --help` to see all available configurations.
+> The `--device` option accepts any ESP32-family target (esp32c3, esp32c6,
+> esp32h2, ...). Run `./install.sh --help` for the full list.
 
 This clones ESP-IDF v6.0.1 into `.tooling/esp-idf-v6.0.1/`, installs the
 toolchain for the selected target (default `esp32c3`) and Python virtualenv
@@ -114,33 +115,34 @@ into `ble50_scan/`. Re-running the script is idempotent. To wipe both:
 From `source/esp32ble/`:
 
 ```bash
-./build.sh                                              # default: esp32c3 + supermini-c3 (clean build)
-./build.sh --device esp32c6 --config esp32-c6-gpio15   # RGB on GPIO15
-./build.sh --device esp32c6 --config esp32-c6-gpio8    # RGB on GPIO8
-./build.sh --device esp32c6 --config esp32-c6-noled    # no LED
-ESP_TARGET=esp32c6 BOARD_CONFIG=esp32-c6-gpio15 ./build.sh  # via env vars
+./build.sh                                               # default: esp32c3, no LED
+./build.sh --device esp32c6 --rgb 15 --adv rgb           # RGB on GPIO15
+./build.sh --device esp32c6 --led 8 --rgb 15 --adv led   # LED on GPIO8, RGB on GPIO15
+./build.sh --device esp32c3 --led 8 --adv led             # regular LED on GPIO8
+./build.sh --device esp32c6 --adv none                    # no LED activity
+ESP_TARGET=esp32c6 LED_GPIO=8 RGB_GPIO=15 ADV_MODE=rgb ./build.sh  # via env vars
 ```
 
-> The `--config` and `--device` options work identically in `install.sh` and
-> `build.sh`. Run `./build.sh --help` to see all available board configurations
-> (dynamically generated from `boards/*.conf`).
+> The `--device`, `--led`, `--rgb`, and `--adv` options work identically in
+> `install.sh` and `build.sh`. Run `./build.sh --help` for details.
 
 For **fast incremental rebuilds** (skips the clean step, only recompiles
 changed files):
 
 ```bash
 ./build.sh --incremental                            # quick rebuild, default target
-./build.sh -i --device esp32c6 --config esp32-c6-gpio15
+./build.sh -i --device esp32c6 --rgb 15 --adv rgb
 ```
 
 Note: `--incremental` / `-i` is safe when only source files changed; if you
-changed the `sdkconfig` or board configuration, do a full (clean) build.
+changed the LED/RGB/ADV configuration or the device target, do a full (clean)
+build.
 
 The build automatically detects the current target in `sdkconfig` and runs
 `idf.py set-target` if the target has changed. BLE configuration defaults
-are stored in `ble50_scan/sdkconfig.defaults` and board-specific settings
-in `boards/` (e.g. `boards/esp32-c6-gpio15.conf`) — both are merged
-automatically by the build system.
+are stored in `ble50_scan/sdkconfig.defaults`. LED/GPIO settings are generated
+automatically from the `--led`/`--rgb`/`--adv` flags and merged by the build
+system.
 
 Produces:
 
@@ -150,40 +152,139 @@ ble50_scan/build/bootloader/bootloader.bin
 ble50_scan/build/partition_table/partition-table.bin
 ```
 
-### Board configurations
+### LED / RGB configuration
 
-Board-specific pin mappings are stored as Kconfig fragments in `boards/`.
-Both `install.sh` and `build.sh` accept the `--config <name>` option, and you
-can list all available configs with `--help` (the list is generated dynamically
-from `boards/*.conf`).
+The board LED(s) are configured via command-line flags instead of static
+board configuration files:
 
-<p align="center">
-  <img src="esp32-c3-supermini.webp" alt="ESP32-C3 SuperMini" width="45%"/>
-  <img src="esp32-c6-gpio15.jpg.avif" alt="ESP32-C6 (GPIO15 RGB)" width="45%"/>
-  <br/>
-  <em>Left: ESP32-C3 SuperMini (default) &nbsp;&nbsp;|&nbsp;&nbsp; Right: ESP32-C6 (SK6812 RGB on GPIO15)</em>
-</p>
+| Flag | Description | Default GPIO |
+|------|-------------|--------------|
+| `--led <gpio>` | Regular (PWM) LED on this GPIO | — |
+| `--rgb <gpio>` | RGB LED (SK6812) on this GPIO | — |
+| `--adv <mode>` | What blinks on advertisements: `led`, `rgb`, `none` | — |
 
-| Board config       | Target chip | Board LED                        | BOOT button | HW version |
-|--------------------|-------------|----------------------------------|-------------|------------|
-| `supermini-c3`     | `esp32c3`   | GPIO8 (PWM, active-low)          | GPIO9       | `0xC3`     |
-| `esp32-c6-gpio15`  | `esp32c6`   | GPIO15 (SK6812 RGB via RMT)      | GPIO9       | `0xC6`     |
-| `esp32-c6-gpio8`   | `esp32c6`   | GPIO8 (SK6812 RGB via RMT)       | GPIO9       | `0xC6`     |
-| `esp32-c6-noled`   | `esp32c6`   | none                             | GPIO9       | `0xC6`     |
+**Examples:**
 
-The RGB LED on ESP32-C6 Super Mini shows **blue** for 1M/legacy advertisements
-and **green** for Coded PHY advertisements.
+```bash
+# Regular LED on GPIO8, blinks on advertisements
+./build.sh --device esp32c3 --led 8 --adv led
 
-**Manual RGB control:**
-- **GUI** (`adv2uart_gui.py`): use the RGB panel (R/G/B spinboxes, colour picker,
-  brightness slider, "Set RGB" / "Off" buttons).
-- **CLI / protocol**: send GPIO op 8 — wire format
-  `[0x06, 0x08, pin_id, R, G, B]` where each colour channel is 0–255.
-  Example with `adv2uart.py` in interactive Python:
-  ```python
-  dv.command(b'\x06\x08\x0f\x40\x00\x20')  # purple (R=64, G=0, B=32) on GPIO15
-  dv.command(b'\x06\x08\x0f\x00\x00\x00')  # off
-  ```
+# RGB LED on GPIO15 via RMT, blinks on advertisements
+./build.sh --device esp32c6 --rgb 15 --adv rgb
+
+# Both LEDs present; advertisements blink the regular LED
+./build.sh --device esp32c6 --led 8 --rgb 15 --adv led
+
+# Both LEDs present; no advertisement blinking
+./build.sh --device esp32c6 --led 8 --rgb 15 --adv none
+
+# No LEDs at all
+./build.sh --device esp32c3
+```
+
+The RGB LED shows **blue** for 1M/legacy advertisements and **green** for
+Coded PHY advertisements.
+
+### Serial protocol for LED control
+
+Both LEDs are controlled through the **GPIO command** (`CMD_ID_GPIO = 0x06`).
+The firmware automatically recognises whether a pin is a regular (PWM) LED
+or an RGB (RMT) LED and applies the appropriate control.
+
+#### Regular (PWM) LED — GPIO write / toggle
+
+Write the GPIO level (active-low convention: level=0 = ON, level=1 = OFF):
+
+```
+[0x06, 0x02, pin, level, 0, 0, 0]
+```
+
+Toggle the LED:
+
+```
+[0x06, 0x03, pin, 0, 0, 0, 0]
+```
+
+| Byte | Field     | Description                                |
+|------|-----------|--------------------------------------------|
+| 0    | `CMD_ID`  | `0x06` (CMD_ID_GPIO)                       |
+| 1    | `op`      | `0x02` = write, `0x03` = toggle            |
+| 2    | `pin`     | GPIO number (e.g. `0x08` for GPIO8)        |
+| 3    | `level`   | Write only: `0x00` = low, `0x01` = high    |
+| 4–6  | (padding) | Fill with `0x00`                           |
+
+Examples with `adv2uart.py`:
+```python
+# Regular LED on GPIO8, active-low: write 0 = ON
+dv.command(b'\x06\x02\x08\x00\x00\x00\x00')
+# Regular LED on GPIO8: write 1 = OFF
+dv.command(b'\x06\x02\x08\x01\x00\x00\x00')
+# Toggle
+dv.command(b'\x06\x03\x08\x00\x00\x00\x00')
+```
+
+#### RGB LED (SK6812/WS2812 via RMT) — GPIO write / RGB colour
+
+Turn ON (white) / OFF:
+
+```
+[0x06, 0x02, pin, 1/0, 0, 0, 0]
+```
+
+Set arbitrary colour — op `0x08` (GPIO_OP_RGB), channels 0–255:
+
+```
+[0x06, 0x08, pin, R, G, B, 0]
+```
+
+| Byte | Field     | Description                                |
+|------|-----------|--------------------------------------------|
+| 0    | `CMD_ID`  | `0x06` (CMD_ID_GPIO)                       |
+| 1    | `op`      | `0x08` = RGB colour                        |
+| 2    | `pin`     | GPIO number (e.g. `0x0F` for GPIO15)       |
+| 3    | `R`       | Red channel (0–255)                        |
+| 4    | `G`       | Green channel (0–255)                      |
+| 5    | `B`       | Blue channel (0–255)                       |
+| 6    | (padding) | Fill with `0x00`                           |
+
+Examples with `adv2uart.py`:
+```python
+# RGB ON (white) on GPIO15
+dv.command(b'\x06\x02\x0f\x01\x00\x00\x00')
+# RGB OFF on GPIO15
+dv.command(b'\x06\x02\x0f\x00\x00\x00\x00')
+# Purple (R=64, G=0, B=32) on GPIO15
+dv.command(b'\x06\x08\x0f\x40\x00\x20\x00')
+# Green (R=0, G=255, B=0) on GPIO15
+dv.command(b'\x06\x08\x0f\x00\xff\x00\x00')
+```
+
+#### GPIO response (all LED types)
+
+The firmware response to every GPIO command has the format:
+
+| Byte | Field         | Description                                |
+|------|---------------|--------------------------------------------|
+| 0    | `op`          | Echo of the operation                      |
+| 1    | `pin_code`    | Echo of the pin                            |
+| 2    | `level`       | Current pin level (0/1)                    |
+| 3    | `is_led`      | `1` if this pin is a configured LED        |
+| 4–5  | `board_mask`  | Bitmap of LED pins (pins < 16)             |
+
+The response tells the host whether the pin is a recognised LED (`is_led=1`),
+allowing host tools to light up a "this is an LED" indicator in the UI.
+
+#### Host tools
+
+- **TUI** (`adv2uart_tui.c`): keys `N` = LED ON, `O` = LED OFF, `L` = toggle.
+  Press `?` in the GPIO panel for RGB colour control if an RGB GPIO is
+  configured. Pass `--led-gpio`, `--rgb-gpio`, `--led-active-low` to match
+  the firmware build configuration.
+- **GUI** (`adv2uart_gui.py`): RGB panel with colour picker, brightness slider,
+  "Set RGB" / "Off" buttons. Select device profile or pass `--device` with
+  the profile id.
+- **Web GUI** (`adv2uart_web_gui.html`): GPIO panel with write/toggle and
+  RGB colour picker for the configured RGB pin.
 
 For incremental rebuilds after the first clean build:
 

@@ -9,6 +9,7 @@
 
 #include "rgb_led.h"
 #include "esp_check.h"
+#include "esp_log.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
 #include "freertos/FreeRTOS.h"
@@ -150,23 +151,35 @@ err:
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
-esp_err_t rgb_led_init(void)
+esp_err_t rgb_led_init(gpio_num_t gpio)
 {
+    esp_err_t ret;
+
     // RMT TX channel
     rmt_tx_channel_config_t tx_chan_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
-        .gpio_num = CONFIG_BOARD_LED_GPIO,
+        .gpio_num = gpio,
         .mem_block_symbols = RMT_MEM_BLOCK_SYMBOLS,
         .resolution_hz = RMT_RESOLUTION_HZ,
         .trans_queue_depth = RMT_TRANS_QUEUE_DEPTH,
     };
-    ESP_RETURN_ON_ERROR(rmt_new_tx_channel(&tx_chan_config, &s_led_chan),
-                        TAG, "create RMT TX channel failed");
-    ESP_RETURN_ON_ERROR(rmt_enable(s_led_chan), TAG, "enable RMT channel failed");
+    ret = rmt_new_tx_channel(&tx_chan_config, &s_led_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "create RMT TX channel on GPIO%d failed: %s", gpio, esp_err_to_name(ret));
+        return ret;
+    }
+    ret = rmt_enable(s_led_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "enable RMT channel on GPIO%d failed: %s", gpio, esp_err_to_name(ret));
+        return ret;
+    }
 
     // LED strip encoder
-    ESP_RETURN_ON_ERROR(rmt_new_led_strip_encoder(RMT_RESOLUTION_HZ, &s_led_encoder),
-                        TAG, "create LED encoder failed");
+    ret = rmt_new_led_strip_encoder(RMT_RESOLUTION_HZ, &s_led_encoder);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "create LED encoder on GPIO%d failed: %s", gpio, esp_err_to_name(ret));
+        return ret;
+    }
 
     // Start with LED off
     return rgb_led_off();

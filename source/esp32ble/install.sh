@@ -23,49 +23,41 @@ PY
 export IDF_TOOLS_PATH="$ESP_TOOLS_DIR"
 export IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$ESP_TOOLS_DIR/python_env/idf${ESP_IDF_SERIES}_py${PYTHON_VERSION}_env}"
 
+# Known ESP32-family targets (extensible list).
+KNOWN_TARGETS=(
+    esp8266 esp32 esp32s2 esp32s3 esp32c3 esp32c2 esp32c6 esp32c61
+    esp32c5 esp32e22 esp32h2 esp32h21 esp32p4 esp32h4 esp32s31
+)
+
+is_valid_target() {
+    local t="$1"
+    for known in "${KNOWN_TARGETS[@]}"; do
+        [[ "$t" == "$known" ]] && return 0
+    done
+    return 1
+}
+
 usage() {
     cat <<'EOF'
 Usage:
   ./install.sh                     Install prerequisites and the local ESP-IDF toolchain
   ./install.sh clean               Remove the local toolchain and clean generated build files
   ./install.sh --device <target>   Install toolchain for the specified chip target
-  ./install.sh --config <board>    Select board configuration
+  ./install.sh --led <gpio>        Configure a regular LED on the given GPIO
+  ./install.sh --rgb <gpio>        Configure an RGB LED (SK6812) on the given GPIO
+  ./install.sh --adv <mode>        Advertisement blink mode: led, rgb, none
 
 Options:
   --device <target>   Target chip (esp32c3, esp32c6, esp32h2, ...).
                       Default: esp32c3 (or $ESP_TARGET env var).
-  --config <board>    Board configuration (supermini-c3, esp32-c6-gpio15, ...).
-                      Default: supermini-c3 (or $BOARD_CONFIG env var).
+  --led <gpio>        Regular LED on this GPIO (e.g. --led 8).
+  --rgb <gpio>        RGB LED (SK6812) on this GPIO (e.g. --rgb 15).
+  --adv <mode>        What blinks on received advertisements:
+                      led  — regular LED (default GPIO 8),
+                      rgb  — RGB LED (default GPIO 15),
+                      none — no blink.
   --help              Show this help message.
-
-Available board configs:
 EOF
-    list_board_configs
-    cat <<'EOF'
-  (add your own: boards/<name>.conf)
-EOF
-}
-
-# List available board configurations from the boards/ directory
-list_board_configs() {
-    local boards_dir="$PROJECT_DIR/boards"
-    if [[ -d "$boards_dir" ]]; then
-        for f in "$boards_dir"/*.conf; do
-            if [[ -f "$f" ]]; then
-                name="$(basename "$f" .conf)"
-                # Extract the second line (first comment) as a short description
-                desc="$(sed -n '2p' "$f" 2>/dev/null | sed 's/^# //' || true)"
-                if [[ -z "$desc" ]]; then
-                    desc="Custom board configuration"
-                fi
-                if [[ "$name" == "${BOARD_CONFIG:-supermini-c3}" ]]; then
-                    printf "  %-20s %s (default)\n" "$name" "$desc"
-                else
-                    printf "  %-20s %s\n" "$name" "$desc"
-                fi
-            fi
-        done
-    fi
 }
 
 clean_workspace() {
@@ -80,15 +72,26 @@ clean_workspace() {
 
 # Parse arguments
 ACTION=""
+LED_GPIO=""
+RGB_GPIO=""
+ADV_MODE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --device)
             shift
             ESP_TARGET="${1:-}"
             ;;
-        --config)
+        --led)
             shift
-            BOARD_CONFIG="${1:-}"
+            LED_GPIO="${1:-}"
+            ;;
+        --rgb)
+            shift
+            RGB_GPIO="${1:-}"
+            ;;
+        --adv)
+            shift
+            ADV_MODE="${1:-}"
             ;;
         clean)
             ACTION=clean
@@ -106,19 +109,72 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 : "${ESP_TARGET:=esp32c3}"
-: "${BOARD_CONFIG:=supermini-c3}"
 
-# Validate board config (skip for clean action)
-if [[ "$ACTION" != "clean" ]]; then
-    BOARD_CONFIG_FILE="$PROJECT_DIR/boards/${BOARD_CONFIG}.conf"
-    if [[ ! -f "$BOARD_CONFIG_FILE" ]]; then
-        echo "Error: Board configuration not found: $BOARD_CONFIG_FILE" >&2
-        echo "Available board configs:" >&2
-        list_board_configs >&2
+# Validate device target
+if ! is_valid_target "$ESP_TARGET"; then
+    echo "Error: invalid or unknown device target '$ESP_TARGET'." >&2
+    echo "Valid targets: ${KNOWN_TARGETS[*]}" >&2
+    exit 1
+fi
+
+# Get the maximum GPIO number for the target chip
+get_max_gpio() {
+    case "$1" in
+        esp32s3) echo 48 ;;
+        esp32s2) echo 46 ;;
+        esp32)   echo 39 ;;
+        esp32h2|esp32h4|esp32h21) echo 27 ;;
+        esp32c6|esp32c61|esp32c5) echo 23 ;;
+        esp32p4) echo 23 ;;
+        esp32c3) echo 21 ;;
+        esp32c2|esp32e22|esp32s31) echo 20 ;;
+        esp8266) echo 16 ;;
+        *)       echo 47 ;;
+    esac
+}
+MAX_GPIO="$(get_max_gpio "$ESP_TARGET")"
+
+# Validate --led
+if [[ -n "$LED_GPIO" ]]; then
+    if ! [[ "$LED_GPIO" =~ ^[0-9]+$ ]] || [[ "$LED_GPIO" -lt 0 ]] || [[ "$LED_GPIO" -gt "$MAX_GPIO" ]]; then
+        echo "Error: --led requires a valid GPIO number (0-$MAX_GPIO) for $ESP_TARGET, got '$LED_GPIO'" >&2
         exit 1
     fi
 fi
-export BOARD_CONFIG
+
+# Validate --rgb
+if [[ -n "$RGB_GPIO" ]]; then
+    if ! [[ "$RGB_GPIO" =~ ^[0-9]+$ ]] || [[ "$RGB_GPIO" -lt 0 ]] || [[ "$RGB_GPIO" -gt "$MAX_GPIO" ]]; then
+        echo "Error: --rgb requires a valid GPIO number (0-$MAX_GPIO) for $ESP_TARGET, got '$RGB_GPIO'" >&2
+        exit 1
+    fi
+fi
+
+# Validate --adv: must reference an existing LED
+if [[ -n "$ADV_MODE" ]]; then
+    case "$ADV_MODE" in
+        led)
+            if [[ -z "$LED_GPIO" ]]; then
+                echo "Error: --adv led requires --led <gpio> (no LED configured)" >&2
+                exit 1
+            fi
+            ;;
+        rgb)
+            if [[ -z "$RGB_GPIO" ]]; then
+                echo "Error: --adv rgb requires --rgb <gpio> (no RGB LED configured)" >&2
+                exit 1
+            fi
+            ;;
+        none) ;;
+        *)
+            echo "Error: --adv must be 'led', 'rgb', or 'none', got '$ADV_MODE'" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# Export variables so build.sh inherits them
+export LED_GPIO RGB_GPIO ADV_MODE
 
 case "$ACTION" in
     clean)
@@ -197,6 +253,9 @@ Tools directory: $IDF_TOOLS_PATH
 Python environment: $IDF_PYTHON_ENV_PATH
 esptool: $PROJECT_DIR/esptool.exe ($ESPTOOL_VERSION)
 Target chip: $ESP_TARGET
+LED GPIO: ${LED_GPIO:-none}
+RGB GPIO: ${RGB_GPIO:-none}
+Adv blink: ${ADV_MODE:-none}
 
 Next steps:
   ./build.sh

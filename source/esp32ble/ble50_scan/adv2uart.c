@@ -976,6 +976,10 @@ typedef struct {
     bool battery;
     IntList gpio_event_pin;
     bool gpio_event_only;
+    const char *device;
+    int led_gpio;        /* -1 = unset */
+    int rgb_gpio;        /* -1 = unset */
+    int led_active_low;  /* -1 = unset */
 } Args;
 
 static void args_init(Args *a) {
@@ -993,6 +997,10 @@ static void args_init(Args *a) {
     a->filter_random = false;
     a->filter_private = false;
     a->info_after = 0.0;
+    a->device = "esp32-c3";
+    a->led_gpio = -1;
+    a->rgb_gpio = -1;
+    a->led_active_low = -1;
     strlist_init(&a->whitelist_raw);
     strlist_init(&a->blacklist_raw);
     intlist_init(&a->gpio_event_pin);
@@ -1030,7 +1038,11 @@ static void print_usage(const char *prog) {
             "      --info-after SEC\n"
             "      --battery\n"
             "      --gpio-event PIN\n"
-            "      --gpio-event-only\n",
+            "      --gpio-event-only\n"
+            "      --device ID          device profile (default: esp32-c3)\n"
+            "      --led-gpio N         override regular LED GPIO\n"
+            "      --rgb-gpio N         override RGB LED GPIO\n"
+            "      --led-active-low 0|1 override LED active-low polarity\n",
             prog);
 }
 
@@ -1082,7 +1094,11 @@ static int parse_args(int argc, char **argv, Args *args) {
         OPT_INFO_AFTER,
         OPT_BATTERY,
         OPT_GPIO_EVENT,
-        OPT_GPIO_EVENT_ONLY
+        OPT_GPIO_EVENT_ONLY,
+        OPT_DEVICE,
+        OPT_LED_GPIO,
+        OPT_RGB_GPIO,
+        OPT_LED_ACTIVE_LOW
     };
 
     static const struct option long_opts[] = {
@@ -1110,6 +1126,10 @@ static int parse_args(int argc, char **argv, Args *args) {
         {"battery", no_argument, NULL, OPT_BATTERY},
         {"gpio-event", required_argument, NULL, OPT_GPIO_EVENT},
         {"gpio-event-only", no_argument, NULL, OPT_GPIO_EVENT_ONLY},
+        {"device", required_argument, NULL, OPT_DEVICE},
+        {"led-gpio", required_argument, NULL, OPT_LED_GPIO},
+        {"rgb-gpio", required_argument, NULL, OPT_RGB_GPIO},
+        {"led-active-low", required_argument, NULL, OPT_LED_ACTIVE_LOW},
         {"help", no_argument, NULL, 'h'},
         {0, 0, 0, 0}
     };
@@ -1218,6 +1238,21 @@ static int parse_args(int argc, char **argv, Args *args) {
             case OPT_GPIO_EVENT_ONLY:
                 args->gpio_event_only = true;
                 break;
+            case OPT_DEVICE:
+                args->device = optarg;
+                break;
+            case OPT_LED_GPIO:
+                if (!parse_int_opt(optarg, &args->led_gpio)) return -1;
+                break;
+            case OPT_RGB_GPIO:
+                if (!parse_int_opt(optarg, &args->rgb_gpio)) return -1;
+                break;
+            case OPT_LED_ACTIVE_LOW: {
+                int v;
+                if (!parse_int_opt(optarg, &v) || (v != 0 && v != 1)) return -1;
+                args->led_active_low = v;
+                break;
+            }
             case 'h':
                 print_usage(argv[0]);
                 exit(0);

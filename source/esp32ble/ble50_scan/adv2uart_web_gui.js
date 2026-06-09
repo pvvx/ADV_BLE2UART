@@ -521,12 +521,15 @@ function bindUi() {
 
   const applyProfileUi = () => {
     const isTb = deviceProfile.value === "tb-03f-kit";
-    const isC6Rgb = deviceProfile.value.startsWith("esp32-c6-gpio");
+    const hasRgbChip = deviceProfile.value.startsWith("esp32-c6") ||
+                       deviceProfile.value === "esp32-h2" ||
+                       deviceProfile.value === "esp32-s3" ||
+                       runtimeRgbGpio !== null;
     if (tbLedSection) {
       tbLedSection.style.display = isTb ? "block" : "none";
     }
     if (rgbSection) {
-      rgbSection.style.display = isC6Rgb ? "block" : "none";
+      rgbSection.style.display = hasRgbChip ? "block" : "none";
     }
 
     $("txadvStartBtn").disabled = isTb;
@@ -548,39 +551,46 @@ function bindUi() {
   deviceProfile.addEventListener("change", () => {
     if (deviceProfile.value === "tb-03f-kit") {
       pulseReset.checked = true;
-      logLine("info", "Device profile: TB-03F-KIT (Pulse DTR/RTS reset enabled by default)");
-    } else if (deviceProfile.value === "esp32-c6-gpio15") {
-      pulseReset.checked = false;
-      logLine("info", "Device profile: ESP32-C6 GPIO15 (RGB LED, blue=1M green=Coded)");
-    } else if (deviceProfile.value === "esp32-c6-gpio8") {
-      pulseReset.checked = false;
-      logLine("info", "Device profile: ESP32-C6 GPIO8 (RGB LED, blue=1M green=Coded)");
-    } else if (deviceProfile.value === "esp32-c6-noled") {
-      pulseReset.checked = false;
-      logLine("info", "Device profile: C6 generic (no on-board LED)");
+      logLine("info", "Device profile: TB-03F-KIT");
     } else {
       pulseReset.checked = false;
-      logLine("info", "Device profile: ESP32-C3");
+      logLine("info", `Device profile: ${deviceProfile.value}`);
     }
+    populateRgbGpioSelect();
+    renderGpioStatusGrid();
     applyProfileUi();
   });
 
+  populateRgbGpioSelect();
   applyProfileUi();
 
-  // ---- GPIO status / read all ------------------------------------------
-  const ESP32_PINS = [0,1,2,3,4,5,6,7,8,9,10,12,13,15,18,19,20,21,22,23];
-  const PIN_LABELS = {
-    0:"GPIO0",1:"GPIO1",2:"GPIO2",3:"GPIO3",4:"GPIO4",5:"GPIO5",6:"GPIO6",7:"GPIO7",
-    8:"GPIO8(LED)",9:"GPIO9(BOOT)",10:"GPIO10",12:"GPIO12",13:"GPIO13",15:"GPIO15(RGB)",
-    18:"GPIO18",19:"GPIO19",20:"GPIO20",21:"GPIO21",22:"GPIO22",23:"GPIO23"
+  // ---- GPIO pin ranges per chip ---------------------------------------
+  const GPIO_MAX = {
+    "esp32-c3": 21,
+    "esp32-c6": 23,
+    "esp32-h2": 27,
+    "esp32-s3": 48,
+    "tb-03f-kit": 0x24,
   };
+  const gpioPinsForProfile = (profId) => {
+    const max = GPIO_MAX[profId] || 21;
+    const pins = [];
+    for (let p = 0; p <= max; p++) pins.push(p);
+    return pins;
+  };
+  const pinLabel = (pin) => {
+    if (hasRgbLed() && pin === rgbLedPin()) return `GPIO${pin}(RGB)`;
+    if (boardLedPin() === pin) return `GPIO${pin}(LED)`;
+    if (pin === 9) return `GPIO${pin}(BOOT)`;
+    return `GPIO${pin}`;
+  };
+
   let gpioStatusData = {};
 
   const renderGpioStatusGrid = () => {
     const grid = $("gpioStatusGrid");
     grid.innerHTML = "";
-    const isC6 = deviceProfile.value.startsWith("esp32-c6");
-    const pins = isC6 ? [0,1,2,3,4,5,6,7,8,9,10,12,13,15,18,19,20,21,22,23,25,26,27] : ESP32_PINS;
+    const pins = gpioPinsForProfile(deviceProfile.value);
     for (const pin of pins) {
       const d = gpioStatusData[pin] || {};
       const div = document.createElement("div");
@@ -588,7 +598,7 @@ function bindUi() {
       div.style.borderRadius = "6px";
       div.style.padding = "4px 6px";
       div.style.fontSize = "11px";
-      div.innerHTML = `<b>${PIN_LABELS[pin] || "GPIO"+pin}</b><br>` +
+      div.innerHTML = `<b>${pinLabel(pin)}</b><br>` +
         `level: <span style="font-weight:600;color:${d.level === 1 ? '#22863a' : '#888'}">${d.level !== undefined ? (d.level ? 'HIGH' : 'low') : '-'}</span>` +
         (d.analog !== undefined ? ` | ADC: ${d.analog}` : "") +
         (d.led !== undefined ? ` | LED:${d.led ? 'Y' : 'N'}` : "");
@@ -748,29 +758,67 @@ function bindUi() {
       const r = Math.round(Number($("rgbR").value || 0) * bright);
       const g = Math.round(Number($("rgbG").value || 0) * bright);
       const b = Math.round(Number($("rgbB").value || 0) * bright);
-      const boardLedPin = deviceProfile.value.startsWith("esp32-c6-gpio") ? 0x0F : 0x08;
-      await api.gpioRgb(boardLedPin, r, g, b);
+      await api.gpioRgb(rgbLedPin(), r, g, b);
       logLine("info", `RGB set to (${r},${g},${b}) brightness ${$("rgbBrightness").value}%`);
     } catch (err) { logLine("error", err.message || String(err)); }
   });
   $("rgbOffBtn").addEventListener("click", async () => {
     try {
-      const boardLedPin = deviceProfile.value.startsWith("esp32-c6-gpio") ? 0x0F : 0x08;
-      await api.gpioRgb(boardLedPin, 0, 0, 0);
+      await api.gpioRgb(rgbLedPin(), 0, 0, 0);
       logLine("info", "RGB LED off");
     } catch (err) { logLine("error", err.message || String(err)); }
   });
 
+  // ---- Runtime LED/RMT overrides (from URL query params) --------------
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlLedGpio = urlParams.get("led_gpio");
+  const urlRgbGpio = urlParams.get("rgb_gpio");
+  const urlLedActiveLow = urlParams.get("led_active_low");
+
+  const runtimeLedGpio = urlLedGpio !== null ? parseInt(urlLedGpio, 10) : null;
+  const runtimeRgbGpio = urlRgbGpio !== null ? parseInt(urlRgbGpio, 10) : null;
+  const runtimeLedActiveLow = urlLedActiveLow !== null ? (parseInt(urlLedActiveLow, 10) !== 0) : null;
+
   // ---- Board LED controls ----------------------------------------------
   const boardLedPin = () => {
+    if (runtimeLedGpio !== null) return runtimeLedGpio;
     if (deviceProfile.value === "tb-03f-kit") return 0x22; // blue PC2
     if (deviceProfile.value.startsWith("esp32-c6-gpio")) return 0x0F; // GPIO15
     return 0x08; // ESP32-C3 GPIO8
   };
-  const boardLedActiveLow = () => deviceProfile.value === "esp32-c3";
+  const boardLedActiveLow = () => {
+    if (runtimeLedActiveLow !== null) return runtimeLedActiveLow;
+    return deviceProfile.value === "esp32-c3";
+  };
+  // Populate RGB GPIO selector when profile changes
+  const populateRgbGpioSelect = () => {
+    const sel = $("rgbGpioSelect");
+    if (!sel) return;
+    sel.innerHTML = "";
+    const pins = gpioPinsForProfile(deviceProfile.value);
+    for (const p of pins) {
+      const opt = document.createElement("option");
+      opt.value = String(p);
+      opt.textContent = `GPIO${p}`;
+      sel.appendChild(opt);
+    }
+    const cur = runtimeRgbGpio !== null ? runtimeRgbGpio : (pins.includes(15) ? 15 : 8);
+    sel.value = String(cur);
+  };
+
+  const rgbLedPin = () => {
+    if (runtimeRgbGpio !== null) return runtimeRgbGpio;
+    const sel = $("rgbGpioSelect");
+    if (sel && sel.value) return parseInt(sel.value, 10);
+    return 0x0F; // fallback
+  };
+  const hasRgbLed = () => {
+    if (runtimeRgbGpio !== null) return true;
+    return deviceProfile.value.startsWith("esp32-c6-gpio");
+  };
   const writeLed = async (pin, on) => {
     const level = boardLedActiveLow() ? (on ? 0 : 1) : (on ? 1 : 0);
-    if (deviceProfile.value.startsWith("esp32-c6-gpio")) {
+    if (hasRgbLed() && pin === parseInt($("rgbGpioSelect")?.value || "15", 10)) {
       await api.gpioRgb(pin, on ? 32 : 0, on ? 32 : 0, on ? 32 : 0);
     } else {
       await api.gpioWrite(pin, level);
@@ -785,7 +833,7 @@ function bindUi() {
   $("ledToggleBtn").addEventListener("click", async () => {
     try {
       const pin = boardLedPin();
-      if (deviceProfile.value.startsWith("esp32-c6-gpio")) {
+      if (hasRgbLed()) {
         const resp = await api.gpioRead(pin);
         const level = resp?.data?.[2];
         await writeLed(pin, level === 1 ? false : true);

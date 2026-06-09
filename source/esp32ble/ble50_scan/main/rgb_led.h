@@ -7,18 +7,22 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "hal/gpio_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Initialize the WS2812 RGB LED on the configured GPIO.
+ * @brief Initialize the WS2812 RGB LED on the given GPIO.
  *
- * Sets up the RMT TX channel and encoder for the WS2812 LED.
- * Must be called once before rgb_led_set().
+ * Sets up the RMT TX channel and encoder for the WS2812 LED on the
+ * specified GPIO pin. Must be called once before rgb_led_set().
+ *
+ * @param gpio GPIO number for the RGB LED data line.
+ * @return ESP_OK on success.
  */
-esp_err_t rgb_led_init(void);
+esp_err_t rgb_led_init(gpio_num_t gpio);
 
 /**
  * @brief Set the RGB LED colour.

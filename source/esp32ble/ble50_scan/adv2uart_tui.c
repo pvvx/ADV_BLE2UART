@@ -54,8 +54,28 @@ static const char *action_labels[ACTION_COUNT] = {
     "HELP", "QUIT", "SCAN", "GPIO", "BLE", "MAC", "EVENTS", "TXADV", "INFO", "CLEAR", "VBAT", "LED ON", "LED OFF"
 };
 
-#define GPIO_PANEL_COUNT 13
+// ── Helper: GPIO label with LED/RGB annotation ────────────────────────────
+// Returns a static buffer (not thread-safe, sufficient for single-threaded TUI).
+static const char *gpio_label(int pin) {
+    static char buf[24];
+    if (has_rgb_led() && pin == runtime_rgb_gpio()) {
+        snprintf(buf, sizeof(buf), "GPIO%d(RGB)", pin);
+    } else if (runtime_led_gpio() >= 0 && pin == runtime_led_gpio()) {
+        snprintf(buf, sizeof(buf), "GPIO%d(LED)", pin);
+    } else if (pin == 9) {
+        snprintf(buf, sizeof(buf), "GPIO%d(BOOT)", pin);
+    } else {
+        snprintf(buf, sizeof(buf), "GPIO%d", pin);
+    }
+    return buf;
+}
 
+static bool gpio_is_analog(int pin) {
+    return pin >= 0 && pin <= 4;
+}
+
+// ── Device profiles ──────────────────────────────────────────────────────
+// Each profile now carries the full GPIO range for the chip.
 typedef struct {
     const char *id;
     const char *label;
@@ -67,92 +87,33 @@ typedef struct {
     bool supports_conn;
     bool supports_analog;
     bool supports_gpio_events;
-    int gpio_count;
-    const uint8_t *gpio_pins;
-    const bool *gpio_analog;
-    const char *const *gpio_labels;
+    int gpio_count;          // number of entries in gpio_pins[]
+    const uint8_t *gpio_pins;  // NULL = use range 0..gpio_count-1
+    const bool *gpio_analog;   // NULL = uses gpio_is_analog()
 } DeviceProfile;
 
-static const uint8_t gpio_pins_esp32_c3[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,10,20,21};
-static const bool    gpio_analog_esp32_c3[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
-static const char   *gpio_label_esp32_c3[GPIO_PANEL_COUNT]  = {
-    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
-    "GPIO5","GPIO6","GPIO7","GPIO8(LED)","GPIO9(BOOT)",
-    "GPIO10","GPIO20","GPIO21"
-};
-
-// C6 Super Mini (RGB): SK6812 on GPIO15
-static const uint8_t gpio_pins_esp32_c6_sm[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,15,23};
-static const bool    gpio_analog_esp32_c6_sm[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
-static const char   *gpio_label_esp32_c6_sm[GPIO_PANEL_COUNT]  = {
-    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
-    "GPIO5","GPIO6","GPIO7","GPIO8","GPIO9(BOOT)",
-    "GPIO12","GPIO15(RGB)","GPIO23"
-};
-
+// TB-03F has non-standard GPIO numbering, uses explicit arrays.
 static const uint8_t gpio_pins_tb03f[6] = {0x07, 0x14, 0x15, 0x22, 0x23, 0x24};
 static const bool    gpio_analog_tb03f[6] = {0, 0, 0, 0, 0, 0};
-static const char   *gpio_label_tb03f[6] = {
-    "PA7(Key/SWS)",
-    "PB4(Side Yellow)",
-    "PB5(Side White)",
-    "PC2(RGB Blue)",
-    "PC3(RGB Red)",
-    "PC4(RGB Green)",
-};
 
-// C6 variant: PWM LED on GPIO8 (active-low)
-static const uint8_t gpio_pins_c6_gpio8[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,13,23};
-static const bool    gpio_analog_c6_gpio8[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
-static const char   *gpio_label_c6_gpio8[GPIO_PANEL_COUNT]  = {
-    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
-    "GPIO5","GPIO6","GPIO7","GPIO8(LED)","GPIO9(BOOT)",
-    "GPIO12","GPIO13","GPIO23"
-};
+// Helper macro: define a profile with range-based GPIOs (0..max).
+#define RANGE_PROFILE(id_, label_, board_name_, led_gpio_, active_low_, max_gpio_) \
+    { .id = id_, .label = label_, .board_name = board_name_, \
+      .board_led_gpio = led_gpio_, .board_led_active_low = active_low_, \
+      .supports_vbat = false, .supports_txadv = true, .supports_conn = true, \
+      .supports_analog = true, .supports_gpio_events = true, \
+      .gpio_count = (max_gpio_) + 1, .gpio_pins = NULL, .gpio_analog = NULL }
 
-// C6 No LED
-static const uint8_t gpio_pins_c6_noled[GPIO_PANEL_COUNT]  = {0,1,2,3,4,5,6,7,8,9,12,13,23};
-static const bool    gpio_analog_c6_noled[GPIO_PANEL_COUNT] = {1,1,1,1,1,0,0,0,0,0,0,0,0};
-static const char   *gpio_label_c6_noled[GPIO_PANEL_COUNT]  = {
-    "GPIO0","GPIO1","GPIO2","GPIO3","GPIO4",
-    "GPIO5","GPIO6","GPIO7","GPIO8","GPIO9(BOOT)",
-    "GPIO12","GPIO13","GPIO23"
-};
+static const DeviceProfile device_esp32_c3 = RANGE_PROFILE(
+    "esp32-c3", "ESP32-C3", "ESP32-C3", 0x08, true, 21);
+static const DeviceProfile device_esp32_c6 = RANGE_PROFILE(
+    "esp32-c6", "ESP32-C6", "ESP32-C6", 0xFF, false, 23);
+static const DeviceProfile device_esp32_h2 = RANGE_PROFILE(
+    "esp32-h2", "ESP32-H2", "ESP32-H2", 0xFF, false, 27);
+static const DeviceProfile device_esp32_s3 = RANGE_PROFILE(
+    "esp32-s3", "ESP32-S3", "ESP32-S3", 0xFF, false, 48);
 
-static const DeviceProfile device_esp32_c3 = {
-    .id = "esp32-c3",
-    .label = "ESP32-C3",
-    .board_name = "ESP32-C3 Super Mini",
-    .board_led_gpio = 0x08,
-    .board_led_active_low = true,
-    .supports_vbat = false,
-    .supports_txadv = true,
-    .supports_conn = true,
-    .supports_analog = true,
-    .supports_gpio_events = true,
-    .gpio_count = GPIO_PANEL_COUNT,
-    .gpio_pins = gpio_pins_esp32_c3,
-    .gpio_analog = gpio_analog_esp32_c3,
-    .gpio_labels = gpio_label_esp32_c3,
-};
-
-static const DeviceProfile device_esp32_c6_gpio15 = {
-    .id = "esp32-c6-gpio15",
-    .label = "ESP32-C6 GPIO15 RGB",
-    .board_name = "ESP32-C6 (GPIO15 RGB)",
-    .board_led_gpio = 0x0F,
-    .board_led_active_low = false,
-    .supports_vbat = false,
-    .supports_txadv = true,
-    .supports_conn = true,
-    .supports_analog = true,
-    .supports_gpio_events = true,
-    .gpio_count = GPIO_PANEL_COUNT,
-    .gpio_pins = gpio_pins_esp32_c6_sm,
-    .gpio_analog = gpio_analog_esp32_c6_sm,
-    .gpio_labels = gpio_label_esp32_c6_sm,
-};
-
+// TB-03F has non-standard GPIO numbering, uses explicit arrays.
 static const DeviceProfile device_tb03f = {
     .id = "tb-03f-kit",
     .label = "TB-03F-KIT",
@@ -167,64 +128,32 @@ static const DeviceProfile device_tb03f = {
     .gpio_count = 6,
     .gpio_pins = gpio_pins_tb03f,
     .gpio_analog = gpio_analog_tb03f,
-    .gpio_labels = gpio_label_tb03f,
-};
-
-static const DeviceProfile device_c6_gpio8 = {
-    .id = "esp32-c6-gpio8",
-    .label = "ESP32-C6 GPIO8 RGB",
-    .board_name = "ESP32-C6 (GPIO8 RGB)",
-    .board_led_gpio = 0x08,
-    .board_led_active_low = false,
-    .supports_vbat = false,
-    .supports_txadv = true,
-    .supports_conn = true,
-    .supports_analog = true,
-    .supports_gpio_events = true,
-    .gpio_count = GPIO_PANEL_COUNT,
-    .gpio_pins = gpio_pins_c6_gpio8,
-    .gpio_analog = gpio_analog_c6_gpio8,
-    .gpio_labels = gpio_label_c6_gpio8,
-};
-
-static const DeviceProfile device_c6_noled = {
-    .id = "esp32-c6-noled",
-    .label = "ESP32-C6 No LED",
-    .board_name = "ESP32-C6 (no LED)",
-    .board_led_gpio = 0xFF,
-    .board_led_active_low = false,
-    .supports_vbat = false,
-    .supports_txadv = true,
-    .supports_conn = true,
-    .supports_analog = true,
-    .supports_gpio_events = true,
-    .gpio_count = GPIO_PANEL_COUNT,
-    .gpio_pins = gpio_pins_c6_noled,
-    .gpio_analog = gpio_analog_c6_noled,
-    .gpio_labels = gpio_label_c6_noled,
 };
 
 static const DeviceProfile *g_device = &device_esp32_c3;
 
+// Runtime overrides for LED/RGB configuration (set via CLI, override device profile)
+static int  g_runtime_led_gpio     = -1;  // -1 = use device profile value
+static int  g_runtime_rgb_gpio     = -1;
+static int  g_runtime_led_active_low = -1; // -1 = use device profile
+
+static inline int  runtime_led_gpio(void)       { return g_runtime_led_gpio     >= 0 ? g_runtime_led_gpio     : (int)g_device->board_led_gpio; }
+static inline bool runtime_led_active_low(void)  { return g_runtime_led_active_low >= 0 ? (bool)g_runtime_led_active_low : g_device->board_led_active_low; }
+static inline int  runtime_rgb_gpio(void)        { return g_runtime_rgb_gpio     >= 0 ? g_runtime_rgb_gpio     : -1; }
+static inline bool has_rgb_led(void)             { return runtime_rgb_gpio() >= 0; }
+
+// GPIO access helpers — handle both array-based and range-based profiles.
+static inline uint8_t  gpio_pin_at(int idx)  { return g_device->gpio_pins ? g_device->gpio_pins[idx] : (uint8_t)idx; }
+static inline bool     gpio_an_at(int idx)   { return g_device->gpio_analog ? g_device->gpio_analog[idx] : gpio_is_analog(idx); }
+static inline int      gpio_count(void)      { return g_device->gpio_count; }
+
 static const DeviceProfile *find_device_profile(const char *id) {
-    if (id == NULL) {
-        return NULL;
-    }
-    if (strcmp(id, device_esp32_c3.id) == 0) {
-        return &device_esp32_c3;
-    }
-    if (strcmp(id, device_tb03f.id) == 0) {
-        return &device_tb03f;
-    }
-    if (strcmp(id, device_esp32_c6_gpio15.id) == 0) {
-        return &device_esp32_c6_gpio15;
-    }
-    if (strcmp(id, device_c6_gpio8.id) == 0) {
-        return &device_c6_gpio8;
-    }
-    if (strcmp(id, device_c6_noled.id) == 0) {
-        return &device_c6_noled;
-    }
+    if (id == NULL) return NULL;
+    if (strcmp(id, device_esp32_c3.id) == 0) return &device_esp32_c3;
+    if (strcmp(id, device_esp32_c6.id) == 0) return &device_esp32_c6;
+    if (strcmp(id, device_esp32_h2.id) == 0) return &device_esp32_h2;
+    if (strcmp(id, device_esp32_s3.id) == 0) return &device_esp32_s3;
+    if (strcmp(id, device_tb03f.id) == 0) return &device_tb03f;
     return NULL;
 }
 
@@ -333,9 +262,9 @@ typedef struct {
     int          gpio_cursor;        /* selected row in GPIO panel */
     bool         gpio_action_open;   /* action popup visible */
     int          gpio_action_cursor;
-    GpioPinState gpio_state[GPIO_PANEL_COUNT];
-    bool         gpio_out_known[GPIO_PANEL_COUNT];
-    bool         gpio_out_mode[GPIO_PANEL_COUNT];
+    GpioPinState gpio_state[64];  // max GPIOs across all supported chips
+    bool         gpio_out_known[64];
+    bool         gpio_out_mode[64];
     double       gpio_refresh_ts;
     float        gpio_refresh_interval;
 
@@ -1131,17 +1060,18 @@ static void draw_gpio_action_popup(App *app);               /* forward */
 /* ---- GPIO panel support ------------------------------------------------- */
 
 static int gpio_pin_index(uint8_t pin) {
-    for (int i = 0; i < g_device->gpio_count; ++i) {
-        if (g_device->gpio_pins[i] == pin) { return i; }
+    for (int i = 0; i < gpio_count(); ++i) {
+        if (gpio_pin_at(i) == pin) { return i; }
     }
     return -1;
 }
 
 static void send_gpio_read_all(App *app) {
-    for (int i = 0; i < g_device->gpio_count; ++i) {
-        send_gpio_cmd(app, GPIO_OP_READ, g_device->gpio_pins[i], 0, 0, 0, 0);
-        if (g_device->gpio_analog[i]) {
-            send_gpio_cmd(app, GPIO_OP_ANALOG_READ, g_device->gpio_pins[i], 0, 0, 0, 0);
+    for (int i = 0; i < gpio_count(); ++i) {
+        uint8_t pin = gpio_pin_at(i);
+        send_gpio_cmd(app, GPIO_OP_READ, pin, 0, 0, 0, 0);
+        if (gpio_an_at(i)) {
+            send_gpio_cmd(app, GPIO_OP_ANALOG_READ, pin, 0, 0, 0, 0);
         }
     }
 }
@@ -1181,7 +1111,7 @@ static void draw_gpio_panel(App *app) {
 
     int max_pin_rows = panel_h - 4;   /* borders + header + footer */
 
-    for (int i = 0; i < g_device->gpio_count && i < max_pin_rows; ++i) {
+    for (int i = 0; i < gpio_count() && i < max_pin_rows; ++i) {
         GpioPinState *st = &app->gpio_state[i];
         int row = hy + 1 + i;
         bool selected = (i == app->gpio_cursor);
@@ -1202,7 +1132,7 @@ static void draw_gpio_panel(App *app) {
 
         /* Pin label — bold when selected */
         if (selected) attron(A_BOLD);
-        mvprintw(row, 2, "%-14s", g_device->gpio_labels[i]);
+        mvprintw(row, 2, "%-14s", gpio_label(pin));
         if (selected) attroff(A_BOLD);
 
         /* Digital level */
@@ -1221,10 +1151,10 @@ static void draw_gpio_panel(App *app) {
         }
 
         /* ADC raw + mV columns (only analog-capable pins) */
-        if (g_device->gpio_analog[i] && st->valid && st->adc_raw >= 0) {
+        if (gpio_an_at(i) && st->valid && st->adc_raw >= 0) {
             int mv = st->adc_raw * 3300 / 4095;
             printw("  %-8d  %-5d", st->adc_raw, mv);
-        } else if (g_device->gpio_analog[i]) {
+        } else if (gpio_an_at(i)) {
             attron(A_DIM);
             printw("  %-8s  %-5s", "-", "-");
             attroff(A_DIM);
@@ -1260,9 +1190,11 @@ static void draw_gpio_action_popup(App *app) {
     getmaxyx(stdscr, h, w);
 
     int pin_idx  = app->gpio_cursor;
-    bool is_an   = g_device->gpio_analog[pin_idx];
-    int ph       = is_an ? 14 : 13;
-    int pw       = 68;
+    bool is_an   = gpio_an_at(pin_idx);
+    uint8_t ph_pin = gpio_pin_at(pin_idx);
+    bool is_rgb = has_rgb_led() && (int)ph_pin == runtime_rgb_gpio();
+    int ph       = (is_an || is_rgb) ? 15 : 14;
+    int pw       = 72;
     int py       = (h - ph) / 2;
     int px       = (w - pw) / 2;
     if (py < 4)  py = 4;
@@ -1271,10 +1203,10 @@ static void draw_gpio_action_popup(App *app) {
     draw_box_unicode(py, px, ph, pw);
 
     attron(A_BOLD | A_REVERSE);
-    mvprintw(py, px + 2, " %s — Action ", g_device->gpio_labels[pin_idx]);
+    mvprintw(py, px + 2, " %s — Action ", gpio_label(ph_pin));
     attroff(A_BOLD | A_REVERSE);
 
-    const char *items[8];
+    const char *items[10];
     int count = 0;
     items[count++] = "Read digital level";
     items[count++] = "Write level  (0 = LOW / 1 = HIGH)";
@@ -1283,6 +1215,9 @@ static void draw_gpio_action_popup(App *app) {
     items[count++] = "Configure input/output + pull float/up/down";
     if (is_an) {
         items[count++] = "Analog read  (ADC, 0-4095 -> mV)";
+    }
+    if (is_rgb) {
+        items[count++] = "Set RGB colour (enter R G B 0-255)";
     }
     items[count++] = "Query full status";
 
@@ -1339,12 +1274,12 @@ static void draw_events_panel(App *app) {
     attroff(A_BOLD | A_UNDERLINE);
 
     int rows = panel_h - 4;
-    int list_rows = g_device->gpio_count;
+    int list_rows = gpio_count();
     if (list_rows > rows) {
         list_rows = rows;
     }
     for (int i = 0; i < list_rows; ++i) {
-        uint8_t pin = g_device->gpio_pins[i];
+        uint8_t pin = gpio_pin_at(i);
         bool armed = (app->gpioevt_mask & (1u << pin)) != 0;
         int row = panel_y + 2 + i;
         if (i == app->events_cursor) {
@@ -1785,8 +1720,12 @@ static void draw_help_overlay(App *app) {
     mvprintw(row++, x + 2, "Info/list: i INFO | c clear MAC lists | w add whitelist | b add blacklist | v VBAT | X clear adv panel");
     mvprintw(row++, x + 2, "GPIO cmds: x read | y write | t toggle | f config [in out pull] | z analog read");
     mvprintw(row++, x + 2, "LED GPIO%d: n LED ON | o LED OFF | l LED toggle (%s)",
-             g_device->board_led_gpio,
-             g_device->board_led_active_low ? "active-low board LED" : "active-high board LED");
+             runtime_led_gpio(),
+             runtime_led_active_low() ? "active-low board LED" : "active-high board LED");
+    if (has_rgb_led()) {
+        mvprintw(row++, x + 2, "RGB GPIO%d: set colour via GPIO action popup (Enter on the pin)",
+                 runtime_rgb_gpio());
+    }
     mvprintw(row++, x + 2, "Logs: L open/close fullscreen log | ESC close fullscreen");
     mvprintw(row++, x + 2, "GPIOEVT:   g query mask | e enable pin | u disable pin | k clear all");
     mvprintw(row++, x + 2, "Numeric input: decimal (e.g. 9) or hex 0x (e.g. 0x09), ESC cancels prompts");
@@ -2367,23 +2306,23 @@ static bool handle_command_hotkeys(App *app, int ch) {
             }
         }
     } else if (ch == 'n' || ch == 'N') {
-        if (g_device->board_led_active_low) {
-            send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 0, 0, 0);
+        if (runtime_led_active_low()) {
+            send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 0, 0, 0);
         } else {
-            send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 1, 0, 0);
+            send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 1, 0, 0);
         }
-        app_log(app, "LED ON (GPIO%d %s)", g_device->board_led_gpio, g_device->board_led_active_low ? "active-low" : "active-high");
+        app_log(app, "LED ON (GPIO%d %s)", runtime_led_gpio(), runtime_led_active_low() ? "active-low" : "active-high");
     } else if (ch == 'o' || ch == 'O') {
-        if (g_device->board_led_active_low) {
-            send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 1, 0, 0);
+        if (runtime_led_active_low()) {
+            send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 1, 0, 0);
         } else {
-            send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 0, 0, 0);
+            send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 0, 0, 0);
         }
-        app_log(app, "LED OFF (GPIO%d %s)", g_device->board_led_gpio, g_device->board_led_active_low ? "active-low" : "active-high");
+        app_log(app, "LED OFF (GPIO%d %s)", runtime_led_gpio(), runtime_led_active_low() ? "active-low" : "active-high");
     } else if (ch == 'l') {
-        ensure_gpio_output_for_toggle(app, g_device->board_led_gpio);
-        send_gpio_cmd(app, GPIO_OP_TOGGLE, g_device->board_led_gpio, 0, 0, 0, 0);
-        app_log(app, "LED toggle (GPIO%d)", g_device->board_led_gpio);
+        ensure_gpio_output_for_toggle(app, runtime_led_gpio());
+        send_gpio_cmd(app, GPIO_OP_TOGGLE, runtime_led_gpio(), 0, 0, 0, 0);
+        app_log(app, "LED toggle (GPIO%d)", runtime_led_gpio());
     } else if (ch == '1') {
         app->phy_1m = !app->phy_1m;
         app_log(app, "PHY 1M %s", on_off(app->phy_1m));
@@ -2617,20 +2556,20 @@ static bool execute_action_cursor(App *app) {
             break;
         }
         case 11:
-            if (g_device->board_led_active_low) {
-                send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 0, 0, 0);
+            if (runtime_led_active_low()) {
+                send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 0, 0, 0);
             } else {
-                send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 1, 0, 0);
+                send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 1, 0, 0);
             }
-            app_log(app, "LED ON (GPIO%d %s)", g_device->board_led_gpio, g_device->board_led_active_low ? "active-low" : "active-high");
+            app_log(app, "LED ON (GPIO%d %s)", runtime_led_gpio(), runtime_led_active_low() ? "active-low" : "active-high");
             break;
         case 12:
-            if (g_device->board_led_active_low) {
-                send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 1, 0, 0);
+            if (runtime_led_active_low()) {
+                send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 1, 0, 0);
             } else {
-                send_gpio_cmd(app, GPIO_OP_WRITE, g_device->board_led_gpio, 1, 0, 0, 0);
+                send_gpio_cmd(app, GPIO_OP_WRITE, runtime_led_gpio(), 1, 0, 0, 0);
             }
-            app_log(app, "LED OFF (GPIO%d %s)", g_device->board_led_gpio, g_device->board_led_active_low ? "active-low" : "active-high");
+            app_log(app, "LED OFF (GPIO%d %s)", runtime_led_gpio(), runtime_led_active_low() ? "active-low" : "active-high");
             break;
         default: break;
     }
@@ -2902,7 +2841,8 @@ static void draw_ui(App *app) {
 static void print_usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s [--port /dev/ttyUSB0] [--baud 2000000] [--pulse-reset] [--connect] [--crc-debug]\n"
-            "          [--device {esp32-c3,tb-03f-kit}]\n"
+            "          [--device {esp32-c3,esp32-c6,esp32-h2,esp32-s3,tb-03f-kit}]\n"
+            "          [--led-gpio <n>] [--rgb-gpio <n>] [--led-active-low <0|1>]\n"
             "\n"
             "TUI commands:\n"
             "  h/? Toggle help\n"
@@ -2920,9 +2860,12 @@ static void print_usage(const char *prog) {
             "  B BLE panel quick toggle\n"
             "  E Events panel quick toggle\n"
             "  T TXADV panel quick toggle\n"
-            "  --device {esp32-c3,tb-03f-kit} target device profile (default: esp32-c3)\n"
+            "  --device {esp32-c3,esp32-c6,esp32-h2,esp32-s3,tb-03f-kit} target device profile (default: esp32-c3)\n"
             "                                 TB-03F-KIT enables pulse reset by default\n"
             "  --crc-debug Verbose CRC discard logs\n"
+            "  --led-gpio <n>   Override regular LED GPIO\n"
+            "  --rgb-gpio <n>   Override RGB LED GPIO\n"
+            "  --led-active-low <0|1>  Override LED active-low polarity\n"
             "  x GPIO digital read\n"
             "  X Clear advertisements panel\n"
             "  y GPIO digital write\n"
@@ -3045,6 +2988,12 @@ int main(int argc, char **argv) {
             crc_debug = true;
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             device_id = argv[++i];
+        } else if (strcmp(argv[i], "--led-gpio") == 0 && i + 1 < argc) {
+            g_runtime_led_gpio = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--rgb-gpio") == 0 && i + 1 < argc) {
+            g_runtime_rgb_gpio = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--led-active-low") == 0 && i + 1 < argc) {
+            g_runtime_led_active_low = atoi(argv[++i]) ? 1 : 0;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -3110,7 +3059,7 @@ int main(int argc, char **argv) {
     app.log_fullscreen = false;
     app.log_cursor = -1;
     app.log_hscroll = 0;
-    for (int gi = 0; gi < GPIO_PANEL_COUNT; ++gi) {
+    for (int gi = 0; gi < 64; ++gi) {
         app.gpio_state[gi].digital = -1;
         app.gpio_state[gi].adc_raw = -1;
         app.gpio_out_known[gi] = false;
@@ -3350,7 +3299,7 @@ int main(int argc, char **argv) {
                         app.events_cursor--;
                     }
                 } else if (ch == KEY_DOWN) {
-                    if (app.events_cursor < g_device->gpio_count - 1) {
+                    if (app.events_cursor < gpio_count() - 1) {
                         app.events_cursor++;
                     }
                 } else if (ch == 'g' || ch == 'G') {
@@ -3358,11 +3307,11 @@ int main(int argc, char **argv) {
                 } else if (ch == 'c' || ch == 'C') {
                     send_gpioevt_cmd(&app, GPIOEVT_OP_CLEAR, 0, 0);
                 } else if (ch == 'e') {
-                    send_gpioevt_cmd(&app, GPIOEVT_OP_ENABLE, 1, g_device->gpio_pins[app.events_cursor]);
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_ENABLE, 1, gpio_pin_at(app.events_cursor));
                 } else if (ch == 'd') {
-                    send_gpioevt_cmd(&app, GPIOEVT_OP_DISABLE, 1, g_device->gpio_pins[app.events_cursor]);
+                    send_gpioevt_cmd(&app, GPIOEVT_OP_DISABLE, 1, gpio_pin_at(app.events_cursor));
                 } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
-                    uint8_t pin = g_device->gpio_pins[app.events_cursor];
+                    uint8_t pin = gpio_pin_at(app.events_cursor);
                     bool armed = (app.gpioevt_mask & (1u << pin)) != 0;
                     send_gpioevt_cmd(&app, armed ? GPIOEVT_OP_DISABLE : GPIOEVT_OP_ENABLE, 1, pin);
                 }
@@ -3430,9 +3379,11 @@ int main(int argc, char **argv) {
 
             /* ---- GPIO panel: action popup ---- */
             } else if (app.show_gpio_panel && app.gpio_action_open) {
-                uint8_t pin = g_device->gpio_pins[app.gpio_cursor];
-                bool is_an  = g_device->gpio_analog[app.gpio_cursor];
-                int action_count = is_an ? 7 : 6;
+                uint8_t pin = gpio_pin_at(app.gpio_cursor);
+                bool is_an  = gpio_an_at(app.gpio_cursor);
+                bool is_rgb = has_rgb_led() && (int)pin == runtime_rgb_gpio();
+                int base_count = 5;
+                int action_count = base_count + (is_an ? 1 : 0) + (is_rgb ? 1 : 0) + 1; /* +1 for status */
                 if (app.gpio_action_cursor < 0) {
                     app.gpio_action_cursor = 0;
                 }
@@ -3465,13 +3416,18 @@ int main(int argc, char **argv) {
                     selected = 4;
                 } else if (ch == 'a' && is_an) {
                     selected = 5;
+                } else if (ch == 'a' && is_rgb) {
+                    selected = 6;
                 } else if (ch == 's') {
-                    selected = is_an ? 6 : 5;
+                    selected = action_count - 1;
                 }
 
+                // Map selected index to action function
+                int act_done = 0;
                 if (selected == 0) {
                     send_gpio_cmd(&app, GPIO_OP_READ, pin, 0, 0, 0, 0);
                     app.gpio_action_open = false;
+                    act_done = 1;
                 } else if (selected == 1) {
                     app.gpio_action_open = false;
                     draw_ui(&app);
@@ -3487,17 +3443,20 @@ int main(int argc, char **argv) {
                     } else {
                         app_log(&app, "GPIO write cancelled");
                     }
+                    act_done = 1;
                 } else if (selected == 2) {
                     ensure_gpio_output_for_toggle(&app, pin);
                     send_gpio_cmd(&app, GPIO_OP_TOGGLE, pin, 0, 0, 0, 0);
                     send_gpio_cmd(&app, GPIO_OP_READ, pin, 0, 0, 0, 0);
                     app_log(&app, "GPIO%u toggle", pin);
                     app.gpio_action_open = false;
+                    act_done = 1;
                 } else if (selected == 3) {
                     send_gpio_cmd(&app, GPIO_OP_WRITE, pin, 1, 1, 0, 0);
                     send_gpio_cmd(&app, GPIO_OP_WRITE, pin, 1, 0, 0, 0);
                     app_log(&app, "GPIO%u blink pulse", pin);
                     app.gpio_action_open = false;
+                    act_done = 1;
                 } else if (selected == 4) {
                     app.gpio_action_open = false;
                     draw_ui(&app);
@@ -3531,11 +3490,33 @@ int main(int argc, char **argv) {
                         }
                         app_log(&app, "GPIO%u config in=%u out=%u pull=%u", pin, in, out, pull);
                     }
+                    act_done = 1;
                 } else if (selected == 5 && is_an) {
                     send_gpio_cmd(&app, GPIO_OP_ANALOG_READ, pin, 0, 0, 0, 0);
                     app_log(&app, "GPIO%u analog read requested", pin);
                     app.gpio_action_open = false;
-                } else if (selected == (is_an ? 6 : 5)) {
+                    act_done = 1;
+                } else if (is_rgb && selected == (base_count + (is_an ? 1 : 0))) {
+                    // RGB colour action
+                    app.gpio_action_open = false;
+                    draw_ui(&app);
+                    char rgb_s[32] = {0};
+                    if (prompt_input("RGB (R G B 0-255, e.g. 64 0 32): ", rgb_s, sizeof(rgb_s)) == 0) {
+                        int r = -1, g = -1, b = -1;
+                        if (sscanf(rgb_s, "%d %d %d", &r, &g, &b) == 3 &&
+                            r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+                            uint8_t payload[7] = {CMD_ID_GPIO, 8, pin, (uint8_t)r, (uint8_t)g, (uint8_t)b, 0};
+                            serial_send_payload(&app, payload, sizeof(payload));
+                            app_log(&app, "RGB set GPIO%u R=%d G=%d B=%d", pin, r, g, b);
+                        } else {
+                            app_log(&app, "Invalid RGB values (need three 0-255 numbers)");
+                        }
+                    } else {
+                        app_log(&app, "RGB cancelled");
+                    }
+                    act_done = 1;
+                }
+                if (!act_done && selected == action_count - 1) {
                     send_gpio_cmd(&app, GPIO_OP_STATUS, pin, 0, 0, 0, 0);
                     app.gpio_action_open = false;
                 }
@@ -3545,7 +3526,7 @@ int main(int argc, char **argv) {
                 if (ch == KEY_UP) {
                     if (app.gpio_cursor > 0) { app.gpio_cursor--; }
                 } else if (ch == KEY_DOWN) {
-                    if (app.gpio_cursor < g_device->gpio_count - 1) { app.gpio_cursor++; }
+                    if (app.gpio_cursor < gpio_count() - 1) { app.gpio_cursor++; }
                 } else if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
                     app.gpio_action_open = true;
                     app.gpio_action_cursor = 0;

@@ -95,6 +95,15 @@ class DeviceProfile:
     rf_power_options: tuple[tuple[str, int], ...]
 
 
+def _gpio_pins(max_gpio, special=None):
+    """Generate a board_pins dict with GPIO0..GPIO{max_gpio} plus special entries."""
+    d = {}
+    for p in range(max_gpio + 1):
+        d[f"GPIO{p}"] = p
+    if special:
+        d.update(special)
+    return d
+
 ESP32_C3_PROFILE = DeviceProfile(
     profile_id="esp32-c3",
     label="ESP32-C3",
@@ -127,21 +136,7 @@ ESP32_C3_PROFILE = DeviceProfile(
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
-    board_pins={
-        "Board LED GPIO8": 0x08,
-        "GPIO0": 0x00,
-        "GPIO1": 0x01,
-        "GPIO2": 0x02,
-        "GPIO3": 0x03,
-        "GPIO4": 0x04,
-        "GPIO5": 0x05,
-        "GPIO6": 0x06,
-        "GPIO7": 0x07,
-        "BOOT / GPIO9": 0x09,
-        "GPIO10": 0x0A,
-        "GPIO20": 0x14,
-        "GPIO21": 0x15,
-    },
+    board_pins=_gpio_pins(21, {"Board LED GPIO8": 0x08, "BOOT / GPIO9": 0x09}),
     gpio_pulls={
         "Float": 0,
         "Pull-up": 1,
@@ -286,27 +281,7 @@ ESP32_C6_GPIO15_PROFILE = DeviceProfile(
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
-    board_pins={
-        "RGB LED GPIO15": 0x0F,
-        "GPIO0": 0x00,
-        "GPIO1": 0x01,
-        "GPIO2": 0x02,
-        "GPIO3": 0x03,
-        "GPIO4": 0x04,
-        "GPIO5": 0x05,
-        "GPIO6": 0x06,
-        "GPIO7": 0x07,
-        "GPIO8": 0x08,
-        "BOOT / GPIO9": 0x09,
-        "GPIO12": 0x0C,
-        "GPIO13": 0x0D,
-        "GPIO18": 0x12,
-        "GPIO19": 0x13,
-        "GPIO20": 0x14,
-        "GPIO21": 0x15,
-        "GPIO22": 0x16,
-        "GPIO23": 0x17,
-    },
+    board_pins=_gpio_pins(23, {"RGB LED GPIO15": 0x0F, "BOOT / GPIO9": 0x09}),
     gpio_pulls={
         "Float": 0,
         "Pull-up": 1,
@@ -374,29 +349,7 @@ ESP32_C6_GPIO8_PROFILE = DeviceProfile(
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
-    board_pins={
-        "RGB LED GPIO8": 0x08,
-        "GPIO0": 0x00,
-        "GPIO1": 0x01,
-        "GPIO2": 0x02,
-        "GPIO3": 0x03,
-        "GPIO4": 0x04,
-        "GPIO5": 0x05,
-        "GPIO6": 0x06,
-        "GPIO7": 0x07,
-        "BOOT / GPIO9": 0x09,
-        "GPIO10": 0x0A,
-        "GPIO12": 0x0C,
-        "GPIO13": 0x0D,
-        "GPIO14": 0x0E,
-        "GPIO15": 0x0F,
-        "GPIO18": 0x12,
-        "GPIO19": 0x13,
-        "GPIO20": 0x14,
-        "GPIO21": 0x15,
-        "GPIO22": 0x16,
-        "GPIO23": 0x17,
-    },
+    board_pins=_gpio_pins(23, {"RGB LED GPIO8": 0x08, "BOOT / GPIO9": 0x09}),
     gpio_pulls={
         "Float": 0,
         "Pull-up": 1,
@@ -464,29 +417,7 @@ ESP32_C6_NOLED_PROFILE = DeviceProfile(
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
-    board_pins={
-        "GPIO0": 0x00,
-        "GPIO1": 0x01,
-        "GPIO2": 0x02,
-        "GPIO3": 0x03,
-        "GPIO4": 0x04,
-        "GPIO5": 0x05,
-        "GPIO6": 0x06,
-        "GPIO7": 0x07,
-        "GPIO8": 0x08,
-        "BOOT / GPIO9": 0x09,
-        "GPIO10": 0x0A,
-        "GPIO12": 0x0C,
-        "GPIO13": 0x0D,
-        "GPIO14": 0x0E,
-        "GPIO15": 0x0F,
-        "GPIO18": 0x12,
-        "GPIO19": 0x13,
-        "GPIO20": 0x14,
-        "GPIO21": 0x15,
-        "GPIO22": 0x16,
-        "GPIO23": 0x17,
-    },
+    board_pins=_gpio_pins(23, {"BOOT / GPIO9": 0x09}),
     gpio_pulls={
         "Float": 0,
         "Pull-up": 1,
@@ -518,11 +449,58 @@ ESP32_C6_NOLED_PROFILE = DeviceProfile(
     ),
 )
 
+# Minimal profile for generic chips (ESP32-H2, S3). They rely on --led-gpio/--rgb-gpio CLI overrides.
+def _generic_profile(pid, label, max_gpio):
+    return DeviceProfile(
+        profile_id=pid, label=label,
+        board_frame_title=f"{label} GPIO", board_help_text="",
+        rf_frame_title=f"{label} BLE Scan / RF", rf_note="",
+        status_pin_label="-", led_status_label="-",
+        board_mask_label="Board feature mask", direct_blink_label="Blink",
+        vbat_note="", uart_note="",
+        default_gpio_pin="", default_rf_power_label="ESP_PWR_LVL_P3 (+3 dBm)",
+        board_led_pin_id=0xFF, board_led_active_low=False,
+        status_pin_id=0, status_pin_active_low=False,
+        status_pin_active_label="High", status_pin_inactive_label="Low",
+        supports_vbat=False, uart_set_baud_supported=False,
+        rf_cap_supported=False, rf_channels_supported=False,
+        supports_txadv=True, supports_conn=True, supports_analog=True,
+        supports_gpio_events=True, allow_general_gpio_write=True,
+        led_mask_mode=False, legacy_reset_default=False,
+        board_pins=_gpio_pins(max_gpio),
+        gpio_pulls={"Float": 0, "Pull-up": 1, "Pull-down": 2},
+        led_bits={}, led_pin_codes={},
+        hw_version_labels={}, firmware_bauds=(2000000, 921600, 115200),
+        rf_power_options=(
+            ("ESP_PWR_LVL_N24 (-24 dBm)", 0),
+            ("ESP_PWR_LVL_N21 (-21 dBm)", 1),
+            ("ESP_PWR_LVL_N18 (-18 dBm)", 2),
+            ("ESP_PWR_LVL_N15 (-15 dBm)", 3),
+            ("ESP_PWR_LVL_N12 (-12 dBm)", 4),
+            ("ESP_PWR_LVL_N9 (-9 dBm)", 5),
+            ("ESP_PWR_LVL_N6 (-6 dBm)", 6),
+            ("ESP_PWR_LVL_N3 (-3 dBm)", 7),
+            ("ESP_PWR_LVL_N0 (0 dBm)", 8),
+            ("ESP_PWR_LVL_P3 (+3 dBm)", 9),
+            ("ESP_PWR_LVL_P6 (+6 dBm)", 10),
+            ("ESP_PWR_LVL_P9 (+9 dBm)", 11),
+            ("ESP_PWR_LVL_P12 (+12 dBm)", 12),
+            ("ESP_PWR_LVL_P15 (+15 dBm)", 13),
+            ("ESP_PWR_LVL_P18 (+18 dBm)", 14),
+            ("ESP_PWR_LVL_P20 (+20 dBm)", 15),
+        ),
+    )
+
+ESP32_H2_PROFILE = _generic_profile("esp32-h2", "ESP32-H2", 27)
+ESP32_S3_PROFILE = _generic_profile("esp32-s3", "ESP32-S3", 48)
+
 DEVICE_PROFILES = {
     ESP32_C3_PROFILE.profile_id: ESP32_C3_PROFILE,
     ESP32_C6_GPIO15_PROFILE.profile_id: ESP32_C6_GPIO15_PROFILE,
     ESP32_C6_GPIO8_PROFILE.profile_id: ESP32_C6_GPIO8_PROFILE,
     ESP32_C6_NOLED_PROFILE.profile_id: ESP32_C6_NOLED_PROFILE,
+    ESP32_H2_PROFILE.profile_id: ESP32_H2_PROFILE,
+    ESP32_S3_PROFILE.profile_id: ESP32_S3_PROFILE,
     TB_03F_KIT_PROFILE.profile_id: TB_03F_KIT_PROFILE,
 }
 DEFAULT_DEVICE_PROFILE_ID = ESP32_C3_PROFILE.profile_id
@@ -557,6 +535,7 @@ DEVICE_STATUS_PIN_ACTIVE_LABEL = DEVICE_PROFILE.status_pin_active_label
 DEVICE_STATUS_PIN_INACTIVE_LABEL = DEVICE_PROFILE.status_pin_inactive_label
 DEVICE_BOARD_LED_ACTIVE_LOW = DEVICE_PROFILE.board_led_active_low
 BOARD_LED_PIN_ID = DEVICE_PROFILE.board_led_pin_id
+RGB_GPIO_PIN_ID = None  # set via --rgb-gpio or device profile override
 STATUS_GPIO_PIN_ID = DEVICE_PROFILE.status_pin_id
 BOOT_BUTTON_PIN_ID = 0x09
 
@@ -571,11 +550,14 @@ def apply_device_profile(profile_id: str):
     global DEVICE_SUPPORTS_GPIO_EVENTS
     global DEVICE_ALLOW_GENERAL_GPIO_WRITE, DEVICE_LED_MASK_MODE, DEVICE_LEGACY_RESET_DEFAULT
     global DEVICE_STATUS_PIN_ACTIVE_LOW, DEVICE_STATUS_PIN_ACTIVE_LABEL, DEVICE_STATUS_PIN_INACTIVE_LABEL
-    global DEVICE_BOARD_LED_ACTIVE_LOW, BOARD_LED_PIN_ID, STATUS_GPIO_PIN_ID
+    global DEVICE_BOARD_LED_ACTIVE_LOW, BOARD_LED_PIN_ID, RGB_GPIO_PIN_ID, STATUS_GPIO_PIN_ID
     global BOARD_PINS, BOARD_PIN_NAMES, BOARD_PIN_MASK_INDEX, GPIO_PULLS
     global LED_BITS, LED_ALL_MASK, LED_PIN_CODES, LED_PIN_IDS, HW_VERSION_LABELS
     global FIRMWARE_BAUDS, RF_POWER_OPTIONS, RF_POWER_LABEL_BY_VALUE, RF_POWER_VALUE_BY_LABEL
 
+    if profile_id not in DEVICE_PROFILES:
+        print(f"Warning: unknown device profile '{profile_id}', falling back to '{DEFAULT_DEVICE_PROFILE_ID}'", file=sys.stderr)
+        profile_id = DEFAULT_DEVICE_PROFILE_ID
     DEVICE_PROFILE = DEVICE_PROFILES[profile_id]
     DEVICE_LABEL = DEVICE_PROFILE.label
     DEVICE_BOARD_FRAME_TITLE = DEVICE_PROFILE.board_frame_title
@@ -606,6 +588,7 @@ def apply_device_profile(profile_id: str):
     DEVICE_STATUS_PIN_INACTIVE_LABEL = DEVICE_PROFILE.status_pin_inactive_label
     DEVICE_BOARD_LED_ACTIVE_LOW = DEVICE_PROFILE.board_led_active_low
     BOARD_LED_PIN_ID = DEVICE_PROFILE.board_led_pin_id
+    RGB_GPIO_PIN_ID = None
     STATUS_GPIO_PIN_ID = DEVICE_PROFILE.status_pin_id
 
     BOARD_PINS = dict(DEVICE_PROFILE.board_pins)
@@ -2027,33 +2010,39 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Button(blink_frame, text="All off", command=self.led_all_off).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(blink_frame, text="Query state", command=self.led_query_state).pack(side=tk.LEFT, padx=(6, 0))
 
-        # RGB colour picker + brightness (visible for RGB-capable profiles)
-        if DEVICE_PROFILE.profile_id in ("esp32-c6-gpio15", "esp32-c6-gpio8"):
-            rgb_frame = ttk.LabelFrame(parent, text="RGB LED Colour")
-            rgb_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
-            rgb_frame.columnconfigure(8, weight=1)
-            ttk.Label(rgb_frame, text="R").grid(row=0, column=0, padx=(8, 2), pady=6)
-            self.rgb_r_var = tk.IntVar(value=32)
-            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_r_var, width=4).grid(row=0, column=1, padx=(0, 4), pady=6)
-            ttk.Label(rgb_frame, text="G").grid(row=0, column=2, padx=(4, 2), pady=6)
-            self.rgb_g_var = tk.IntVar(value=32)
-            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_g_var, width=4).grid(row=0, column=3, padx=(0, 4), pady=6)
-            ttk.Label(rgb_frame, text="B").grid(row=0, column=4, padx=(4, 2), pady=6)
-            self.rgb_b_var = tk.IntVar(value=32)
-            ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_b_var, width=4).grid(row=0, column=5, padx=(0, 4), pady=6)
-            ttk.Button(rgb_frame, text="Set RGB", command=self._send_rgb).grid(row=0, column=6, padx=(0, 4), pady=6)
-            ttk.Button(rgb_frame, text="Picker", command=self._pick_rgb_color).grid(row=0, column=7, padx=(0, 4), pady=6)
-            ttk.Button(rgb_frame, text="Off", command=lambda: self.safe_command(lambda: self.client.command_gpio_rgb(BOARD_LED_PIN_ID, 0, 0, 0))).grid(row=0, column=8, padx=(0, 8), pady=6)
+        # RGB colour picker + brightness (visible for all profiles)
+        rgb_frame = ttk.LabelFrame(parent, text="RGB LED Colour")
+        rgb_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+        rgb_frame.columnconfigure(8, weight=1)
+        # GPIO selector for the RGB LED
+        ttk.Label(rgb_frame, text="GPIO").grid(row=0, column=0, padx=(8, 2), pady=6)
+        self.rgb_gpio_var = tk.IntVar(value=BOARD_LED_PIN_ID if BOARD_LED_PIN_ID != 0xFF else 15)
+        rgb_pins = sorted(BOARD_PINS.values()) if BOARD_PINS else list(range(28))
+        rgb_gpio_combo = ttk.Combobox(rgb_frame, textvariable=self.rgb_gpio_var,
+                                       values=rgb_pins, width=5, state="readonly")
+        rgb_gpio_combo.grid(row=0, column=1, padx=(0, 4), pady=6)
+        ttk.Label(rgb_frame, text="R").grid(row=0, column=2, padx=(4, 2), pady=6)
+        self.rgb_r_var = tk.IntVar(value=32)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_r_var, width=4).grid(row=0, column=3, padx=(0, 4), pady=6)
+        ttk.Label(rgb_frame, text="G").grid(row=0, column=4, padx=(4, 2), pady=6)
+        self.rgb_g_var = tk.IntVar(value=32)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_g_var, width=4).grid(row=0, column=5, padx=(0, 4), pady=6)
+        ttk.Label(rgb_frame, text="B").grid(row=0, column=6, padx=(4, 2), pady=6)
+        self.rgb_b_var = tk.IntVar(value=32)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_b_var, width=4).grid(row=0, column=7, padx=(0, 4), pady=6)
+        ttk.Button(rgb_frame, text="Set RGB", command=self._send_rgb).grid(row=0, column=8, padx=(0, 4), pady=6)
+        ttk.Button(rgb_frame, text="Picker", command=self._pick_rgb_color).grid(row=0, column=9, padx=(0, 4), pady=6)
+        ttk.Button(rgb_frame, text="Off", command=lambda: self.safe_command(lambda: self.client.command_gpio_rgb(self.rgb_gpio_var.get(), 0, 0, 0))).grid(row=0, column=10, padx=(0, 8), pady=6)
 
-            # Brightness slider (scales RGB values before sending)
-            bright_frame = ttk.Frame(rgb_frame)
-            bright_frame.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 6))
-            ttk.Label(bright_frame, text="Brightness").pack(side=tk.LEFT, padx=(0, 6))
-            self.rgb_bright_var = tk.IntVar(value=100)
-            ttk.Scale(bright_frame, from_=0, to=100, variable=self.rgb_bright_var,
-                      orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Label(bright_frame, textvariable=self.rgb_bright_var, width=3).pack(side=tk.LEFT)
-            ttk.Label(bright_frame, text="%").pack(side=tk.LEFT)
+        # Brightness slider (scales RGB values before sending)
+        bright_frame = ttk.Frame(rgb_frame)
+        bright_frame.grid(row=1, column=0, columnspan=10, sticky="ew", padx=8, pady=(0, 6))
+        ttk.Label(bright_frame, text="Brightness").pack(side=tk.LEFT, padx=(0, 6))
+        self.rgb_bright_var = tk.IntVar(value=100)
+        ttk.Scale(bright_frame, from_=0, to=100, variable=self.rgb_bright_var,
+                  orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(bright_frame, textvariable=self.rgb_bright_var, width=3).pack(side=tk.LEFT)
+        ttk.Label(bright_frame, text="%").pack(side=tk.LEFT)
 
         status_frame = ttk.LabelFrame(parent, text="Status pins")
         status_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
@@ -2824,6 +2813,8 @@ class AdvBle2UartGui(tk.Tk):
         return board_mask & LED_ALL_MASK
 
     def pin_state_is_high(self, pin_id: int):
+        if pin_id not in self.gpio_pin_state_vars:
+            return None
         state = self.gpio_pin_state_vars[pin_id].get()
         if state == "?":
             return None
@@ -3725,13 +3716,14 @@ class AdvBle2UartGui(tk.Tk):
         self.gpio_read_all()
 
     def _send_rgb(self):
-        """Send RGB colour to the WS2812 board LED (GPIO_OP_RGB, op=8).
+        """Send RGB colour to the WS2812 LED on the selected GPIO (GPIO_OP_RGB, op=8).
         Brightness slider scales the RGB values proportionally."""
         bright = max(1, min(100, self.rgb_bright_var.get())) / 100.0
         r = max(0, min(255, round(self.rgb_r_var.get() * bright)))
         g = max(0, min(255, round(self.rgb_g_var.get() * bright)))
         b = max(0, min(255, round(self.rgb_b_var.get() * bright)))
-        self.safe_command(lambda: self.client.command_gpio_rgb(BOARD_LED_PIN_ID, r, g, b))
+        pin = self.rgb_gpio_var.get()
+        self.safe_command(lambda: self.client.command_gpio_rgb(pin, r, g, b))
 
     def _pick_rgb_color(self):
         """Open a colour picker dialog; on OK set the R/G/B spinboxes and send."""
@@ -3925,9 +3917,8 @@ def main():
     parser = argparse.ArgumentParser(description="ADV_BLE2UART test console")
     parser.add_argument(
         "--device",
-        choices=tuple(DEVICE_PROFILES),
         default=DEFAULT_DEVICE_PROFILE_ID,
-        help="target device profile (default: esp32-c3)",
+        help="target device profile id (default: esp32-c3). Known: esp32-c3, tb-03f-kit",
     )
     parser.add_argument(
         "-p",
@@ -3948,9 +3939,39 @@ def main():
         action="store_true",
         help="connect automatically at startup using the selected port",
     )
+    parser.add_argument(
+        "--led-gpio",
+        type=int,
+        default=None,
+        help="override regular LED GPIO (overrides device profile)",
+    )
+    parser.add_argument(
+        "--rgb-gpio",
+        type=int,
+        default=None,
+        help="override RGB LED (SK6812) GPIO",
+    )
+    parser.add_argument(
+        "--led-active-low",
+        type=int,
+        default=None,
+        choices=[0, 1],
+        help="override LED active-low polarity (0=active-high, 1=active-low)",
+    )
     args = parser.parse_args()
 
     apply_device_profile(args.device)
+
+    # Apply CLI overrides for LED/RMT configuration
+    if args.led_gpio is not None:
+        global BOARD_LED_PIN_ID
+        BOARD_LED_PIN_ID = args.led_gpio
+    if args.led_active_low is not None:
+        global DEVICE_BOARD_LED_ACTIVE_LOW
+        DEVICE_BOARD_LED_ACTIVE_LOW = bool(args.led_active_low)
+    if args.rgb_gpio is not None:
+        global RGB_GPIO_PIN_ID
+        RGB_GPIO_PIN_ID = args.rgb_gpio
     app = AdvBle2UartGui(
         initial_port=args.serial_port,
         start_maximized=args.maximized,
