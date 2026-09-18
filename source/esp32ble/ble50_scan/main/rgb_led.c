@@ -12,6 +12,8 @@
 #include "esp_log.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
+#include "driver/gpio.h"
+#include "soc/gpio_sig_map.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -21,6 +23,7 @@ static const char *TAG = "rgb_led";
 #define RMT_TRANS_QUEUE_DEPTH   4
 #define RMT_MEM_BLOCK_SYMBOLS   64
 
+static gpio_num_t s_rgb_gpio = -1;
 static rmt_channel_handle_t s_led_chan = NULL;
 static rmt_encoder_handle_t s_led_encoder = NULL;
 static uint8_t s_pixel_data[3];   // G, R, B order for WS2812
@@ -154,6 +157,7 @@ err:
 esp_err_t rgb_led_init(gpio_num_t gpio)
 {
     esp_err_t ret;
+    s_rgb_gpio = gpio;
 
     // RMT TX channel
     rmt_tx_channel_config_t tx_chan_config = {
@@ -181,27 +185,48 @@ esp_err_t rgb_led_init(gpio_num_t gpio)
         return ret;
     }
 
-    // Start with LED off
-    return rgb_led_off();
+    // Start with LED off — if this first transmission fails (e.g. GPIO
+    // can't do RMT), the caller will know and not attempt further sends.
+    ret = rgb_led_off();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "first RMT transmission on GPIO%d failed: %s", gpio, esp_err_to_name(ret));
+        rmt_disable(s_led_chan);
+        rmt_del_channel(s_led_chan);
+        s_led_chan = NULL;
+        s_led_encoder = NULL;
+        return ret;
+    }
+    return ESP_OK;
 }
 
 esp_err_t rgb_led_set(uint8_t red, uint8_t green, uint8_t blue)
 {
-    // WS2812 uses GRB order
+#if CONFIG_RGB_LED_ORDER_GRB
+    // WS2812 standard: GRB order
     s_pixel_data[0] = green;
     s_pixel_data[1] = red;
     s_pixel_data[2] = blue;
+#else
+    // Some boards (e.g. certain ESP32-S3 variants) use RGB order
+    s_pixel_data[0] = red;
+    s_pixel_data[1] = green;
+    s_pixel_data[2] = blue;
+#endif
 
     rmt_transmit_config_t tx_config = {
         .loop_count = 0,
     };
+    // Ensure the RMT signal is connected to the GPIO pad. Digital writes
+    // (gpio_set_level) may have reconfigured the GPIO matrix; without this,
+    // rmt_transmit would send data into the void instead of the pad.
+    gpio_matrix_out(s_rgb_gpio, RMT_SIG_OUT0_IDX, 0, 0);
     esp_err_t err = rmt_transmit(s_led_chan, s_led_encoder, s_pixel_data, sizeof(s_pixel_data), &tx_config);
     if (err != ESP_OK) {
         return err;
     }
-    // Timeout: 500 ms – more than enough for a 30 µs WS2812 frame, but prevents
-    // a permanent hang if the RMT peripheral stalls for any reason.
-    err = rmt_tx_wait_all_done(s_led_chan, pdMS_TO_TICKS(500));
+    // Timeout: 200 ms – more than enough for a 30 µs WS2812 frame, but prevents
+    // a permanent hang if the RMT peripheral stalls (e.g. on special-function GPIOs).
+    err = rmt_tx_wait_all_done(s_led_chan, pdMS_TO_TICKS(200));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "RMT tx wait timeout – recovering");
         rmt_disable(s_led_chan);

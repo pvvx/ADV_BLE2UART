@@ -30,6 +30,15 @@ config RGB_GPIO
         GPIO for an SK6812/WS2812 addressable RGB LED driven via RMT.
         Set to 0 if no RGB LED is present. Configured via --rgb <gpio>.
 
+config RGB_LED_ORDER_GRB
+    bool "RGB LED uses GRB byte order (WS2812 standard)"
+    depends on RGB_GPIO != 0
+    default y
+    help
+        Most WS2812/SK6812 LEDs expect GRB byte order (Green, Red, Blue).
+        Some boards (e.g. certain ESP32-S3 variants) use RGB order.
+        Disable this if red and green appear swapped on your LED.
+
 choice ADV_BLINK
     prompt "Advertisement blink target"
     default ADV_BLINK_LED if LED_GPIO != 0
@@ -103,6 +112,9 @@ config BOARD_GPIO_9
 config BOARD_GPIO_10
     bool "GPIO10"
     default y
+config BOARD_GPIO_11
+    bool "GPIO11"
+    default n
 config BOARD_GPIO_12
     bool "GPIO12"
     default y
@@ -115,6 +127,12 @@ config BOARD_GPIO_14
 config BOARD_GPIO_15
     bool "GPIO15"
     default y
+config BOARD_GPIO_16
+    bool "GPIO16 (USB D- on C3/S3)"
+    default n
+config BOARD_GPIO_17
+    bool "GPIO17 (USB D+ on C3/S3)"
+    default n
 config BOARD_GPIO_18
     bool "GPIO18"
     default y
@@ -133,5 +151,80 @@ config BOARD_GPIO_22
 config BOARD_GPIO_23
     bool "GPIO23"
     default y
+config BOARD_GPIO_24
+    bool "GPIO24"
+    default n
+config BOARD_GPIO_25
+    bool "GPIO25"
+    default n
+config BOARD_GPIO_26
+    bool "GPIO26"
+    default n
+config BOARD_GPIO_27
+    bool "GPIO27"
+    default n
+config BOARD_GPIO_28
+    bool "GPIO28"
+    default n
+config BOARD_GPIO_29
+    bool "GPIO29"
+    default n
+config BOARD_GPIO_30
+    bool "GPIO30"
+    default n
+config BOARD_GPIO_31
+    bool "GPIO31"
+    default n
+config BOARD_GPIO_32
+    bool "GPIO32"
+    default n
+config BOARD_GPIO_33
+    bool "GPIO33"
+    default n
+config BOARD_GPIO_34
+    bool "GPIO34"
+    default n
+config BOARD_GPIO_35
+    bool "GPIO35"
+    default n
+config BOARD_GPIO_36
+    bool "GPIO36"
+    default n
+config BOARD_GPIO_37
+    bool "GPIO37"
+    default n
+config BOARD_GPIO_38
+    bool "GPIO38"
+    default n
+config BOARD_GPIO_39
+    bool "GPIO39"
+    default n
+config BOARD_GPIO_40
+    bool "GPIO40"
+    default n
+config BOARD_GPIO_41
+    bool "GPIO41"
+    default n
+config BOARD_GPIO_42
+    bool "GPIO42"
+    default n
+config BOARD_GPIO_43
+    bool "GPIO43"
+    default n
+config BOARD_GPIO_44
+    bool "GPIO44"
+    default n
+config BOARD_GPIO_45
+    bool "GPIO45"
+    default n
+config BOARD_GPIO_46
+    bool "GPIO46"
+    default n
+config BOARD_GPIO_47
+    bool "GPIO47 (SPICLK_P on S3)"
+    default n
+config BOARD_GPIO_48
+    bool "GPIO48 (SPICLK_N on S3)"
+    default n
 
 endmenu

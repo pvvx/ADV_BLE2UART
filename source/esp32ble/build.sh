@@ -22,7 +22,7 @@ is_valid_target() {
 
 usage() {
     cat <<'EOF'
-Usage:  ./build.sh [--device <target>] [--led <gpio>] [--rgb <gpio>] [--adv <mode>] [--incremental]
+Usage:  ./build.sh [--device <target>] [--led <gpio>] [--rgb <gpio>] [--rgb-order grb|rgb] [--adv <mode>] [--incremental]
         ./build.sh --help
 
 Options:
@@ -30,6 +30,8 @@ Options:
                        Default: esp32c3 (or $ESP_TARGET env var).
   --led <gpio>         Regular LED on this GPIO (e.g. --led 8).
   --rgb <gpio>         RGB LED (SK6812) on this GPIO (e.g. --rgb 15).
+  --rgb-order <order>  RGB pixel byte order: grb (WS2812 standard, default)
+                       or rgb (for certain ESP32-S3 boards with swapped R/G).
   --adv <mode>         What blinks on received advertisements:
                        led  — regular LED (default GPIO 8),
                        rgb  — RGB LED (default GPIO 15),
@@ -44,6 +46,7 @@ ESP_TARGET="${ESP_TARGET:-}"
 INCREMENTAL=false
 LED_GPIO="${LED_GPIO:-}"
 RGB_GPIO="${RGB_GPIO:-}"
+RGB_ORDER="${RGB_ORDER:-grb}"
 ADV_MODE="${ADV_MODE:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -62,6 +65,10 @@ while [[ $# -gt 0 ]]; do
         --adv)
             shift
             ADV_MODE="${1:-}"
+            ;;
+        --rgb-order)
+            shift
+            RGB_ORDER="${1:-}"
             ;;
         --incremental|-i)
             INCREMENTAL=true
@@ -141,6 +148,23 @@ if [[ -n "$ADV_MODE" ]]; then
             exit 1
             ;;
     esac
+fi
+
+# Validate --rgb-order
+if [[ -n "$RGB_ORDER" ]]; then
+    case "$RGB_ORDER" in
+        grb|rgb) ;;
+        *)
+            echo "Error: --rgb-order must be 'grb' or 'rgb', got '$RGB_ORDER'" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# Warn if --led and --rgb point to the same GPIO
+if [[ -n "$LED_GPIO" && -n "$RGB_GPIO" && "$LED_GPIO" == "$RGB_GPIO" ]]; then
+    echo "Note: --led $LED_GPIO and --rgb $RGB_GPIO point to the same GPIO." >&2
+    echo "      Digital write (op=2/3) controls the pin directly; RGB (op=8) uses RMT." >&2
 fi
 
 resolve_path() {
@@ -354,6 +378,33 @@ mkdir -p "$(dirname "$GEN_BOARD_CONF")"
         led) echo "CONFIG_ADV_BLINK_LED=y" ;;
         rgb) echo "CONFIG_ADV_BLINK_RGB=y" ;;
         *)   echo "CONFIG_ADV_BLINK_NONE=y" ;;
+    esac
+    # RGB pixel byte order
+    if [[ "$RGB_ORDER" == "rgb" ]]; then
+        echo "# CONFIG_RGB_LED_ORDER_GRB is not set"
+    else
+        echo "CONFIG_RGB_LED_ORDER_GRB=y"
+    fi
+    # Chip-specific extra GPIO enables (beyond the default 0-10,12-15,18-23)
+    case "$ESP_TARGET" in
+        esp32c3)
+            # C3: GPIO 11-19 are SPI flash / USB D-/D+ — disable those Kconfig defaults
+            for _g in 11 12 13 14 15 16 17 18 19; do
+                printf '# CONFIG_BOARD_GPIO_%s is not set\n' "$_g"
+            done
+            ;;
+        esp32s3)
+            # S3: GPIO11 is standard; GPIO16/17 are USB D-/D+; GPIO24-48 are standard
+            for _g in 11 16 17 $(seq 24 48); do
+                echo "CONFIG_BOARD_GPIO_${_g}=y"
+            done
+            ;;
+        esp32h2|esp32h4|esp32h21)
+            # H2/H4/H21: GPIO24-27 are valid
+            for _g in $(seq 24 27); do
+                echo "CONFIG_BOARD_GPIO_${_g}=y"
+            done
+            ;;
     esac
 } > "$GEN_BOARD_CONF"
 

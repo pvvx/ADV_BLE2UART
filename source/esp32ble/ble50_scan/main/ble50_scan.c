@@ -250,7 +250,7 @@ static conn_runtime_t s_conn = {
 static esp_timer_handle_t s_board_led_timer = NULL;
 static volatile uint8_t s_led_idle_level = 1;   // regular LED idle level (1 = off)
 static bool s_rgb_led_ready = false;
-static bool s_rgb_led_on = false;   // tracks whether user has turned the RGB LED on via GPIO write
+static bool s_rgb_led_on = false;   // tracks whether the RGB LED is on (set via op=8)
 static SemaphoreHandle_t s_rgb_mutex = NULL;  // protects rgb_led_set/off from concurrent tasks
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static SemaphoreHandle_t s_gap_sync_sem = NULL;
@@ -1348,26 +1348,6 @@ static void rgb_led_timer_cb(void *arg)
     safe_rgb_led_off();
 }
 
-static void set_rgb_led_on(bool on)
-{
-    s_rgb_led_on = on;
-    if (on) {
-        safe_rgb_led_set(32, 32, 32);   // ON = white
-    } else {
-        safe_rgb_led_off();             // OFF
-    }
-}
-
-static void toggle_rgb_led(void)
-{
-    s_rgb_led_on = !s_rgb_led_on;
-    if (s_rgb_led_on) {
-        safe_rgb_led_set(32, 32, 32);   // ON = white
-    } else {
-        safe_rgb_led_off();             // OFF
-    }
-}
-
 // ── Activity indication (adv blink) ───────────────────────────────────────
 // The blinking LED is selected at build time via CONFIG_ADV_BLINK_{LED,RGB,NONE}
 // (controlled by the --adv flag).  Only one LED can blink on advertisements.
@@ -1466,6 +1446,9 @@ static bool is_supported_gpio(uint8_t pin_code)
 #ifdef CONFIG_BOARD_GPIO_10
     case 10:
 #endif
+#ifdef CONFIG_BOARD_GPIO_11
+    case 11:
+#endif
 #ifdef CONFIG_BOARD_GPIO_12
     case 12:
 #endif
@@ -1477,6 +1460,12 @@ static bool is_supported_gpio(uint8_t pin_code)
 #endif
 #ifdef CONFIG_BOARD_GPIO_15
     case 15:
+#endif
+#ifdef CONFIG_BOARD_GPIO_16
+    case 16:
+#endif
+#ifdef CONFIG_BOARD_GPIO_17
+    case 17:
 #endif
 #ifdef CONFIG_BOARD_GPIO_18
     case 18:
@@ -1495,6 +1484,81 @@ static bool is_supported_gpio(uint8_t pin_code)
 #endif
 #ifdef CONFIG_BOARD_GPIO_23
     case 23:
+#endif
+#ifdef CONFIG_BOARD_GPIO_24
+    case 24:
+#endif
+#ifdef CONFIG_BOARD_GPIO_25
+    case 25:
+#endif
+#ifdef CONFIG_BOARD_GPIO_26
+    case 26:
+#endif
+#ifdef CONFIG_BOARD_GPIO_27
+    case 27:
+#endif
+#ifdef CONFIG_BOARD_GPIO_28
+    case 28:
+#endif
+#ifdef CONFIG_BOARD_GPIO_29
+    case 29:
+#endif
+#ifdef CONFIG_BOARD_GPIO_30
+    case 30:
+#endif
+#ifdef CONFIG_BOARD_GPIO_31
+    case 31:
+#endif
+#ifdef CONFIG_BOARD_GPIO_32
+    case 32:
+#endif
+#ifdef CONFIG_BOARD_GPIO_33
+    case 33:
+#endif
+#ifdef CONFIG_BOARD_GPIO_34
+    case 34:
+#endif
+#ifdef CONFIG_BOARD_GPIO_35
+    case 35:
+#endif
+#ifdef CONFIG_BOARD_GPIO_36
+    case 36:
+#endif
+#ifdef CONFIG_BOARD_GPIO_37
+    case 37:
+#endif
+#ifdef CONFIG_BOARD_GPIO_38
+    case 38:
+#endif
+#ifdef CONFIG_BOARD_GPIO_39
+    case 39:
+#endif
+#ifdef CONFIG_BOARD_GPIO_40
+    case 40:
+#endif
+#ifdef CONFIG_BOARD_GPIO_41
+    case 41:
+#endif
+#ifdef CONFIG_BOARD_GPIO_42
+    case 42:
+#endif
+#ifdef CONFIG_BOARD_GPIO_43
+    case 43:
+#endif
+#ifdef CONFIG_BOARD_GPIO_44
+    case 44:
+#endif
+#ifdef CONFIG_BOARD_GPIO_45
+    case 45:
+#endif
+#ifdef CONFIG_BOARD_GPIO_46
+    case 46:
+#endif
+#ifdef CONFIG_BOARD_GPIO_47
+    case 47:
+#endif
+#ifdef CONFIG_BOARD_GPIO_48
+    case 48:
 #endif
         return true;
     default:
@@ -1884,11 +1948,14 @@ static void fill_gpio_response(uint8_t op, uint8_t pin_code, uint8_t *resp)
     resp[0] = op;
     resp[1] = pin_code;
     if (is_supported_gpio(pin_code)) {
-        if (is_pwm_led_pin(pin_code)) {
+        if (is_pwm_led_pin(pin_code) && !is_rgb_led_pin(pin_code)) {
+            // PWM-only pin: report idle level (we can't read the actual pin
+            // because LEDC owns it). Shared RGB+LED pins fall through to
+            // gpio_get_level so digital writes are reflected correctly.
             resp[2] = s_led_idle_level ? 1 : 0;
-        } else if (is_rgb_led_pin(pin_code)) {
-            resp[2] = s_rgb_led_on ? 1 : 0;
         } else {
+            // Read the actual GPIO level — works for plain GPIOs and
+            // for RGB pins even when RMT has driven them.
             resp[2] = gpio_get_level((gpio_num_t)pin_code) ? 1 : 0;
         }
     }
@@ -2213,21 +2280,18 @@ static void handle_gpio_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_ARGS;
             break;
         }
-        if (is_pwm_led_pin(pin_code)) {
+        if (is_pwm_led_pin(pin_code) && !is_rgb_led_pin(pin_code)) {
             // PWM LED is driven by LEDC; gpio_config() would detach it.
+            // If the same pin is also the RGB pin, digital write takes priority.
             set_pwm_led_idle_level(cmd_buf[3] ? 1 : 0);
-        } else if (is_rgb_led_pin(pin_code)) {
-            set_rgb_led_on(cmd_buf[3] ? true : false);
         } else {
             apply_gpio_config(pin_code, 0, 1, 0);
             gpio_set_level((gpio_num_t)pin_code, cmd_buf[3] ? 1 : 0);
         }
         break;
     case 3: // GPIO toggle
-        if (is_pwm_led_pin(pin_code)) {
+        if (is_pwm_led_pin(pin_code) && !is_rgb_led_pin(pin_code)) {
             set_pwm_led_idle_level(s_led_idle_level ? 0 : 1);
-        } else if (is_rgb_led_pin(pin_code)) {
-            toggle_rgb_led();
         } else {
             apply_gpio_config(pin_code, 0, 1, 0);
             gpio_set_level((gpio_num_t)pin_code, !gpio_get_level((gpio_num_t)pin_code));
@@ -2262,6 +2326,7 @@ static void handle_gpio_command(const uint8_t *cmd_buf, int len)
             break;
         }
         safe_rgb_led_set(cmd_buf[3], cmd_buf[4], cmd_buf[5]);
+        s_rgb_led_on = (cmd_buf[3] | cmd_buf[4] | cmd_buf[5]) != 0;
         break;
     default:
         status = CMD_STATUS_ARGS;
@@ -2847,20 +2912,22 @@ void app_main(void)
     s_conn_sem = xSemaphoreCreateBinary();
 
     // ── Initialize LEDs ─────────────────────────────────────────────────
-    // Regular (PWM) LED
-    if (LED_GPIO_PRESENT && is_supported_gpio((uint8_t)CONFIG_LED_GPIO)) {
+    // Regular (PWM) LED — skip if same GPIO is used for RGB (RMT takes precedence).
+    if (LED_GPIO_PRESENT && is_supported_gpio((uint8_t)CONFIG_LED_GPIO)
+        && (!RGB_GPIO_PRESENT || (uint8_t)CONFIG_LED_GPIO != (uint8_t)CONFIG_RGB_GPIO)) {
         init_pwm_led();
         s_led_idle_level = 1;   // off by default
     }
 
     // RGB LED via RMT — if init fails, log and continue gracefully.
     if (RGB_GPIO_PRESENT && is_supported_gpio((uint8_t)CONFIG_RGB_GPIO)) {
+        send_debug_print("RGB: rmt_init GPIO%d starting...", (int)CONFIG_RGB_GPIO);
         esp_err_t rgb_ret = rgb_led_init(RGB_GPIO_NUM);
         if (rgb_ret != ESP_OK) {
-            ESP_LOGE(GATTC_TAG, "rgb_led_init(GPIO%d) failed (0x%x) — RGB LED will not work",
-                     CONFIG_RGB_GPIO, rgb_ret);
+            send_debug_print("RGB: rmt_init GPIO%d FAILED %d", (int)CONFIG_RGB_GPIO, rgb_ret);
             s_rgb_led_ready = false;
         } else {
+            send_debug_print("RGB: rmt_init GPIO%d OK", (int)CONFIG_RGB_GPIO);
             s_rgb_led_ready = true;
             s_rgb_mutex = xSemaphoreCreateMutex();
         }

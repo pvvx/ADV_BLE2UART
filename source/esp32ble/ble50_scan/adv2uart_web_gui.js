@@ -521,10 +521,7 @@ function bindUi() {
 
   const applyProfileUi = () => {
     const isTb = deviceProfile.value === "tb-03f-kit";
-    const hasRgbChip = deviceProfile.value.startsWith("esp32-c6") ||
-                       deviceProfile.value === "esp32-h2" ||
-                       deviceProfile.value === "esp32-s3" ||
-                       runtimeRgbGpio !== null;
+    const hasRgbChip = deviceProfile.value !== "tb-03f-kit" || runtimeRgbGpio !== null;
     if (tbLedSection) {
       tbLedSection.style.display = isTb ? "block" : "none";
     }
@@ -565,14 +562,19 @@ function bindUi() {
   applyProfileUi();
 
   // ---- GPIO pin ranges per chip ---------------------------------------
+  // Chips with non-contiguous usable GPIO ranges get an explicit pin list.
+  // ESP32-C3: GPIO 11-19 are internal flash / USB D-/D+ — not user-accessible.
+  const GPIO_PINS = {
+    "esp32-c3": [...Array.from({length: 11}, (_, i) => i), 20, 21],
+  };
   const GPIO_MAX = {
-    "esp32-c3": 21,
     "esp32-c6": 23,
     "esp32-h2": 27,
     "esp32-s3": 48,
     "tb-03f-kit": 0x24,
   };
   const gpioPinsForProfile = (profId) => {
+    if (GPIO_PINS[profId]) return GPIO_PINS[profId];
     const max = GPIO_MAX[profId] || 21;
     const pins = [];
     for (let p = 0; p <= max; p++) pins.push(p);

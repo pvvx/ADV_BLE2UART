@@ -95,10 +95,16 @@ class DeviceProfile:
     rf_power_options: tuple[tuple[str, int], ...]
 
 
-def _gpio_pins(max_gpio, special=None):
-    """Generate a board_pins dict with GPIO0..GPIO{max_gpio} plus special entries."""
+def _gpio_pins(max_gpio_or_list, special=None):
+    """Generate a board_pins dict.
+
+    max_gpio_or_list: int → generates GPIO0..GPIO{max_gpio};
+                      list/tuple → generates only those GPIO numbers.
+    special: optional {label: gpio_id} entries appended after the range entries.
+    """
     d = {}
-    for p in range(max_gpio + 1):
+    pins = range(max_gpio_or_list + 1) if isinstance(max_gpio_or_list, int) else max_gpio_or_list
+    for p in pins:
         d[f"GPIO{p}"] = p
     if special:
         d.update(special)
@@ -136,7 +142,11 @@ ESP32_C3_PROFILE = DeviceProfile(
     allow_general_gpio_write=True,
     led_mask_mode=False,
     legacy_reset_default=False,
-    board_pins=_gpio_pins(21, {"Board LED GPIO8": 0x08, "BOOT / GPIO9": 0x09}),
+    board_pins=_gpio_pins(
+        # GPIO 11-19 are internal SPI flash / USB D-/D+ on ESP32-C3 — skip them
+        [0, 1, 2, 3, 4, 5, 6, 7, 10, 20, 21],
+        {"Board LED GPIO8": 0x08, "BOOT / GPIO9": 0x09}
+    ),
     gpio_pulls={
         "Float": 0,
         "Pull-up": 1,
@@ -2023,13 +2033,13 @@ class AdvBle2UartGui(tk.Tk):
         rgb_gpio_combo.grid(row=0, column=1, padx=(0, 4), pady=6)
         ttk.Label(rgb_frame, text="R").grid(row=0, column=2, padx=(4, 2), pady=6)
         self.rgb_r_var = tk.IntVar(value=32)
-        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_r_var, width=4).grid(row=0, column=3, padx=(0, 4), pady=6)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_r_var, width=5).grid(row=0, column=3, padx=(0, 4), pady=6)
         ttk.Label(rgb_frame, text="G").grid(row=0, column=4, padx=(4, 2), pady=6)
         self.rgb_g_var = tk.IntVar(value=32)
-        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_g_var, width=4).grid(row=0, column=5, padx=(0, 4), pady=6)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_g_var, width=5).grid(row=0, column=5, padx=(0, 4), pady=6)
         ttk.Label(rgb_frame, text="B").grid(row=0, column=6, padx=(4, 2), pady=6)
         self.rgb_b_var = tk.IntVar(value=32)
-        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_b_var, width=4).grid(row=0, column=7, padx=(0, 4), pady=6)
+        ttk.Spinbox(rgb_frame, from_=0, to=255, textvariable=self.rgb_b_var, width=5).grid(row=0, column=7, padx=(0, 4), pady=6)
         ttk.Button(rgb_frame, text="Set RGB", command=self._send_rgb).grid(row=0, column=8, padx=(0, 4), pady=6)
         ttk.Button(rgb_frame, text="Picker", command=self._pick_rgb_color).grid(row=0, column=9, padx=(0, 4), pady=6)
         ttk.Button(rgb_frame, text="Off", command=lambda: self.safe_command(lambda: self.client.command_gpio_rgb(self.rgb_gpio_var.get(), 0, 0, 0))).grid(row=0, column=10, padx=(0, 8), pady=6)
@@ -2041,7 +2051,7 @@ class AdvBle2UartGui(tk.Tk):
         self.rgb_bright_var = tk.IntVar(value=100)
         ttk.Scale(bright_frame, from_=0, to=100, variable=self.rgb_bright_var,
                   orient=tk.HORIZONTAL, length=200).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Label(bright_frame, textvariable=self.rgb_bright_var, width=3).pack(side=tk.LEFT)
+        ttk.Label(bright_frame, textvariable=self.rgb_bright_var, width=4).pack(side=tk.LEFT)
         ttk.Label(bright_frame, text="%").pack(side=tk.LEFT)
 
         status_frame = ttk.LabelFrame(parent, text="Status pins")
@@ -2053,6 +2063,24 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Label(status_frame, textvariable=self.led_state_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 14), pady=8)
         ttk.Label(status_frame, text=DEVICE_BOARD_MASK_LABEL).grid(row=0, column=4, sticky="w", padx=(0, 4), pady=8)
         ttk.Label(status_frame, textvariable=self.board_mask_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 8), pady=8)
+
+        # Board LED GPIO selector + active-low toggle
+        led_gpio_frame = ttk.Frame(status_frame)
+        led_gpio_frame.grid(row=1, column=0, columnspan=6, sticky="ew", padx=8, pady=(0, 6))
+        ttk.Label(led_gpio_frame, text="Board LED GPIO").pack(side=tk.LEFT, padx=(0, 4))
+        self.board_led_gpio_var = tk.IntVar(value=BOARD_LED_PIN_ID if BOARD_LED_PIN_ID != 0xFF else 8)
+        led_gpio_pins = sorted(BOARD_PINS.values()) if BOARD_PINS else [8]
+        led_gpio_combo = ttk.Combobox(
+            led_gpio_frame, textvariable=self.board_led_gpio_var,
+            values=led_gpio_pins, width=5, state="readonly")
+        led_gpio_combo.pack(side=tk.LEFT, padx=(0, 10))
+        led_gpio_combo.bind("<<ComboboxSelected>>", self._on_board_led_gpio_changed)
+        self.board_led_active_low_var = tk.BooleanVar(value=DEVICE_BOARD_LED_ACTIVE_LOW)
+        ttk.Checkbutton(
+            led_gpio_frame, text="Active low",
+            variable=self.board_led_active_low_var,
+            command=self._on_board_led_active_low_changed,
+        ).pack(side=tk.LEFT)
 
     def _build_gpio_pinio_tab(self, parent):
         parent.columnconfigure(0, weight=1)
@@ -2903,6 +2931,28 @@ class AdvBle2UartGui(tk.Tk):
         self.pending_gpio_read_pin = None
         if self.pending_gpio_read_ids:
             self.after(0, lambda: self.issue_next_gpio_read(generation))
+
+    def _on_board_led_gpio_changed(self, event=None):
+        """Called when the user changes the Board LED GPIO combobox."""
+        global BOARD_LED_PIN_ID, RGB_GPIO_PIN_ID, DEVICE_BOARD_LED_ACTIVE_LOW
+        new_pin = self.board_led_gpio_var.get()
+        BOARD_LED_PIN_ID = new_pin
+        # Update LED_PIN_CODES so led_set_mask/led_toggle_mask use the new pin
+        for mask_key in list(LED_PIN_CODES.keys()):
+            if mask_key == 0x01:  # single-LED profiles use bit 0x01
+                LED_PIN_CODES[mask_key] = new_pin
+            else:
+                LED_PIN_CODES[mask_key] = new_pin  # fallback
+        # Re-evaluate RGB_GPIO_PIN_ID: if this pin matches CONFIG_RGB_GPIO, mark it
+        if RGB_GPIO_PIN_ID is not None and new_pin == RGB_GPIO_PIN_ID:
+            pass  # already set
+        # Update active-low toggle from the profile default
+        self.board_led_active_low_var.set(DEVICE_BOARD_LED_ACTIVE_LOW)
+
+    def _on_board_led_active_low_changed(self):
+        """Called when the user toggles the Active low checkbox."""
+        global DEVICE_BOARD_LED_ACTIVE_LOW
+        DEVICE_BOARD_LED_ACTIVE_LOW = self.board_led_active_low_var.get()
 
     def led_pin_ids_from_mask(self, mask: int):
         return [pin_id for bit, pin_id in LED_PIN_CODES.items() if mask & bit]
