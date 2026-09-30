@@ -43,6 +43,7 @@
  *          SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  *******************************************************************************************************/
+#include "app_config.h"
 #include "tl_common.h"
 #if (BLE_DEVICE_ENABLE || BLE_MASTER_ENABLE)
 #include "drivers.h"

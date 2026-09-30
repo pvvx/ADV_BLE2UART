@@ -1,5 +1,4 @@
 # TB-03F-KIT Specification
- 
 **Version:** V1.0  
 **Copyright:** © 2020 Shenzhen Ai-Thinker Technology Co., Ltd. — All Rights Reserved
  

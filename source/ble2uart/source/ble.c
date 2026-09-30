@@ -26,6 +26,19 @@ unsigned int baudrate_list[] = { 2000000, 921600, 115200 };  // List of availabl
 
 static u16 coded_min_scan_window = SCAN_INTERVAL_100MS;
 static u8 primary_scan_channels[3] = {37, 38, 39};
+
+/* The two scan PHYs share the same radio, so their scan windows must not add up
+   to more than the available time.  The host command (CMD_ID_SCAN) sends a scan
+   *window*; the interval is derived from it here:
+     one PHY enabled -> interval = 1.5 x window  (66% duty, i.e. the values of
+                                                  Telink's Coded branch: 150/100)
+     1M + Coded      -> interval = 3   x window  (33% + 33% = 66% of the radio)
+   Before this the interval was set equal to the window, so every enabled PHY
+   asked for 100% of the radio (200% with both PHYs): a schedule that cannot be
+   built, and on V4.0.2.5 the stack then stops at the first Coded packet.
+   Both values are in 0.625 ms units. */
+#define SCAN_INTERVAL_FROM_WINDOW(win, flg) \
+ ((u16)((((flg) & 3) == 3) ? (u32)(win) * 3 : ((u32)(win) * 3) / 2))
 static u8 runtime_rf_power = MY_RF_POWER;
 static u8 runtime_rf_cap = 0xff;
 
@@ -241,13 +254,47 @@ void init_ble(void) {
 	blc_ll_initStandby_module(mac_public); //must
 
 	blc_ll_initExtendedScanning_module();	//extended scan module
-	blc_ll_initExtendedInitiating_module();
+	blc_ll_initLegacyInitiating_module();  //initiating module (blc_ll_createConnection API)
 
-	blc_ll_initPeriodicAdvertisingSynchronization_module();
+	/* Coded PHY / 2M PHY are disabled by default in this SDK to save SRAM
+	   ("In the tc_ble_sdk, to conserve SRAM, the Coded PHY/2M PHY is disabled
+	   by default", handbook chapter "Coded PHY/2M PHY") and must be enabled
+	   explicitly with blc_ll_init2MPhyCodedPhy_feature().
+	   WITHOUT this call the extended scan never starts in tc_ble_sdk
+	   V4.0.2.5: blc_ll_setExtScanEnable() returns BLE_SUCCESS, but the LL state
+	   is never established, g_scheMng+0x14 stays 0, the ISR then switches off
+	   the System Timer interrupt and the firmware freezes (with V4.0.2.1/4.0.2.3
+	   the omission went unnoticed on 1M-only scans, which is why this was never
+	   caught here).  rf_drv_ble_init() alone is NOT enough. */
+	blc_ll_init2MPhyCodedPhy_feature();	//enable Coded PHY/2M PHY feature
+
+	/* NOTE: blc_ll_initPeriodicAdvertisingSynchronization_module() is NOT
+	   called here any more.  The reference configuration that works on
+	   V4.0.2.5 (vendor/acl_central_demo, and coded_phy_scan_repro) does not
+	   enable it, no code in this firmware ever creates a periodic sync
+	   (no blc_ll_periodic* call), and the V4.0.2.5 library reworked the
+	   whole blt_pda_sync_* family, which is the machinery behind it. */
+	//blc_ll_initPeriodicAdvertisingSynchronization_module();
 
 	blc_ll_initAclConnection_module();
 
-	blc_hci_registerControllerEventHandler(app_controller_event_callback);
+        /* ACL connection configuration, as in the stock vendor/acl_central_demo:
+           the Link Layer expects these to be set up even in a scan-only build.
+           Without them the Coded PHY extended scan never receives anything on
+           V4.0.2.5 and the firmware stops (the ACL FIFOs are also required by
+           blc_hci_registerControllerDataHandler() below). */
+        blc_ll_initAclCentralRole_module();
+        blc_ll_setMaxConnectionNumber(MASTER_MAX_NUM, SLAVE_MAX_NUM);
+        blc_ll_setAclConnMaxOctetsNumber(ACL_CONN_MAX_RX_OCTETS,
+                                         ACL_MASTER_MAX_TX_OCTETS,
+                                         ACL_SLAVE_MAX_TX_OCTETS);
+        blc_ll_initAclConnRxFifo(app_acl_rxfifo, ACL_RX_FIFO_SIZE, ACL_RX_FIFO_NUM);
+        blc_ll_initAclCentralTxFifo(app_acl_mstTxfifo, ACL_MASTER_TX_FIFO_SIZE,
+                                    ACL_MASTER_TX_FIFO_NUM, MASTER_MAX_NUM);
+        blc_ll_setAclCentralBaseConnectionInterval(CONN_INTERVAL_10MS);
+
+	blc_hci_registerControllerDataHandler(blc_l2cap_pktHandler);
+        blc_hci_registerControllerEventHandler(app_controller_event_callback);
 	//bluetooth low energy(LE) event
 	blc_hci_le_setEventMask_cmd( HCI_LE_EVT_MASK_ADVERTISING_REPORT
 			| HCI_LE_EVT_MASK_DIRECT_ADVERTISING_REPORT
@@ -260,6 +307,10 @@ void init_ble(void) {
 	//blc_controller_check_appBufferInitialization(); // removed: may crash if ACL FIFOs not inited
 
 	blc_gap_init();
+
+        /* L2CAP/ATT buffers used by the controller data handler above. */
+        blc_l2cap_initAclConnMasterMtuBuffer(mtu_m_rx_fifo, MTU_M_BUFF_SIZE_MAX, 0, 0);
+        blc_att_setMasterRxMTUSize(ATT_MTU_MASTER_RX_MAX_SIZE);
 
 	rf_set_power_level_index(MY_RF_POWER);
 	//start_adv_scanning(3, SCAN_INTERVAL_30MS);
@@ -342,9 +393,9 @@ void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded) {
             SCAN_FP_ALLOW_ADV_ANY, // scan_fp - Scanning_Filter_Policy
             mode, // scan_phys - Scanning_PHYs, "SCAN_PHY_1M" or "SCAN_PHY_CODED"
             (flg >> 2) & 1, // Scan_Type for 1M PHY, Passive Scanning or Active Scanning.
-            t1, t1, // Scan_Interval and Duration of the scan on the primary advertising physical channel for 1M PHY
+            SCAN_INTERVAL_FROM_WINDOW(t1, flg), t1, // Scan_Interval and Duration of the scan on the primary advertising physical channel for 1M PHY
             (flg >> 2) & 1, // Scan_Type for Coded PHY, Passive Scanning or Active Scanning.
-            t2, t2 // Scan_Interval and Duration of the scan on the on the primary advertising physical channel for Coded PHY
+            SCAN_INTERVAL_FROM_WINDOW(t2, flg), t2 // Scan_Interval and Duration of the scan on the on the primary advertising physical channel for Coded PHY
         )) {
 
 #if defined(GPIO_LED_R) && defined(GPIO_LED_W)

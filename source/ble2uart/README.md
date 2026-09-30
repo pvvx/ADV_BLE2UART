@@ -2,6 +2,8 @@
 
 __TLSR825x firmware__ implementing a BLE scanner, which continuously receives BLE advertisements and delivers them to a host connected via UART-to-USB adapter.
 
+This software is designed for the [Ai-Thinker **TB-03F-KIT** module](https://aithinker-static.oss-cn-shenzhen.aliyuncs.com/docs/Public%20Document%20Center/Bluetooth/blue_tooth/Specification/TB-03F-Kit%20Specification-20201203.pdf) and interfaces directly with its exposed GPIO pins, user button, status LEDs, CH340 USB-to-UART bridge and preinstalled bootloader, replacing the default firmware.
+
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": false}} }%%
 flowchart LR;
@@ -86,6 +88,20 @@ To test the device:
 ```
 adv2uart.exe -p COM7 -i
 ```
+
+### Notes on flashing the firmware
+
+The *Telink_Tools* utility is recommended for flashing the firmware. It relies on, and requires, the native bootloader shipped with the Ai-Thinker **TB-03F-KIT** module.
+
+*Telink_Tools* is available in three versions:
+
+* `telink_tools.c` — Linux utility that can be compiled into the `telink_tools` executable;
+* `Telink_Tools.py` — Python implementation;
+* `Telink_Tools.exe` — Windows executable generated with PyInstaller.
+
+Alternatively, if the native bootloader is no longer available, [TlsrComProg825x](https://github.com/pvvx/TlsrComProg825x) can be used as a general-purpose flashing utility. It requires a (temporary) connection between CH340C pin 2 (TX) and the TB-03F-KIT SWS pin.
+
+In addition, there is also a [browser based utility](https://github.com/pvvx/ATC_MiThermometer#the-usb-com-adapter-writes-the-firmware-in-explorer-web-version): https://pvvx.github.io/ATC_MiThermometer/USBCOMFlashTx.html
 
 ### Compilation from sources
 
@@ -183,13 +199,9 @@ To perform a chip soft reset and get External Chip Information:
 PGM_PORT=COM10 make reset
 ```
 
-### Alternative firmware update procedure via USBCOMFlashTx.html
-
-https://pvvx.github.io/ATC_MiThermometer/USBCOMFlashTx.html
-
 ### Alternative firmware update procedure via Telink_Tools.py
 
-Similarly to the *USBCOMFlashTx.html* web program, the *Telink_Tools.py* Python application allows uploading the firmware to the TB-03F-KIT device without needing the hw patch.
+The *Telink_Tools.py* Python application allows uploading the firmware to the TB-03F-KIT device without needing the hw patch that links CH340C pin 2 (TX) with the TB-03F-KIT SWS pin.
 
 Connect the device to a PC via USB. Run the [Telink_Tools.py](https://github.com/Ircama/freetz-ble/blob/main/ble-adv-telink/make/Telink_Tools.py) Python program (Python2 and Python3, Windows and Linux). It requires `pip install pyserial`.
 
@@ -217,7 +229,7 @@ cmd.exe /c 'python3 ADV_BLE2UART\source\ble2uart\adv2uart.py -p com10 -i'
 
 ## Binary command protocol
 
-All host↔firmware communication uses a unified binary framing with CRC-16 error detection. The protocol is described in the **API** section. This section documents all commands currently supported by the firmware.
+All host/firmware communication uses a unified binary framing with CRC-16 error detection. The protocol is described in the **API** section. This section documents all commands currently supported by the firmware.
 
 ### Frame format
 
@@ -549,19 +561,12 @@ make
 
 If the compiler is not included in the SDK, the makefile downloads it.
 
-Two install scripts are provided:
-
-- *install_sdk_v4023.sh* — **recommended**: clones [Telink BLE SDK V4.0.2.3](https://github.com/telink-semi/tc_ble_sdk) directly from GitHub (tag `V4.0.2.3`) and applies a `liblt_8258.a` fix (see note below).
-- *install_sdk_v4013.sh* — legacy: downloads `telink_b85m_ble_sdk_V4.0.1.3_Patch` from the Telink website and applies patch_0001_20231201 and patch_0002_20240402.
-
-> **Note — Coded PHY bug in V4.0.2.2 / V4.0.2.3**: `liblt_8258.a` shipped in SDK tags V4.0.2.2 and V4.0.2.3 contains a bug that crashes the BLE stack when receiving Coded PHY advertisements. *install_sdk_v4023.sh* automatically replaces that library with the V4.0.2.1 version as a workaround.
-
 Reinstall the SDK and compile:
 
 ```bash
 cd ADV_BLE2UART/source/ble2uart
 rm -r SDK
-./install_sdk_v4023.sh
+./install_sdk_v4025.sh
 make
 ```
 

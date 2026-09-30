@@ -43,6 +43,9 @@ LST :=
 SIZEDUMMY := 
 OUT_DIR :=
 
+# NOTE: -funsigned-char is intentionally NOT used: Telink's IoT Studio .cproject
+# (vendor/acl_central_demo) does not pass it, and it changes the code generated
+# from the SDK sources that are compiled here.
 GCC_FLAGS := \
 -Werror \
 -ffunction-sections \
@@ -53,7 +56,6 @@ GCC_FLAGS := \
 -fshort-enums \
 -finline-small-functions \
 -std=gnu99 \
--funsigned-char \
 -fshort-wchar \
 -fms-extensions
 

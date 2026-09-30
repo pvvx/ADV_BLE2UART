@@ -19,3 +19,4 @@ htmlcov/
 .ipynb_checkpoints/
 TLSR825xScanner.bin
 SDK/
+telink_tools
