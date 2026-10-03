@@ -18,8 +18,47 @@
 #define RX_BUFFER_SIZE 8192
 #define COMMAND_SETTLE_US 50000U
 
+#define CMD_ID_INFO 0x00U
 #define CMD_ID_SCAN 0x01U
+#define CMD_ID_GPIO 0x06U
+#define CMD_ID_LED 0x07U
+#define CMD_ID_UART 0x08U
+#define CMD_ID_RFSDK 0x09U
+#define CMD_ID_VERSION 0x0AU
+#define CMD_ID_TXADV 0x0BU
+#define CMD_ID_CONN 0x0CU
+#define CMD_ID_TXDATA 0x0DU
+#define CMD_ID_RXDATA 0x0EU
 #define CMD_ID_VBAT 0x0FU
+#define CMD_ID_GPIOEVT 0x10U
+
+/* CMD_ID_GPIO sub-operations */
+#define GPIO_OP_STATUS 0U
+#define GPIO_OP_READ 1U
+#define GPIO_OP_WRITE 2U
+#define GPIO_OP_TOGGLE 3U
+#define GPIO_OP_CONFIG 4U
+#define GPIO_OP_PWM 5U
+#define GPIO_OP_PWM_OFF 6U
+#define GPIO_OP_ANALOG 7U
+#define GPIO_OP_RGB 8U
+
+/* CMD_ID_GPIOEVT sub-operations */
+#define GPIOEVT_OP_QUERY 0U
+#define GPIOEVT_OP_ENABLE 1U
+#define GPIOEVT_OP_DISABLE 2U
+#define GPIOEVT_OP_CLEAR 3U
+
+/* High bit of byte[2] marking a spontaneous GPIOEVT event */
+#define GPIOEVT_EVENT_FLAG 0x80U
+
+/* TB-03F-KIT pin codes */
+#define PIN_RGB_BLUE 0x22U
+#define PIN_RGB_RED 0x23U
+#define PIN_RGB_GREEN 0x24U
+#define PIN_ADC_FREE 0x16U
+#define PIN_KEY_PA7 0x07U
+
 #define SCAN_PHY_1M 0x01U
 #define SCAN_PHY_CODED 0x02U
 
@@ -97,6 +136,123 @@ static int build_white_list_command(const char *mac_filter, uint8_t *cmd, size_t
 
     return 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Command actions: the command-line options are collected while parsing argv
+ * and sent in order once the serial port is open.
+ * ------------------------------------------------------------------------- */
+#define MAX_ACTIONS     32
+#define MAX_ACTION_LEN  40
+
+static uint8_t g_actions[MAX_ACTIONS][MAX_ACTION_LEN];
+static size_t  g_action_len[MAX_ACTIONS];
+static int     g_action_count;
+static uint8_t g_last_gpioevt_op;   /* 0xFF = none, used to decode the ack layout */
+
+static int add_action(const uint8_t *cmd, size_t len)
+{
+    if (g_action_count >= MAX_ACTIONS || len == 0U || len > MAX_ACTION_LEN) {
+        return -1;
+    }
+    memcpy(g_actions[g_action_count], cmd, len);
+    g_action_len[g_action_count] = len;
+    ++g_action_count;
+    return 0;
+}
+
+static int parse_hex_bytes(const char *spec, uint8_t *out, size_t cap, size_t *out_len)
+{
+    size_t n = 0;
+    int hi = -1;
+
+    for (const char *p = spec; *p != '\0'; ++p) {
+        int nib;
+
+        if (*p == ' ' || *p == ',' || *p == ':' || *p == '-') {
+            continue;
+        }
+        nib = hex_nibble((unsigned char)*p);
+        if (nib < 0) {
+            return -1;
+        }
+        if (hi < 0) {
+            hi = nib;
+        } else {
+            if (n >= cap) {
+                return -1;
+            }
+            out[n++] = (uint8_t)((hi << 4) | nib);
+            hi = -1;
+        }
+    }
+    if (hi >= 0) {
+        return -1;      /* odd number of hex digits */
+    }
+    *out_len = n;
+    return 0;
+}
+
+/* Full MAC address (12 hex digits) converted to the little-endian wire order. */
+static int parse_mac_le(const char *text, uint8_t out[6])
+{
+    uint8_t be[6];
+    char norm[12];
+    size_t n = 0;
+
+    for (const char *p = text; *p != '\0'; ++p) {
+        if (*p == ':' || *p == '-' || *p == '.' || isspace((unsigned char)*p)) {
+            continue;
+        }
+        if (!isxdigit((unsigned char)*p) || n >= sizeof(norm)) {
+            return -1;
+        }
+        norm[n++] = *p;
+    }
+    if (n != 12U) {
+        return -1;
+    }
+    for (size_t i = 0; i < 6U; ++i) {
+        int hi = hex_nibble((unsigned char)norm[i * 2U]);
+        int lo = hex_nibble((unsigned char)norm[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) {
+            return -1;
+        }
+        be[i] = (uint8_t)((hi << 4) | lo);
+    }
+    for (size_t i = 0; i < 6U; ++i) {
+        out[i] = be[5U - i];        /* little-endian on the wire */
+    }
+    return 0;
+}
+
+/* Reads the next integer of a "a:b:c" specification and advances the cursor. */
+static int parse_next_int(const char **cursor, long *value)
+{
+    char *end = NULL;
+    long v = strtol(*cursor, &end, 0);
+
+    if (end == *cursor) {
+        return -1;
+    }
+    *value = v;
+    if (*end == ':' || *end == ',' || *end == ' ') {
+        *cursor = end + 1;
+    } else {
+        *cursor = end;
+    }
+    return 0;
+}
+
+static const uint8_t CMD_VERSION_REQ[] = {CMD_ID_VERSION};
+static const uint8_t CMD_RFSDK_STATUS_REQ[] = {CMD_ID_RFSDK, 0x00U};
+static const uint8_t CMD_UART_STATUS_REQ[] = {CMD_ID_UART, 0x00U};
+static const uint8_t CMD_GPIOEVT_QUERY_REQ[] = {CMD_ID_GPIOEVT, GPIOEVT_OP_QUERY};
+static const uint8_t CMD_GPIOEVT_CLEAR_REQ[] = {CMD_ID_GPIOEVT, GPIOEVT_OP_CLEAR};
+static const uint8_t CMD_TXADV_STOP_REQ[] = {CMD_ID_TXADV, 0x00U};
+static const uint8_t CMD_TXADV_STATUS_REQ[] = {CMD_ID_TXADV, 0x0FU};
+static const uint8_t CMD_CONN_STATUS_REQ[] = {CMD_ID_CONN, 0x00U};
+static const uint8_t CMD_CONN_CLOSE_REQ[] = {CMD_ID_CONN, 0x03U};
+static const uint8_t CMD_CONN_DISCOVER_REQ[] = {CMD_ID_CONN, 0x05U};
 
 static void on_signal(int signo)
 {
@@ -507,6 +663,173 @@ static void handle_command_response(const uint8_t *frame, size_t payload_len)
         }
         break;
     }
+    case CMD_ID_GPIO:
+        if (data_len >= 4U) {
+            printf(
+                "GPIO status=%s(0x%02X) op=%u pin=0x%02X value=%u caps=0x%02X\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                (unsigned int)data[0],
+                (unsigned int)data[1],
+                (unsigned int)data[2],
+                (unsigned int)data[3]
+            );
+        } else {
+            printf("GPIO status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        }
+        break;
+    case CMD_ID_LED:
+        printf("LED status=%s(0x%02X) data=", cmd_status_name(id), (unsigned int)id);
+        print_hex(data, data_len);
+        putchar('\n');
+        break;
+    case CMD_ID_UART:
+        if (data_len >= 6U) {
+            unsigned int baud = (unsigned int)data[3] | ((unsigned int)data[4] << 8U)
+                              | ((unsigned int)data[5] << 16U);
+            printf(
+                "UART status=%s(0x%02X) op=%u index=%u count=%u baud=%u\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                (unsigned int)data[0],
+                (unsigned int)data[1],
+                (unsigned int)data[2],
+                baud
+            );
+        } else {
+            printf("UART status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        }
+        break;
+    case CMD_ID_RFSDK:
+        if (data_len >= 6U) {
+            printf(
+                "RFSDK status=%s(0x%02X) power=0x%02X cap=0x%02X ch=%u,%u,%u coded_min=%u x10ms\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                (unsigned int)data[0],
+                (unsigned int)data[1],
+                (unsigned int)data[2],
+                (unsigned int)data[3],
+                (unsigned int)data[4],
+                (unsigned int)data[5]
+            );
+        } else {
+            printf("RFSDK status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        }
+        break;
+    case CMD_ID_VERSION:
+        if (data_len >= 6U) {
+            printf(
+                "VERSION fw=%u.%u hw=0x%02X cert=%u struct=%u sdk=%u.%u.%u\n",
+                (unsigned int)((id >> 4U) & 0x0FU),
+                (unsigned int)(id & 0x0FU),
+                (unsigned int)data[0],
+                (unsigned int)data[1],
+                (unsigned int)data[2],
+                (unsigned int)data[3],
+                (unsigned int)data[4],
+                (unsigned int)data[5]
+            );
+        } else {
+            printf(
+                "VERSION fw=%u.%u\n",
+                (unsigned int)((id >> 4U) & 0x0FU),
+                (unsigned int)(id & 0x0FU)
+            );
+        }
+        break;
+    case CMD_ID_TXADV:
+        if (data_len >= 4U) {
+            unsigned int interval = (unsigned int)data[1] | ((unsigned int)data[2] << 8U);
+            printf(
+                "TXADV status=%s(0x%02X) running=%u interval=%u adv_len=%u\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                (unsigned int)data[0],
+                interval,
+                (unsigned int)data[3]
+            );
+        } else {
+            printf("TXADV status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        }
+        break;
+    case CMD_ID_CONN:
+        if ((id & 0x80U) != 0U) {
+            /* spontaneous discovery / read result */
+            printf("CONN event sub=%u data=", (unsigned int)(id & 0x7FU));
+            print_hex(data, data_len);
+            if (payload_len > 0U) {
+                print_hex(&frame[11], payload_len);
+            }
+            putchar('\n');
+        } else if (data_len >= 4U) {
+            static const char *const states[] = {"idle", "connecting", "connected"};
+            unsigned int state = (unsigned int)data[0];
+            printf(
+                "CONN status=%s(0x%02X) state=%s peer_type=%u\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                state < 3U ? states[state] : "?",
+                (unsigned int)data[1]
+            );
+        } else {
+            printf("CONN status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        }
+        break;
+    case CMD_ID_TXDATA:
+        printf("TXDATA status=%s(0x%02X)\n", cmd_status_name(id), (unsigned int)id);
+        break;
+    case CMD_ID_RXDATA: {
+        unsigned int handle = data_len >= 2U
+            ? (unsigned int)data[0] | ((unsigned int)data[1] << 8U) : 0U;
+        unsigned int vlen = data_len >= 3U ? (unsigned int)data[2] : 0U;
+        printf(
+            "RXDATA %s handle=0x%04X len=%u data=",
+            frame[2] == 0x1DU ? "indication" : "notification",
+            handle,
+            vlen
+        );
+        if (data_len > 3U) {
+            print_hex(&data[3], data_len - 3U);
+        }
+        if (payload_len > 0U) {
+            print_hex(&frame[11], payload_len);
+        }
+        putchar('\n');
+        break;
+    }
+    case CMD_ID_GPIOEVT:
+        if ((id & GPIOEVT_EVENT_FLAG) != 0U && data_len >= 6U) {
+            unsigned int pin_id = data[0];
+            unsigned int level = data[1];
+            unsigned int ts = (unsigned int)data[2] | ((unsigned int)data[3] << 8U)
+                            | ((unsigned int)data[4] << 16U) | ((unsigned int)data[5] << 24U);
+            printf(
+                "GPIOEVT pin=0x%02X %s level=%u t=%u ms\n",
+                pin_id,
+                level ? "rising" : "falling",
+                level,
+                ts
+            );
+        } else {
+            unsigned int mask = 0U;
+            if (g_last_gpioevt_op == GPIOEVT_OP_QUERY || g_last_gpioevt_op == GPIOEVT_OP_CLEAR) {
+                if (data_len >= 4U) {
+                    mask = (unsigned int)data[0] | ((unsigned int)data[1] << 8U)
+                         | ((unsigned int)data[2] << 16U) | ((unsigned int)data[3] << 24U);
+                }
+            } else if (data_len >= 5U) {
+                mask = (unsigned int)data[1] | ((unsigned int)data[2] << 8U)
+                     | ((unsigned int)data[3] << 16U) | ((unsigned int)data[4] << 24U);
+            }
+            printf(
+                "GPIOEVT status=%s(0x%02X) armed=0x%08X\n",
+                cmd_status_name(id),
+                (unsigned int)id,
+                mask
+            );
+        }
+        break;
     default:
         printf(
             "CMD cmd=0x%02X id=0x%02X data=",
@@ -622,10 +945,50 @@ static void usage(const char *progname)
 {
     fprintf(
         stderr,
-        "Usage: %s [--battery] [serial_port [baudrate [mac_filter]]]\n"
+        "Usage: %s [options] [serial_port [baudrate [mac_filter]]]\n"
         "mac_filter accepts a full MAC or a partial OUI/prefix, for example A4:C1:38 or A4C13812\n"
-        "--battery queries the current VBAT/3V3 rail and chip temperature, then exits (mac_filter is not used)\n"
-        "Defaults: serial_port=/dev/ttyUSB0 baudrate=2000000\n",
+        "Defaults: serial_port=/dev/ttyUSB0 baudrate=2000000\n"
+        "\n"
+        "Scanning:\n"
+        "  --no-scan                 do not start the BLE scan (use with the commands below)\n"
+        "\n"
+        "Generic:\n"
+        "  --cmd HEX                 send a raw command, e.g. --cmd 060700 (repeatable)\n"
+        "  --version                 read the HW/FW/SDK versions\n"
+        "  --rfsdk                   read the RF/SDK status\n"
+        "  --uart-status             read the UART status\n"
+        "  --led OP:MASK:VALUE       board LED mask test (CMD_ID_LED)\n"
+        "  --battery                 query the VBAT/3V3 rail and the chip temperature, then exit\n"
+        "\n"
+        "GPIO (CMD_ID_GPIO):\n"
+        "  --gpio-read PIN           read a pin level\n"
+        "  --gpio-write PIN:VAL      write a LED pin\n"
+        "  --gpio-toggle PIN         toggle a LED pin\n"
+        "  --gpio-analog PIN         12-bit ADC read (TB-03F-KIT: PB6 = 0x16)\n"
+        "  --gpio-rgb R:G:B          set RGB1 (R = PC3, G = PC4, B = PC2)\n"
+        "  --gpio-pwm PIN:DUTY       LED brightness through the hardware PWM\n"
+        "  --gpio-pwm-off PIN        stop the PWM\n"
+        "\n"
+        "GPIO edge events (CMD_ID_GPIOEVT):\n"
+        "  --gpioevt PIN             arm the both-edge interrupt on a pin and print the events\n"
+        "  --gpioevt-off PIN         disarm a pin\n"
+        "  --gpioevt-clear           disarm every pin\n"
+        "  --gpioevt-query           print the armed-pin bitmap\n"
+        "\n"
+        "BLE central / GATT (CMD_ID_CONN, CMD_ID_TXDATA):\n"
+        "  --txadv PHY:INT:HEX       transmit a custom advertisement\n"
+        "                            (PHY 0 = legacy 1M, 1 = extended 1M, 2 = extended Coded)\n"
+        "  --txadv-stop              stop the custom advertisement\n"
+        "  --txadv-status            query the custom advertisement state\n"
+        "  --conn MAC[:TYPE[:PHY]]   open a connection (TYPE 0 = public, 1 = random; PHY 0 = 1M, 1 = Coded)\n"
+        "  --conn-close              disconnect / cancel a pending connection\n"
+        "  --conn-status             query the connection state\n"
+        "  --conn-discover           start the GATT service discovery\n"
+        "  --conn-read HANDLE        read a characteristic\n"
+        "  --conn-write H:HEX        write a characteristic with response\n"
+        "  --txdata H:HEX            ATT Write Command (Write Without Response)\n"
+        "\n"
+        "  -h, --help                this help\n",
         progname
     );
 }
@@ -642,16 +1005,358 @@ int main(int argc, char **argv)
     size_t white_list_cmd_len = 0;
     size_t positional_count = 0;
     bool battery_query = false;
+    bool no_scan = false;
     bool synced = false;
     int fd;
 
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+        const char *arg = argv[i];
+        uint8_t payload[MAX_ACTION_LEN];
+        size_t payload_len = 0;
+        long v1 = 0;
+        long v2 = 0;
+        const char *cursor = NULL;
+
+        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             usage(argv[0]);
             return 0;
         }
-        if (strcmp(argv[i], "--battery") == 0) {
+        if (strcmp(arg, "--battery") == 0) {
             battery_query = true;
+            continue;
+        }
+        if (strcmp(arg, "--no-scan") == 0) {
+            no_scan = true;
+            continue;
+        }
+        if (strcmp(arg, "--cmd") == 0) {
+            if (i + 1 >= argc
+                    || parse_hex_bytes(argv[i + 1], payload, sizeof(payload), &payload_len) < 0
+                    || add_action(payload, payload_len) < 0) {
+                fprintf(stderr, "Invalid --cmd payload\n");
+                return 1;
+            }
+            ++i;
+            continue;
+        }
+        if (strcmp(arg, "--version") == 0) {
+            if (add_action(CMD_VERSION_REQ, sizeof(CMD_VERSION_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--rfsdk") == 0) {
+            if (add_action(CMD_RFSDK_STATUS_REQ, sizeof(CMD_RFSDK_STATUS_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--uart-status") == 0) {
+            if (add_action(CMD_UART_STATUS_REQ, sizeof(CMD_UART_STATUS_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--led") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0 || parse_next_int(&cursor, &v2) < 0) {
+                fprintf(stderr, "Invalid --led OP:MASK:VALUE\n");
+                return 1;
+            }
+            {
+                long v3 = 0;
+                if (parse_next_int(&cursor, &v3) < 0) {
+                    v3 = 0;
+                }
+                payload[0] = CMD_ID_LED;
+                payload[1] = (uint8_t)v1;
+                payload[2] = (uint8_t)v2;
+                payload[3] = (uint8_t)v3;
+                if (add_action(payload, 4U) < 0) {
+                    return 1;
+                }
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpio-read") == 0 || strcmp(arg, "--gpio-toggle") == 0
+                || strcmp(arg, "--gpio-analog") == 0 || strcmp(arg, "--gpio-pwm-off") == 0) {
+            uint8_t op = (strcmp(arg, "--gpio-read") == 0) ? GPIO_OP_READ
+                       : (strcmp(arg, "--gpio-toggle") == 0) ? GPIO_OP_TOGGLE
+                       : (strcmp(arg, "--gpio-analog") == 0) ? GPIO_OP_ANALOG
+                       : GPIO_OP_PWM_OFF;
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0) {
+                fprintf(stderr, "Invalid pin for %s\n", arg);
+                return 1;
+            }
+            payload[0] = CMD_ID_GPIO;
+            payload[1] = op;
+            payload[2] = (uint8_t)v1;
+            if (add_action(payload, 3U) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpio-write") == 0 || strcmp(arg, "--gpio-pwm") == 0) {
+            uint8_t op = (strcmp(arg, "--gpio-write") == 0) ? GPIO_OP_WRITE : GPIO_OP_PWM;
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0 || parse_next_int(&cursor, &v2) < 0) {
+                fprintf(stderr, "Invalid PIN:VALUE for %s\n", arg);
+                return 1;
+            }
+            payload[0] = CMD_ID_GPIO;
+            payload[1] = op;
+            payload[2] = (uint8_t)v1;
+            payload[3] = (uint8_t)v2;
+            if (op == GPIO_OP_WRITE) {
+                if (add_action(payload, 4U) < 0) {
+                    return 1;
+                }
+            } else {
+                payload[4] = 0xE8U;     /* period 1000 us */
+                payload[5] = 0x03U;
+                if (add_action(payload, 6U) < 0) {
+                    return 1;
+                }
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpio-rgb") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0 || parse_next_int(&cursor, &v2) < 0) {
+                fprintf(stderr, "Invalid R:G:B for --gpio-rgb\n");
+                return 1;
+            }
+            {
+                long b = 0;
+                if (parse_next_int(&cursor, &b) < 0) {
+                    b = 0;
+                }
+                payload[0] = CMD_ID_GPIO;
+                payload[1] = GPIO_OP_RGB;
+                payload[2] = PIN_RGB_GREEN;
+                payload[3] = (uint8_t)v1;   /* R */
+                payload[4] = (uint8_t)v2;   /* G */
+                payload[5] = (uint8_t)b;    /* B */
+                if (add_action(payload, 6U) < 0) {
+                    return 1;
+                }
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpioevt") == 0 || strcmp(arg, "--gpioevt-off") == 0) {
+            uint8_t op = (strcmp(arg, "--gpioevt") == 0) ? GPIOEVT_OP_ENABLE : GPIOEVT_OP_DISABLE;
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0) {
+                fprintf(stderr, "Invalid pin for %s\n", arg);
+                return 1;
+            }
+            payload[0] = CMD_ID_GPIOEVT;
+            payload[1] = op;
+            payload[2] = (uint8_t)v1;
+            g_last_gpioevt_op = op;
+            if (add_action(payload, 3U) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpioevt-query") == 0) {
+            g_last_gpioevt_op = GPIOEVT_OP_QUERY;
+            if (add_action(CMD_GPIOEVT_QUERY_REQ, sizeof(CMD_GPIOEVT_QUERY_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--gpioevt-clear") == 0) {
+            g_last_gpioevt_op = GPIOEVT_OP_CLEAR;
+            if (add_action(CMD_GPIOEVT_CLEAR_REQ, sizeof(CMD_GPIOEVT_CLEAR_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--txadv") == 0) {
+            size_t data_len = 0;
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0 || parse_next_int(&cursor, &v2) < 0) {
+                fprintf(stderr, "Invalid PHY:INTERVAL:HEXDATA for --txadv\n");
+                return 1;
+            }
+            if (parse_hex_bytes(cursor, payload, sizeof(payload), &data_len) < 0
+                    || data_len > 31U) {
+                fprintf(stderr, "Invalid advertisement data for --txadv\n");
+                return 1;
+            }
+            payload[0] = CMD_ID_TXADV;
+            payload[1] = 0x01U;
+            payload[2] = (uint8_t)v1;           /* phy */
+            payload[3] = (uint8_t)v2;           /* interval lo */
+            payload[4] = (uint8_t)(v2 >> 8);    /* interval hi */
+            payload[5] = (uint8_t)data_len;
+            /* payload[6..] already holds the data parsed at the head of the buffer */
+            memmove(&payload[6], payload, data_len);
+            if (add_action(payload, 6U + data_len) < 0) {
+                fprintf(stderr, "--txadv payload too long\n");
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--txadv-stop") == 0) {
+            if (add_action(CMD_TXADV_STOP_REQ, sizeof(CMD_TXADV_STOP_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--txadv-status") == 0) {
+            if (add_action(CMD_TXADV_STATUS_REQ, sizeof(CMD_TXADV_STATUS_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn") == 0) {
+            uint8_t mac[6];
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            {
+                /* the MAC comes first, then optional :TYPE and :PHY */
+                char mac_text[20];
+                size_t mac_len = 0;
+                while (*cursor != '\0' && *cursor != ':' && mac_len < sizeof(mac_text) - 1U) {
+                    mac_text[mac_len++] = *cursor++;
+                }
+                mac_text[mac_len] = '\0';
+                if (parse_mac_le(mac_text, mac) < 0) {
+                    fprintf(stderr, "Invalid MAC for --conn: %s\n", mac_text);
+                    return 1;
+                }
+                v1 = 0;
+                v2 = 0;
+                if (*cursor == ':') {
+                    ++cursor;
+                    if (parse_next_int(&cursor, &v1) < 0) {
+                        v1 = 0;
+                    }
+                    if (*cursor == ':') {
+                        ++cursor;
+                        if (parse_next_int(&cursor, &v2) < 0) {
+                            v2 = 0;
+                        }
+                    }
+                }
+            }
+            payload[0] = CMD_ID_CONN;
+            payload[1] = (v2 != 0) ? 0x02U : 0x01U;     /* op 2 = Coded, op 1 = 1M */
+            payload[2] = (uint8_t)v1;                   /* address type */
+            memcpy(&payload[3], mac, 6);
+            if (add_action(payload, 9U) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn-close") == 0) {
+            if (add_action(CMD_CONN_CLOSE_REQ, sizeof(CMD_CONN_CLOSE_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn-status") == 0) {
+            if (add_action(CMD_CONN_STATUS_REQ, sizeof(CMD_CONN_STATUS_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn-discover") == 0) {
+            if (add_action(CMD_CONN_DISCOVER_REQ, sizeof(CMD_CONN_DISCOVER_REQ)) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn-read") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0) {
+                fprintf(stderr, "Invalid handle for --conn-read\n");
+                return 1;
+            }
+            payload[0] = CMD_ID_CONN;
+            payload[1] = 0x06U;
+            payload[2] = 0;
+            payload[3] = (uint8_t)v1;
+            payload[4] = (uint8_t)(v1 >> 8);
+            if (add_action(payload, 5U) < 0) {
+                return 1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--conn-write") == 0 || strcmp(arg, "--txdata") == 0) {
+            size_t data_len = 0;
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            cursor = argv[++i];
+            if (parse_next_int(&cursor, &v1) < 0) {
+                fprintf(stderr, "Invalid HANDLE:HEXDATA for %s\n", arg);
+                return 1;
+            }
+            if (*cursor == ':') {
+                ++cursor;
+            }
+            if (parse_hex_bytes(cursor, payload, sizeof(payload), &data_len) < 0 || data_len > 20U) {
+                fprintf(stderr, "Invalid data for %s\n", arg);
+                return 1;
+            }
+            memmove(&payload[4], payload, data_len);
+            payload[0] = (strcmp(arg, "--txdata") == 0) ? CMD_ID_TXDATA : CMD_ID_CONN;
+            if (payload[0] == CMD_ID_CONN) {
+                /* op 7 = write with response: [op, 0, handle_lo, handle_hi, len, data] */
+                memmove(&payload[6], &payload[4], data_len);
+                payload[1] = 0x07U;
+                payload[2] = 0;
+                payload[3] = (uint8_t)v1;
+                payload[4] = (uint8_t)(v1 >> 8);
+                payload[5] = (uint8_t)data_len;
+                if (add_action(payload, 6U + data_len) < 0) {
+                    return 1;
+                }
+            } else {
+                /* [handle_lo, handle_hi, len, data] */
+                payload[1] = (uint8_t)v1;
+                payload[2] = (uint8_t)(v1 >> 8);
+                payload[3] = (uint8_t)data_len;
+                if (add_action(payload, 4U + data_len) < 0) {
+                    return 1;
+                }
+            }
             continue;
         }
         if (positional_count >= sizeof(positionals) / sizeof(positionals[0])) {
@@ -765,9 +1470,16 @@ int main(int argc, char **argv)
     }
 
     printf("Listening on %s at %u baud\n", port, baudrate);
-    printf("Sending INFO, CLRM and START_SCAN (BLE 1M + Coded PHY); press Ctrl-C to stop\n");
+    if (no_scan) {
+        printf("Scan not started (--no-scan); press Ctrl-C to stop\n");
+    } else {
+        printf("Sending INFO, CLRM and START_SCAN (BLE 1M + Coded PHY); press Ctrl-C to stop\n");
+    }
     if (mac_filter != NULL) {
         printf("Installing white-list MAC filter: %s\n", mac_filter);
+    }
+    if (g_action_count > 0) {
+        printf("Sending %d command(s) requested on the command line\n", g_action_count);
     }
     fflush(stdout);
 
@@ -786,7 +1498,14 @@ int main(int argc, char **argv)
         close(fd);
         return 1;
     }
-    if (send_command_with_settle(fd, CMD_START_SCAN, sizeof(CMD_START_SCAN)) < 0) {
+    for (int i = 0; i < g_action_count; ++i) {
+        if (send_command_with_settle(fd, g_actions[i], g_action_len[i]) < 0) {
+            fprintf(stderr, "send command %d failed\n", i);
+            close(fd);
+            return 1;
+        }
+    }
+    if (!no_scan && send_command_with_settle(fd, CMD_START_SCAN, sizeof(CMD_START_SCAN)) < 0) {
         perror("send START_SCAN");
         close(fd);
         return 1;
@@ -843,9 +1562,9 @@ int main(int argc, char **argv)
         }
     }
 
-    if (send_command_with_settle(fd, CMD_STOP_SCAN, sizeof(CMD_STOP_SCAN)) < 0) {
+    if (!no_scan && send_command_with_settle(fd, CMD_STOP_SCAN, sizeof(CMD_STOP_SCAN)) < 0) {
         perror("send STOP_SCAN");
-    } else {
+    } else if (!no_scan) {
         for (int i = 0; i < 4; ++i) {
             struct pollfd pfd = {
                 .fd = fd,

@@ -24,8 +24,53 @@ enum {
 	CMD_ID_CONN		= 0x0c, // BLE ACL connection (central role): connect/disconnect/status
 	CMD_ID_TXDATA	= 0x0d, // send ATT Write Command to connected peer
 	CMD_ID_RXDATA	= 0x0e, // (async) ATT data received from connected peer
-	CMD_ID_VBAT		= 0x0f  // read current VBAT / 3V3 rail voltage
+	CMD_ID_VBAT		= 0x0f, // read current VBAT / 3V3 rail voltage
+	CMD_ID_GPIOEVT	= 0x10  // GPIO edge events: arm/disarm + spontaneous notifications
 } CMD_ID_KEYS;
+
+/* data[0] of a CMD_STATUS_ARGS response that tells the host "I received a frame
+   whose CRC did not match" (data[1] = received length).  It lets the host tell a
+   lost/merged frame apart from a firmware that stopped answering. */
+#define CMD_OP_BAD_FRAME	0xfe
+
+/* TB-03F-KIT LED bitmap, shared by the firmware status indicators and the host
+   manual control (CMD_ID_GPIO op 2/3/5/6/8, CMD_ID_LED).  The bit order is the
+   one reported in data[3] of the CMD_ID_GPIO response (see the README). */
+enum {
+	LED_MASK_BLUE	= BIT(0),	// PC2 / PWM0
+	LED_MASK_RED	= BIT(1),	// PC3 / PWM1
+	LED_MASK_GREEN	= BIT(2),	// PC4 / PWM2
+	LED_MASK_YELLOW	= BIT(3),	// PB4 / PWM4
+	LED_MASK_WHITE	= BIT(4),	// PB5 / PWM5
+	LED_MASK_ALL	= LED_MASK_BLUE | LED_MASK_RED | LED_MASK_GREEN | LED_MASK_YELLOW | LED_MASK_WHITE
+};
+
+/* The five LEDs are shared between the status indicators and the host.  As soon
+   as the host takes manual control of a LED (CMD_ID_GPIO write/toggle/PWM), the
+   firmware must stop driving that pin: otherwise the two fight over it, the
+   host state gets overwritten by the next status blink and a status indicator
+   (e.g. the white "command received" LED) stays latched on.
+   Returns 1 when the firmware may drive the given LEDs. */
+int led_status_allowed(u8 led_mask);
+
+/* ------------------------- black box / stall report -------------------------
+ * A few words between the application RAM and the stack (outside .bss, so they
+ * survive a reset) that the main loop keeps updated.  When the firmware wedges,
+ * the watchdog resets the chip and the last values are sent to the host as
+ * CMD_ID_PRNT frames, which tells exactly where it stopped. */
+void bb_init(void);
+void bb_alive(void);
+void bb_checkpoint(u32 code);
+void bb_report(void);
+void bb_report_task(void);
+void bb_isr_enter(void);
+void bb_isr_exit(void);
+void sched_timer_guard(void);
+
+/* Phase markers written into the black box, so a post-mortem report says which
+   part of the main loop was running (the ISR phase has its own word). */
+#define BB_PHASE_SDK	0x00020000u	/* entering blc_sdk_main_loop()  */
+#define BB_PHASE_SCAN	0x00030000u	/* entering scan_task()          */
 
 #define MAC_MAX_SCAN_LIST	64
 
@@ -48,6 +93,15 @@ extern mac_list_t mac_list;
 #define HEAD_CRC_ADD_LEN	13
 
 void scan_task(void);
+
+// CMD_ID_GPIOEVT: called from the application IRQ handler for every GPIO interrupt.
+void scanning_gpio_irq_handler(void);
+
+#if GATT_ENABLE
+// Called from ble.c for every incoming ATT packet of the master role.
+void scanning_gatt_callback(u16 conn_handle, u8 opcode, u16 att_handle, u16 data_len, u8 *data);
+#endif
+
 void ble_ext_adv_callback(u8 *p);
 void ble_adv_callback(u8 *p);
 void ble_le_periodic_adv_callback(u8 *p);

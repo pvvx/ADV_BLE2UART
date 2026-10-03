@@ -42,10 +42,22 @@ static u8 primary_scan_channels[3] = {37, 38, 39};
 static u8 runtime_rf_power = MY_RF_POWER;
 static u8 runtime_rf_cap = 0xff;
 
-// Extended advertising and ACL central role modules are NOT initialized:
-// each pulls ~4-8 KB of hidden library BSS from liblt_8258.a, leaving
-// insufficient stack space (<1 KB). CMD_ID_TXADV and CMD_ID_CONN connect
-// return CMD_STATUS_DENIED in this build.
+/* ---------------------------------------------------------------------------
+ * CMD_ID_TXADV - transmit a custom advertisement
+ *
+ * The LEGACY advertising API (blc_ll_setAdvParam / setAdvData / setAdvEnable)
+ * is used: only legacy 1M PDUs can be transmitted ("phy" must be 0).  The
+ * extended advertising API of the V4.0.2.5 library wedges the RF interrupt
+ * handler in the configs tried, so it is not used here.
+ * ------------------------------------------------------------------------- */
+#define TXADV_ADV_DATA_LEN  31   /* legacy advertising payload limit */
+
+#if TXADV_ENABLE
+/* The legacy advertising module keeps the pointer passed to setAdvData, so the
+   data has to stay valid while advertising is enabled. */
+static u8 txadv_advData[TXADV_ADV_DATA_LEN];
+static u8 txadv_enabled;
+#endif
 
 // Define the Index list of persistent data used by tinyFlash
 enum
@@ -129,7 +141,6 @@ u8 set_baud_rate_index(u8 baudrate_index) {
     return 0;
 }
 
-__attribute__((optimize("-Os")))
 // Callbacks into scanning.c to push async events into ad_fifo
 extern void scanning_conn_event_cb(u8 state, u16 handle, u16 interval_125us, u8 peer_addr_type, u8 *peer_addr);
 
@@ -219,9 +230,23 @@ void conn_peer_addr_get(u8 *out) { memcpy(out, acl_peer_addr, 6); }
 u16 conn_interval_get(void)      { return acl_conn_interval; }
 
 ble_sts_t conn_start(u8 peer_addr_type, u8 *peer_addr, u8 init_phy) {
-	(void)peer_addr_type; (void)peer_addr; (void)init_phy;
-	// ACL central role module not initialized — CMD_ID_CONN connect disabled in this build.
-	return (ble_sts_t)1; // BLE_ERR_CMD_DISALLOWED
+	ble_sts_t st;
+
+	/* Only the legacy initiating module is initialized: it is mutually
+	   exclusive with the extended initiating module, and the scan-only
+	   configuration that runs on V4.0.2.5 uses it.  Legacy initiating
+	   connects on the 1M PHY only. */
+	if(init_phy)
+		return (ble_sts_t)LL_ERR_INVALID_PARAMETER;
+
+	st = blc_ll_createConnection(SCAN_INTERVAL_100MS, SCAN_WINDOW_100MS,
+			INITIATE_FP_ADV_SPECIFY, peer_addr_type, peer_addr,
+			OWN_ADDRESS_PUBLIC,
+			CONN_INTERVAL_10MS, CONN_INTERVAL_10MS,
+			0, CONN_TIMEOUT_4S, 0, 0xFFFF);
+	if(st == BLE_SUCCESS)
+		acl_conn_state = 1;
+	return st;
 }
 
 ble_sts_t conn_stop(void) {
@@ -232,7 +257,89 @@ ble_sts_t conn_stop(void) {
 	return BLE_SUCCESS;
 }
 
-__attribute__((optimize("-Os")))
+// GATT client (CMD_ID_TXDATA, CMD_ID_RXDATA, CMD_ID_CONN ops 5..10).
+// Only compiled when GATT_ENABLE is set: the L2CAP/ATT/GATT host stack does not
+// fit in SRAM together with the extended advertising module (CMD_ID_TXADV).
+#if GATT_ENABLE
+
+/* Incoming ATT packet from the peer (master role). */
+static int gatt_data_handler(u16 connHandle, u8 *pkt) {
+	rf_packet_att_t *pAtt = (rf_packet_att_t *)pkt;
+	/* l2capLen counts the opcode (1) + handle (2) + value */
+	u16 len = (pAtt->l2capLen > 3) ? (u16)(pAtt->l2capLen - 3) : 0;
+
+	scanning_gatt_callback(connHandle, pAtt->opcode, pAtt->handle, len, pAtt->dat);
+
+	/* An indication must be confirmed at ATT level. */
+	if(pAtt->opcode == ATT_OP_HANDLE_VALUE_IND)
+		blc_gatt_pushConfirm(connHandle);
+	return 0;
+}
+
+static ble_sts_t gatt_ready(void) {
+	if(acl_conn_state != 2)
+		return (ble_sts_t)LL_ERR_CONNECTION_NOT_ESTABLISH;
+	return BLE_SUCCESS;
+}
+
+ble_sts_t conn_gatt_write_cmd(u16 att_handle, const u8 *data, u8 len) {
+	ble_sts_t st = gatt_ready();
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushWriteCommand(acl_conn_handle, att_handle, (u8 *)data, (int)len);
+}
+
+ble_sts_t conn_gatt_read(u16 att_handle) {
+	ble_sts_t st = gatt_ready();
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushReadRequest(acl_conn_handle, att_handle);
+}
+
+ble_sts_t conn_gatt_write(u16 att_handle, const u8 *data, u8 len) {
+	ble_sts_t st = gatt_ready();
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushWriteRequest(acl_conn_handle, att_handle, (u8 *)data, (int)len);
+}
+
+ble_sts_t conn_gatt_disc_services(void) {
+	ble_sts_t st = gatt_ready();
+	u16 uuid = GATT_UUID_PRIMARY_SERVICE;
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushReadByGroupTypeRequest(acl_conn_handle, 0x0001, 0xFFFF,
+			(u8 *)&uuid, sizeof(uuid));
+}
+
+ble_sts_t conn_gatt_disc_chars(u16 start, u16 end) {
+	ble_sts_t st = gatt_ready();
+	u16 uuid = GATT_UUID_CHARACTER;
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushReadByTypeRequest(acl_conn_handle, start, end,
+			(u8 *)&uuid, sizeof(uuid));
+}
+
+ble_sts_t conn_gatt_disc_descrs(u16 start, u16 end) {
+	ble_sts_t st = gatt_ready();
+	if(st != BLE_SUCCESS)
+		return st;
+	return blc_gatt_pushFindInformationRequest(acl_conn_handle, start, end);
+}
+
+ble_sts_t conn_gatt_set_mtu(u16 mtu) {
+	if(mtu > ATT_MTU_MASTER_RX_MAX_SIZE)
+		mtu = ATT_MTU_MASTER_RX_MAX_SIZE;
+	if(mtu < 23)	/* default ATT MTU */
+		mtu = 23;
+	return blc_att_setMasterRxMTUSize(mtu);
+}
+
+#endif /* GATT_ENABLE */
+
+// NOTE: no __attribute__((optimize(...))) here: see the toolchain pitfall note
+// in scanning.c / the README (it corrupts switch jump tables).
 void init_ble(void) {
 	////////////////// BLE stack initialization Begin //////////////////////
 #if 1
@@ -253,6 +360,10 @@ void init_ble(void) {
 
 	blc_ll_initStandby_module(mac_public); //must
 
+	bb_checkpoint(0x00050001u);
+
+	/* Extended scanning + legacy initiating modules: the scanner and the
+	   CMD_ID_CONN central role need them. */
 	blc_ll_initExtendedScanning_module();	//extended scan module
 	blc_ll_initLegacyInitiating_module();  //initiating module (blc_ll_createConnection API)
 
@@ -267,6 +378,38 @@ void init_ble(void) {
 	   the omission went unnoticed on 1M-only scans, which is why this was never
 	   caught here).  rf_drv_ble_init() alone is NOT enough. */
 	blc_ll_init2MPhyCodedPhy_feature();	//enable Coded PHY/2M PHY feature
+	bb_checkpoint(0x00050002u);
+
+	/* CMD_ID_TXADV: the LEGACY advertising module, required by
+	   blc_ll_setAdvParam/Data/Enable ("phy" of CMD_ID_TXADV is then only
+	   0 = 1M ADV_NONCONN_IND).
+
+	   WARNING - measured on the TB-03F-KIT, native V4.0.2.5 library, with an
+	   interleaved A/B (three runs each, CMD_ID_SCAN mode 3, 15 s):
+
+	     build                                          Coded scan
+	     --------------------------------------------   ----------
+	     this line removed (module not referenced)      3/3 OK
+	     this line present (module may never be used)   0/3 OK
+
+	   The failing runs die on the first Coded advertisement: the host sees the
+	   boot report frames instead of reports and the scan-stop command is not
+	   answered.  It is not the call itself (it is not executed unless TXADV is
+	   started) but what referencing it pulls into the link: 2308 bytes of
+	   library BSS (`_ram_use_end_` 0x84D928 -> 0x84E22C), which re-orders the
+	   RAM layout.  The Coded-PHY scan of this library is sensitive to it; a
+	   2308 byte application array changes nothing.
+
+	   Consequence: CMD_ID_TXADV (legacy advertising) and the Coded-PHY scan
+	   cannot both be had on V4.0.2.5.  TXADV_ENABLE=0 keeps the full 1M + Coded
+	   scan (and makes 0x0B answer CMD_STATUS_DENIED); TXADV_ENABLE=1 keeps the
+	   legacy advertisement transmitter at the cost of the Coded-PHY scan.
+	   Scanning and TXADV also share the radio, so the command handlers stop one
+	   before starting the other (see scan_task() in scanning.c). */
+#if TXADV_ENABLE
+	blc_ll_initLegacyAdvertising_module();
+#endif
+	bb_checkpoint(0x00050003u);
 
 	/* NOTE: blc_ll_initPeriodicAdvertisingSynchronization_module() is NOT
 	   called here any more.  The reference configuration that works on
@@ -284,6 +427,16 @@ void init_ble(void) {
            V4.0.2.5 and the firmware stops (the ACL FIFOs are also required by
            blc_hci_registerControllerDataHandler() below). */
         blc_ll_initAclCentralRole_module();
+        /* The advertising role: advertising is a peripheral-role activity and
+           CMD_ID_TXADV (legacy advertising API) needs it - without the peripheral
+           role module blc_ll_setAdvEnable answers 0x0D (LIMITED_RESOURCES),
+           measured in ext_adv_test mode 2 vs mode 3.  Only needed (and only
+           initialised) when TXADV_ENABLE=1. */
+#if TXADV_ENABLE
+        blc_ll_initAclPeriphrRole_module();
+        blc_ll_initAclPeriphrTxFifo(app_acl_slvTxfifo, ACL_SLAVE_TX_FIFO_SIZE,
+                                    ACL_SLAVE_TX_FIFO_NUM, SLAVE_MAX_NUM);
+#endif
         blc_ll_setMaxConnectionNumber(MASTER_MAX_NUM, SLAVE_MAX_NUM);
         blc_ll_setAclConnMaxOctetsNumber(ACL_CONN_MAX_RX_OCTETS,
                                          ACL_MASTER_MAX_TX_OCTETS,
@@ -312,8 +465,15 @@ void init_ble(void) {
         blc_l2cap_initAclConnMasterMtuBuffer(mtu_m_rx_fifo, MTU_M_BUFF_SIZE_MAX, 0, 0);
         blc_att_setMasterRxMTUSize(ATT_MTU_MASTER_RX_MAX_SIZE);
 
+#if GATT_ENABLE
+        /* GATT client: the host stack routes every incoming ATT packet to this
+           handler once it is registered (GAP/L2CAP were set up above). */
+        blc_gatt_register_data_handler(gatt_data_handler);
+#endif
+
 	rf_set_power_level_index(MY_RF_POWER);
-	//start_adv_scanning(3, SCAN_INTERVAL_30MS);
+
+	bb_checkpoint(0x00050010u);
 }
 
 void set_coded_min_scan_window(u16 tdw) {
@@ -339,14 +499,94 @@ void set_runtime_rf_cap(u8 cap) {
 	rf_update_internal_cap(cap);
 }
 
+/* -------------------------------------------------------------------------
+ * System-Timer keep-alive
+ *
+ * With the native V4.0.2.5 library, blc_sdk_irq_handler() switches
+ * FLD_IRQ_SYSTEM_TIMER off as soon as g_scheMng+0x14 (the "who needs the System
+ * Timer" bitmap) becomes 0.  The scheduler tick then never returns, so the main
+ * loop stops for good: no more UART answers, LEDs frozen.
+ *
+ * Bit 19 (0x00080000) is masked out by tlkstk_sch_updateScheduler (mask
+ * 0xff87ffff), so the scheduler ignores it, but it keeps the field non-zero and
+ * therefore the timer interrupt alive.
+ * ------------------------------------------------------------------------- */
+/* SCHED_TIMER_REQ_OFFSET / SCHED_TIMER_KEEPALIVE_BIT and the g_scheMng extern now
+   live in ble.h because scanning.c (sched_timer_guard) uses them too. */
+
+#if TXADV_ENABLE
+static ble_sts_t txadv_do_params(u8 phy, u16 interval_units) {
+	u32 interval = interval_units;
+
+	bb_checkpoint(0x000c0001u);
+	/* The legacy API transmits legacy PDUs only: "phy" 0 = 1M ADV_NONCONN_IND. */
+	if(phy != 0)
+		return (ble_sts_t)LL_ERR_INVALID_PARAMETER;
+	if(interval < ADV_INTERVAL_20MS)
+		interval = ADV_INTERVAL_20MS;
+	else if(interval > ADV_INTERVAL_10_24S)
+		interval = ADV_INTERVAL_10_24S;
+
+	return blc_ll_setAdvParam((adv_inter_t)interval, (adv_inter_t)interval,
+				  ADV_TYPE_NONCONNECTABLE_UNDIRECTED, OWN_ADDRESS_PUBLIC,
+				  0, 0, BLT_ENABLE_ADV_ALL, ADV_FP_NONE);
+}
+
+static ble_sts_t txadv_do_data(const u8 *adv_data, u8 adv_len) {
+	bb_checkpoint(0x000c0002u);
+	if(adv_len > TXADV_ADV_DATA_LEN)
+		return (ble_sts_t)LL_ERR_INVALID_PARAMETER;
+	memcpy(txadv_advData, adv_data, adv_len);
+	return blc_ll_setAdvData(txadv_advData, adv_len);
+}
+
+static ble_sts_t txadv_do_enable(void) {
+	ble_sts_t st;
+
+	bb_checkpoint(0x000c0003u);
+	st = blc_ll_setAdvEnable(BLC_ADV_ENABLE);
+	if(st == BLE_SUCCESS)
+		txadv_enabled = 1;
+	return st;
+}
+
+static void txadv_do_disable(void) {
+	bb_checkpoint(0x000c0004u);
+	blc_ll_setAdvEnable(BLC_ADV_DISABLE);
+	txadv_enabled = 0;
+}
+
 ble_sts_t txadv_start(u8 phy, u16 interval_units, const u8 *adv_data, u8 adv_len) {
-	(void)phy; (void)interval_units; (void)adv_data; (void)adv_len;
-	return (ble_sts_t)1; // ext adv module not initialized
+	ble_sts_t st;
+
+	/* A parameter update is refused while the set is enabled (0x0C). */
+	if(txadv_enabled)
+		txadv_do_disable();
+
+	st = txadv_do_params(phy, interval_units);
+	if(st != BLE_SUCCESS)
+		return st;
+
+	st = txadv_do_data(adv_data, adv_len);
+	if(st != BLE_SUCCESS)
+		return st;
+
+	return txadv_do_enable();
 }
 
 void txadv_stop(void) {
-	// ext adv module not initialized — no-op
+	if(txadv_enabled)
+		txadv_do_disable();
 }
+#else /* !TXADV_ENABLE */
+ble_sts_t txadv_start(u8 phy, u16 interval_units, const u8 *adv_data, u8 adv_len) {
+	(void)phy; (void)interval_units; (void)adv_data; (void)adv_len;
+	return (ble_sts_t)LL_ERR_INVALID_PARAMETER;   /* TXADV_ENABLE = 0 */
+}
+
+void txadv_stop(void) {
+}
+#endif /* TXADV_ENABLE */
 
 // Scannning_Interval, Time = N * 0.625 ms
 
@@ -357,6 +597,8 @@ is defined as the interval between the start of two consecutive scan windows.
 If the scanWindow and the scanInterval parameters are set to the same value
 by the Host, the Link Layer should scan continuously.
 */
+
+u8 scanning_active;
 
 void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded) {
 #if defined(GPIO_LED_R)
@@ -416,7 +658,9 @@ void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded) {
             gpio_write(GPIO_LED_R, 0);
             gpio_write(GPIO_LED_W, 0);
 #endif
-        };
+        } else {
+            scanning_active = 1;
+        }
 	} else {
 		if (blc_ll_setExtScanEnable(BLC_SCAN_DISABLE, DUP_FILTER_DISABLE,
 				SCAN_DURATION_CONTINUOUS, SCAN_WINDOW_CONTINUOUS)
@@ -428,6 +672,8 @@ void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded) {
             gpio_write(GPIO_LED_R, 0);
             gpio_write(GPIO_LED_W, 0);
 #endif
-        };
+        } else {
+            scanning_active = 0;
+        }
 	}
 }

@@ -133,8 +133,98 @@ class Command:
     CMD_ID_WMAC = b'\x02'  # add white mac (len_cmd = 6: mac)
     CMD_ID_BMAC = b'\x03'  # add black mac (len_cmd = 6: mac)
     CMD_ID_CLRM = b'\x04'  # clear mac list (len_cmd = 0, mac=000000000000)
+    CMD_ID_PRNT = b'\x05'  # debug print (firmware -> host only)
+    CMD_ID_GPIO = b'\x06'  # GPIO / LED control (see GPIO_OP_*)
+    CMD_ID_LED = b'\x07'  # board LED mask test
+    CMD_ID_UART = b'\x08'  # UART status / ping / baud rate
+    CMD_ID_RFSDK = b'\x09'  # RF and scan runtime tuning
+    CMD_ID_VERSION = b'\x0a'  # HW/FW/SDK version tuple
+    CMD_ID_TXADV = b'\x0b'  # transmit a custom advertisement
+    CMD_ID_CONN = b'\x0c'  # BLE ACL connection (central role) + GATT client
+    CMD_ID_TXDATA = b'\x0d'  # ATT Write Command to the connected peer
+    CMD_ID_RXDATA = b'\x0e'  # (async) ATT notification/indication from the peer
     CMD_ID_VBAT = b'\x0f'  # read current VBAT / 3V3 rail voltage and chip temperature
-    # CMD_ID_PRNT = b'\x05'  # debug print
+    CMD_ID_GPIOEVT = b'\x10'  # GPIO edge events: arm/disarm + spontaneous notifications
+
+    # CMD_ID_GPIO sub-operations
+    GPIO_OP_STATUS = 0
+    GPIO_OP_READ = 1
+    GPIO_OP_WRITE = 2
+    GPIO_OP_TOGGLE = 3
+    GPIO_OP_CONFIG = 4
+    GPIO_OP_PWM = 5
+    GPIO_OP_PWM_OFF = 6
+    GPIO_OP_ANALOG = 7
+    GPIO_OP_RGB = 8
+
+    # CMD_ID_UART sub-operations
+    UART_OP_STATUS = 0
+    UART_OP_PING = 1
+    UART_OP_SET_BAUD = 2
+
+    # CMD_ID_RFSDK sub-operations
+    RFSDK_OP_STATUS = 0
+    RFSDK_OP_POWER = 1
+    RFSDK_OP_CAP = 2
+    RFSDK_OP_CHANNELS = 3
+    RFSDK_OP_CODED_MIN = 4
+
+    # CMD_ID_TXADV sub-operations
+    TXADV_OP_STOP = 0
+    TXADV_OP_START = 1
+    TXADV_OP_STATUS = 0x0F
+
+    # CMD_ID_CONN sub-operations
+    CONN_OP_STATUS = 0
+    CONN_OP_OPEN_1M = 1
+    CONN_OP_OPEN_CODED = 2
+    CONN_OP_DISCONNECT = 3
+    CONN_OP_CANCEL = 4
+    CONN_OP_DISCOVER = 5
+    CONN_OP_READ_CHAR = 6
+    CONN_OP_WRITE_RSP = 7
+    CONN_OP_READ_DESCR = 8
+    CONN_OP_WRITE_DESCR = 9
+    CONN_OP_MTU_EXCHANGE = 10
+    CONN_OP_PAIR = 11
+    CONN_OP_UNPAIR = 12
+
+    # CMD_ID_GPIOEVT sub-operations
+    GPIOEVT_OP_QUERY = 0
+    GPIOEVT_OP_ENABLE = 1
+    GPIOEVT_OP_DISABLE = 2
+    GPIOEVT_OP_CLEAR = 3
+
+    # High bit set in byte[2] of a spontaneous CMD_ID_CONN/CMD_ID_GPIOEVT frame
+    EVENT_FLAG = 0x80
+
+    # Command name table (used for logging and by the GUI)
+    NAMES = {
+        0x00: "INFO",
+        0x01: "SCAN",
+        0x02: "WMAC",
+        0x03: "BMAC",
+        0x04: "CLRM",
+        0x05: "PRNT",
+        0x06: "GPIO",
+        0x07: "LED",
+        0x08: "UART",
+        0x09: "RFSDK",
+        0x0A: "VERSION",
+        0x0B: "TXADV",
+        0x0C: "CONN",
+        0x0D: "TXDATA",
+        0x0E: "RXDATA",
+        0x0F: "VBAT",
+        0x10: "GPIOEVT",
+    }
+
+    @classmethod
+    def name(cls, cmd):
+        """Return the mnemonic of a command id (byte or int)."""
+        cid = cmd[0] if isinstance(cmd, (bytes, bytearray)) else int(cmd)
+        return cls.NAMES.get(cid, "0x%02X" % cid)
+
     DEBUG_PRINT = bytearray.fromhex("05 ff ff ff 00 00 00 00 00 00")
     START_SCAN  = build_scan_command(scan_phy_1m=True, scan_phy_coded=True)
     STOP_SCAN   = CMD_ID_SCAN + b'\x00\x00\x00'
@@ -161,6 +251,12 @@ class Ble2Uart:
         self.last_vbat_status = None
         self.last_vbat_mv = None
         self.last_vbat_temp_c = None
+        self.last_response = {}       # cmd id -> (status, data bytes)
+        self.last_gpio_event = None   # (pin, level, timestamp_ms)
+        self.last_gpio_evt_mask = None  # bitmap of the pins armed for edge events
+        self.last_rxdata = None       # (att opcode, handle, value bytes)
+        self.conn_event = None        # last spontaneous CMD_ID_CONN event
+        self.discovery = []           # CMD_ID_CONN discovery sub-frames
 
         self.timeout = timeout
         self.baud = baud
@@ -334,6 +430,39 @@ class Ble2Uart:
                                     self.data[11: len_payload + 11]
                                 ).decode()
                                 logging.warning("Debug message: %s", payload)
+                            elif cmd == Command.CMD_ID_GPIOEVT and (self.data[2] & Command.EVENT_FLAG):
+                                # spontaneous GPIO edge event
+                                pin = self.data[5]
+                                level = self.data[6]
+                                t_ms = (self.data[7] | (self.data[8] << 8)
+                                        | (self.data[9] << 16) | (self.data[10] << 24))
+                                self.last_gpio_event = (pin, level, t_ms)
+                                logging.warning(
+                                    'event: GPIOEVT pin=0x%02X level=%d ts=%d ms',
+                                    pin, level, t_ms
+                                )
+                            elif cmd == Command.CMD_ID_RXDATA:
+                                # ATT notification (0x1B) / indication (0x1D)
+                                handle = self.data[5] | (self.data[6] << 8)
+                                vlen = self.data[7]
+                                value = bytes(self.data[8:11]) + bytes(self.data[11: len_payload + 11])
+                                value = value[:vlen]
+                                self.last_rxdata = (self.data[2], handle, value)
+                                logging.warning(
+                                    'event: RXDATA %s handle=0x%04X len=%d data=%s',
+                                    'indication' if self.data[2] == 0x1D else 'notification',
+                                    handle, vlen, HEX(value)[0] if value else '-'
+                                )
+                            elif cmd == Command.CMD_ID_CONN and (self.data[2] & Command.EVENT_FLAG):
+                                # spontaneous discovery / read result
+                                sub = self.data[2] & 0x7F
+                                data = bytes(self.data[5:len_cmd + 5]) + bytes(self.data[11: len_payload + 11])
+                                self.conn_event = (sub, data)
+                                self.discovery.append((sub, data))
+                                logging.warning(
+                                    'event: CONN sub-type %d, data: %s',
+                                    sub, HEX(data)[0] if data else '-'
+                                )
                             elif cmd == Command.CMD_ID_INFO:
                                 self.config_account(cmd)
                                 logging.warning(
@@ -418,8 +547,22 @@ class Ble2Uart:
                                         command_status_name(self.last_vbat_status)
                                     )
                             else:
-                                logging.error(
-                                    'blk: %s', HEX(self.data[0: len_payload + 11])
+                                # Any other command response: store it (status in
+                                # byte[2], data field + extended payload) so the
+                                # caller can use the generic command methods.
+                                self.config_account(cmd)
+                                data = bytes(self.data[5:len_cmd + 5]) + bytes(self.data[11: len_payload + 11])
+                                self.last_response[cmd[0]] = (self.data[2], data)
+                                if cmd == Command.CMD_ID_GPIOEVT:
+                                    self.last_gpio_evt_mask = (
+                                        self.data[5] | (self.data[6] << 8)
+                                        | (self.data[7] << 16) | (self.data[8] << 24)
+                                    )
+                                logging.warning(
+                                    'resp: %s=%s, status: %s, data: %s',
+                                    rssi, Command.name(cmd),
+                                    command_status_name(self.data[2]),
+                                    HEX(data)[0] if data else '-'
                                 )
                         else:  # advertisement received (payload is valued)
                             payload = HEX(self.data[11: len_payload + 11])[0]
@@ -480,6 +623,256 @@ class Ble2Uart:
             if self.last_vbat_status is not None:
                 return self.last_vbat_status, self.last_vbat_mv, self.last_vbat_temp_c
         return None, None, None
+
+    # ------------------------------------------------------------------
+    # Generic command helper: send a command and wait for its response.
+    # Returns (status, data_bytes) or (None, b'') on timeout.
+    # ------------------------------------------------------------------
+    def command_wait(self, cmd, wait_seconds=1.0):
+        self.last_response.pop(cmd[0], None)
+        self.command(cmd)
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if cmd[0] in self.last_response:
+                return self.last_response[cmd[0]]
+        return None, b''
+
+    def _gpio_cmd(self, op, payload, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_GPIO[0], op)) + bytes(payload), wait_seconds
+        )
+
+    # --- CMD_ID_GPIO (0x06) --------------------------------------------
+    def gpio_status(self, pin_id=0x22, wait_seconds=1.0):
+        """Query the state of one pin and the board LED mask."""
+        return self._gpio_cmd(Command.GPIO_OP_STATUS, (pin_id & 0xFF,), wait_seconds)
+
+    def gpio_read(self, pin_id=0x22, wait_seconds=1.0):
+        return self._gpio_cmd(Command.GPIO_OP_READ, (pin_id & 0xFF,), wait_seconds)
+
+    def gpio_write(self, pin_id, value, wait_seconds=1.0):
+        """Write a LED pin (active high)."""
+        return self._gpio_cmd(Command.GPIO_OP_WRITE, (pin_id & 0xFF, 1 if value else 0), wait_seconds)
+
+    def gpio_toggle(self, pin_id, wait_seconds=1.0):
+        return self._gpio_cmd(Command.GPIO_OP_TOGGLE, (pin_id & 0xFF,), wait_seconds)
+
+    def gpio_config(self, pin_id, input_enabled, output_enabled, pull, wait_seconds=1.0):
+        """Configure a GPIO: pull 0=float, 1=up-1M, 2=down-100K, 3=up-10K."""
+        return self._gpio_cmd(
+            Command.GPIO_OP_CONFIG,
+            (pin_id & 0xFF, 1 if input_enabled else 0, 1 if output_enabled else 0, pull & 0xFF),
+            wait_seconds,
+        )
+
+    def gpio_pwm(self, pin_id, duty, period_us=1000, wait_seconds=1.0):
+        """Set the LED brightness with the hardware PWM (LED pins only)."""
+        duty = max(0, min(100, int(duty)))
+        return self._gpio_cmd(
+            Command.GPIO_OP_PWM,
+            (pin_id & 0xFF, duty, period_us & 0xFF, (period_us >> 8) & 0xFF),
+            wait_seconds,
+        )
+
+    def gpio_pwm_off(self, pin_id, wait_seconds=1.0):
+        """Stop the PWM and turn the LED pin back into a plain GPIO output."""
+        return self._gpio_cmd(Command.GPIO_OP_PWM_OFF, (pin_id & 0xFF,), wait_seconds)
+
+    def gpio_analog(self, pin_id=0x16, wait_seconds=1.0):
+        """Read the 12-bit ADC value of a free analog pin (TB-03F-KIT: PB6)."""
+        status, data = self._gpio_cmd(Command.GPIO_OP_ANALOG, (pin_id & 0xFF,), wait_seconds)
+        if status == 0 and len(data) >= 2:
+            return status, data[0] | (data[1] << 8)
+        return status, None
+
+    def gpio_rgb(self, pin_id=0x24, r=0, g=0, b=0, wait_seconds=1.0):
+        """Set an RGB colour (TB-03F-KIT: R = PC3, G = PC4, B = PC2)."""
+        return self._gpio_cmd(
+            Command.GPIO_OP_RGB,
+            (pin_id & 0xFF, r & 0xFF, g & 0xFF, b & 0xFF),
+            wait_seconds,
+        )
+
+    # --- CMD_ID_LED (0x07) ---------------------------------------------
+    def led(self, op=0, mask=0x1F, value=0, wait_seconds=1.0):
+        """op 0=set mask/value, 1=invert, 2=off, 3=blink."""
+        return self.command_wait(
+            bytes((Command.CMD_ID_LED[0], op, mask & 0xFF, value & 0xFF)), wait_seconds
+        )
+
+    # --- CMD_ID_UART (0x08) --------------------------------------------
+    def uart_status(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_UART[0], Command.UART_OP_STATUS)), wait_seconds)
+
+    def uart_ping(self, sequence, pattern=0x5A, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_UART[0], Command.UART_OP_PING,
+                   sequence & 0xFF, (sequence >> 8) & 0xFF, pattern & 0xFF)),
+            wait_seconds,
+        )
+
+    def uart_set_baud(self, index, wait_seconds=1.0):
+        """index 0 = 2000000, 1 = 921600, 2 = 115200; reconnect at the new rate."""
+        return self.command_wait(
+            bytes((Command.CMD_ID_UART[0], Command.UART_OP_SET_BAUD, index & 0xFF)), wait_seconds
+        )
+
+    # --- CMD_ID_RFSDK (0x09) -------------------------------------------
+    def rfsdk_status(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_RFSDK[0], Command.RFSDK_OP_STATUS)), wait_seconds)
+
+    def rfsdk_set_power(self, power_index, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_RFSDK[0], Command.RFSDK_OP_POWER, power_index & 0xFF)), wait_seconds
+        )
+
+    def rfsdk_set_cap(self, cap_value, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_RFSDK[0], Command.RFSDK_OP_CAP, cap_value & 0xFF)), wait_seconds
+        )
+
+    def rfsdk_set_channels(self, ch0, ch1, ch2, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_RFSDK[0], Command.RFSDK_OP_CHANNELS,
+                   ch0 & 0xFF, ch1 & 0xFF, ch2 & 0xFF)),
+            wait_seconds,
+        )
+
+    def rfsdk_set_coded_min(self, units_10ms, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_RFSDK[0], Command.RFSDK_OP_CODED_MIN, units_10ms & 0xFF)), wait_seconds
+        )
+
+    # --- CMD_ID_VERSION (0x0A) -----------------------------------------
+    def version_info(self, wait_seconds=1.0):
+        """Returns (status, hw, certification, structure, major, minor, patch)."""
+        status, data = self.command_wait(bytes((Command.CMD_ID_VERSION[0],)), wait_seconds)
+        if status == 0 and len(data) >= 6:
+            return status, (data[0], data[1], data[2], data[3], data[4], data[5])
+        return status, None
+
+    # --- CMD_ID_TXADV (0x0B) -------------------------------------------
+    def txadv_start(self, phy, interval_units, adv_data, wait_seconds=1.0):
+        """phy: 0 = legacy 1M, 1 = extended 1M, 2 = extended Coded.
+        interval is in 0.625 ms units (minimum 32 = 20 ms), adv_data <= 31 bytes."""
+        adv_data = bytes(adv_data[:31])
+        return self.command_wait(
+            bytes((Command.CMD_ID_TXADV[0], Command.TXADV_OP_START, phy & 0xFF,
+                   interval_units & 0xFF, (interval_units >> 8) & 0xFF, len(adv_data))) + adv_data,
+            wait_seconds,
+        )
+
+    def txadv_stop(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_TXADV[0], Command.TXADV_OP_STOP)), wait_seconds)
+
+    def txadv_status(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_TXADV[0], Command.TXADV_OP_STATUS)), wait_seconds)
+
+    # --- CMD_ID_CONN (0x0C) --------------------------------------------
+    def conn_status(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_STATUS)), wait_seconds)
+
+    def conn_connect(self, peer_addr, addr_type=0, phy=0, wait_seconds=3.0):
+        """phy 0 = 1M, 1 = Coded. peer_addr is the 6-byte MAC in wire order."""
+        op = Command.CONN_OP_OPEN_CODED if phy else Command.CONN_OP_OPEN_1M
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], op, addr_type & 0xFF)) + bytes(peer_addr[:6]),
+            wait_seconds,
+        )
+
+    def conn_disconnect(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_DISCONNECT)), wait_seconds)
+
+    def conn_cancel(self, wait_seconds=1.0):
+        return self.command_wait(bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_CANCEL)), wait_seconds)
+
+    def conn_discover(self, wait_seconds=5.0):
+        """Start the GATT discovery; the events are collected in self.discovery."""
+        self.discovery = []
+        return self.command_wait(bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_DISCOVER)), wait_seconds)
+
+    def conn_read(self, att_handle, wait_seconds=2.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_READ_CHAR, 0,
+                   att_handle & 0xFF, (att_handle >> 8) & 0xFF)),
+            wait_seconds,
+        )
+
+    def conn_write(self, att_handle, data, wait_seconds=2.0):
+        data = bytes(data[:20])
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_WRITE_RSP, 0,
+                   att_handle & 0xFF, (att_handle >> 8) & 0xFF, len(data))) + data,
+            wait_seconds,
+        )
+
+    def conn_read_descriptor(self, att_handle, wait_seconds=2.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_READ_DESCR, 0,
+                   att_handle & 0xFF, (att_handle >> 8) & 0xFF)),
+            wait_seconds,
+        )
+
+    def conn_write_descriptor(self, att_handle, data, wait_seconds=2.0):
+        data = bytes(data[:20])
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_WRITE_DESCR, 0,
+                   att_handle & 0xFF, (att_handle >> 8) & 0xFF, len(data))) + data,
+            wait_seconds,
+        )
+
+    def conn_mtu(self, mtu, wait_seconds=2.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_CONN[0], Command.CONN_OP_MTU_EXCHANGE, 0,
+                   mtu & 0xFF, (mtu >> 8) & 0xFF)),
+            wait_seconds,
+        )
+
+    # --- CMD_ID_TXDATA (0x0D) ------------------------------------------
+    def txdata(self, att_handle, data, wait_seconds=1.0):
+        """ATT Write Without Response on the active connection (max 20 bytes)."""
+        data = bytes(data[:20])
+        return self.command_wait(
+            bytes((Command.CMD_ID_TXDATA[0], att_handle & 0xFF, (att_handle >> 8) & 0xFF,
+                   len(data))) + data,
+            wait_seconds,
+        )
+
+    # --- CMD_ID_GPIOEVT (0x10) -----------------------------------------
+    def gpioevt_query(self, wait_seconds=1.0):
+        status, data = self.command_wait(
+            bytes((Command.CMD_ID_GPIOEVT[0], Command.GPIOEVT_OP_QUERY)), wait_seconds
+        )
+        if status == 0 and len(data) >= 4:
+            return status, (data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24))
+        return status, None
+
+    def gpioevt_enable(self, pin_id, wait_seconds=1.0):
+        """Arm the both-edge interrupt on a pin (ports A/B, not LED/UART/PB7)."""
+        return self.command_wait(
+            bytes((Command.CMD_ID_GPIOEVT[0], Command.GPIOEVT_OP_ENABLE, pin_id & 0xFF)), wait_seconds
+        )
+
+    def gpioevt_disable(self, pin_id, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_GPIOEVT[0], Command.GPIOEVT_OP_DISABLE, pin_id & 0xFF)), wait_seconds
+        )
+
+    def gpioevt_clear(self, wait_seconds=1.0):
+        return self.command_wait(
+            bytes((Command.CMD_ID_GPIOEVT[0], Command.GPIOEVT_OP_CLEAR)), wait_seconds
+        )
+
+    def read_gpio_event(self, wait_seconds=2.0):
+        """Wait for one spontaneous GPIOEVT frame; returns (pin, level, ts_ms)."""
+        self.last_gpio_event = None
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            self.read_adv()
+            if self.last_gpio_event is not None:
+                return self.last_gpio_event
+        return None
 
 
 def setup_logging(

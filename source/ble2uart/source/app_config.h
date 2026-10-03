@@ -2,11 +2,70 @@
 
 #include "config.h"
 
-#define SW_VERSION 0x01	 // BCD format (0x34 -> '3.4')
+#define SW_VERSION 0x15	// BCD format (0x34 -> '3.4')
 
 #define DEBUG_MSG           0  // Set to 0 to disable debug mode; set to 1 to print UART debug messages as uart_printf
 
-#define BLE_DEVICE_ENABLE	0
+// CMD_ID_TXADV (0x0B): custom advertisement transmitter (legacy 1M
+// ADV_NONCONN_IND).  It requires the LEGACY advertising module and the
+// peripheral (slave) role.
+//
+// Scanning and TXADV share the radio, so they cannot run at the same time: the
+// command handlers stop one before starting the other (see the CMD_ID_SCAN and
+// CMD_ID_TXADV branches of scan_task()).
+//
+// KNOWN COST (measured on the TB-03F-KIT, native V4.0.2.5 library, interleaved
+// A/B): linking this module costs the Coded-PHY scan.  With the module the
+// extended scan (CMD_ID_SCAN mode 3) drops the first Coded advertisement, stops
+// answering and reboots; without it the same source scans 1M + Coded (and 2M)
+// normally.  The trigger is the 2308 bytes of library BSS the module pulls in,
+// not the initialisation call (which is only reached when TXADV starts).
+//
+// DEFAULT IS 0: the Coded-PHY scan is the product feature, so 0x0B answers
+// CMD_STATUS_DENIED out of the box.  Switch it on for a build that broadcasts:
+//   make EXTRA_FLAGS="-DTXADV_ENABLE=1"
+//   TXADV_ENABLE = 1: legacy 1M broadcast transmitter, Coded-PHY scan not usable
+//                     (the 1M scan is unaffected);
+//   TXADV_ENABLE = 0 (default): full 1M + Coded scan, 0x0B -> CMD_STATUS_DENIED.
+//
+// The extended advertising module (the other way to get Coded TX) is not usable
+// here either: it wedges the RF ISR as soon as an extended advertising set is
+// enabled.
+#ifndef TXADV_ENABLE
+#define TXADV_ENABLE		0
+#endif
+
+// CMD_ID_CONN ops 5..10 (service discovery, read/write, MTU), CMD_ID_TXDATA
+// (0x0D) and CMD_ID_RXDATA (0x0E): GATT client.
+// The L2CAP/ATT/GATT host objects are already linked by the calls the scanner
+// needs anyway (blc_hci_registerControllerDataHandler(blc_l2cap_pktHandler),
+// blc_gap_init(), blc_l2cap_initAclConnMasterMtuBuffer()), so the client costs
+// only ~4 bytes of BSS (measured 0x84D57C -> 0x84D580 with TXADV disabled) and
+// is enabled by default.  It can safely be combined with TXADV_ENABLE.
+#ifndef GATT_ENABLE
+#define GATT_ENABLE			1
+#endif
+
+// System Timer guard (see sched_timer_guard() in scanning.c): the V4.0.2.5
+// library masks the System Timer interrupt off as soon as nothing needs it and
+// never re-arms the tick, after which the main loop never resumes (measured:
+// death inside blc_sdk_main_loop with FLD_IRQ_SYSTEM_TIMER missing from the
+// mask).  Set to 0 to reproduce the unguarded behaviour.
+//
+// DEFAULT 0 since fw 0.14: the guard also re-asserts bit 19 of g_scheMng+0x14,
+// which is the bit the library uses for a pending auxiliary scan task, and the
+// firmware froze only while that bit was forced on (Bs=00080000) whereas the
+// ext_adv_test build - same module list, no bit - runs.
+#ifndef SCHED_TIMER_GUARD
+#define SCHED_TIMER_GUARD		0
+#endif
+
+// BLE_DEVICE_ENABLE = 1: CMD_ID_TXADV needs the peripheral (slave) role.
+// The V4.0.2.5 library refuses the legacy advertising API -- blc_ll_setAdvEnable
+// returns 0x0D HCI_ERR_CONN_REJ_LIMITED_RESOURCES -- unless the peripheral role
+// module is initialised, and app_buffer.c emits app_acl_slvTxfifo / mtu_s_*
+// only when this macro is 1.
+#define BLE_DEVICE_ENABLE	1
 #define BLE_MASTER_ENABLE	1  // enable central/master role for CMD_ID_CONN
 
 #define MODULE_WATCHDOG_ENABLE		0	// WDT not use!
@@ -67,12 +126,14 @@
 #define PB4_OUTPUT_ENABLE	1
 #define PB4_INPUT_ENABLE	1
 #define PB4_FUNC			AS_GPIO
+#define PWM_LED_E		PWM4_ID  // LED3 (yellow) is wired to PWM4
 
 #define GPIO_LED_W		GPIO_PB5  // Lateral White LED2, B5: Host command received from the UART
 #define PB5_DATA_OUT		0
 #define PB5_OUTPUT_ENABLE	1
 #define PB5_INPUT_ENABLE	1
 #define PB5_FUNC			AS_GPIO
+#define PWM_LED_W		PWM5_ID  // LED2 (white) is wired to PWM5
 
 #define GPIO_TX			GPIO_PB1  // UART_TX_PB1, TXD
 // PB1        - UART TX to CH340C RXD
@@ -113,7 +174,9 @@
 #define ATT_LEGACY_MTU_SIZE  23
 
 #define MASTER_MAX_NUM	1
-#define SLAVE_MAX_NUM	0   // scanner-only: no peripheral role
+#define SLAVE_MAX_NUM	1   // CMD_ID_TXADV uses the legacy advertising API: advertising
+                           // is a peripheral-role activity and without this the
+                           // enable call answers 0x0D (LIMITED_RESOURCES)
 #define RAM _attribute_data_retention_ // short version, this is needed to keep the values in ram after sleep
 
 /////////////////// Clock  /////////////////////////////////

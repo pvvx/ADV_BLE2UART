@@ -9,6 +9,9 @@ extern u8 mac_public[6];
 void init_ble(void);
 // tdw_coded==0: use tdw_1m as base and apply coded_min_scan_window floor (legacy behaviour)
 void start_adv_scanning(u8 flg, u16 tdw_1m, u16 tdw_coded);
+/* Non-zero while the scanner is enabled.  The radio is shared, so the command
+   handlers use this to keep scanning and TXADV from running together. */
+extern u8 scanning_active;
 
 u8 read_baud_rate(void);
 void change_baud_rate(void);
@@ -22,9 +25,15 @@ void set_primary_scan_channels(u8 chn0, u8 chn1, u8 chn2);
 void set_runtime_rf_power(u8 power);
 void set_runtime_rf_cap(u8 cap);
 
-// CMD_ID_TXADV: phy values  0=Legacy 1M, 1=Extended 1M, 2=Extended Coded
+// CMD_ID_TXADV: phy is only 0 = Legacy 1M (ADV_NONCONN_IND)
 ble_sts_t txadv_start(u8 phy, u16 interval_units, const u8 *adv_data, u8 adv_len);
 void      txadv_stop(void);
+/* g_scheMng+0x14 = the library's "who needs the System Timer" bitmap.  Bit 19 is
+   ignored by the scheduler (mask 0xff87ffff) but keeps the field non-zero, so the
+   library ISR does not mask the System Timer interrupt off. */
+#define SCHED_TIMER_REQ_OFFSET		0x14
+#define SCHED_TIMER_KEEPALIVE_BIT	0x00080000u
+extern u8 g_scheMng[];
 
 // CMD_ID_CONN: central role — connect/disconnect/status/data
 u8        conn_state_get(void);
@@ -33,4 +42,14 @@ void      conn_peer_addr_get(u8 *out);
 u16       conn_interval_get(void);
 ble_sts_t conn_start(u8 peer_addr_type, u8 *peer_addr, u8 init_phy); // 0=1M 1=Coded
 ble_sts_t conn_stop(void);
-// conn_txdata disabled: L2CAP/GATT not initialized (saves ~1180 B SMP/GATT library BSS)
+
+#if GATT_ENABLE
+// GATT client (CMD_ID_CONN ops 5..10, CMD_ID_TXDATA, CMD_ID_RXDATA)
+ble_sts_t conn_gatt_write_cmd(u16 att_handle, const u8 *data, u8 len);
+ble_sts_t conn_gatt_read(u16 att_handle);
+ble_sts_t conn_gatt_write(u16 att_handle, const u8 *data, u8 len);
+ble_sts_t conn_gatt_disc_services(void);
+ble_sts_t conn_gatt_disc_chars(u16 start, u16 end);
+ble_sts_t conn_gatt_disc_descrs(u16 start, u16 end);
+ble_sts_t conn_gatt_set_mtu(u16 mtu);
+#endif

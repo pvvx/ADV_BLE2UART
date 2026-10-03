@@ -30,6 +30,7 @@ CMD_ID_BMAC = 0x03
 CMD_ID_CLRM = 0x04
 CMD_ID_PRNT = 0x05
 CMD_ID_GPIO = 0x06
+CMD_ID_LED = 0x07
 CMD_ID_UART = 0x08
 CMD_ID_RFSDK = 0x09
 CMD_ID_VERSION = 0x0A
@@ -38,14 +39,40 @@ CMD_ID_CONN   = 0x0C
 CMD_ID_TXDATA = 0x0D
 CMD_ID_RXDATA = 0x0E
 CMD_ID_VBAT = 0x0F
+CMD_ID_GPIOEVT = 0x10
+
+# CMD_ID_GPIO sub-operations
+GPIO_OP_STATUS = 0
+GPIO_OP_READ = 1
+GPIO_OP_WRITE = 2
+GPIO_OP_TOGGLE = 3
+GPIO_OP_CONFIG = 4
+GPIO_OP_PWM = 5
+GPIO_OP_PWM_OFF = 6
+GPIO_OP_ANALOG = 7
+GPIO_OP_RGB = 8
+
+# CMD_ID_GPIOEVT sub-operations
+GPIOEVT_OP_QUERY = 0
+GPIOEVT_OP_ENABLE = 1
+GPIOEVT_OP_DISABLE = 2
+GPIOEVT_OP_CLEAR = 3
+
+# High bit of byte[2] marking a spontaneous GPIOEVT/CONN event
+EVENT_FLAG = 0x80
 
 GUI_BOOTSTRAP_DELAY_MS = 1000
 GUI_SERIAL_TIMEOUT_S = 0.3
 
+# The firmware transmits legacy 1M PDUs only (ADV_NONCONN_IND): the "phy"
+# argument of CMD_ID_TXADV must be 0.  The extended advertising API of the
+# V4.0.2.5 library wedges the RF interrupt handler, so it is not used.
+# Scanning and advertising share the radio: the firmware stops one before
+# starting the other, and CMD_ID_TXADV only exists in builds made with
+# -DTXADV_ENABLE=1 (the default build answers CMD_STATUS_DENIED and keeps the
+# Coded-PHY scan, which the legacy advertising module would break).
 TXADV_PHY_OPTIONS = [
     ("Legacy 1M (ADV_NONCONN_IND)",  0),
-    ("Extended 1M",                  1),
-    ("Extended Coded PHY",           2),
 ]
 TXADV_PHY_NAMES = {v: k for k, v in [(lbl, val) for lbl, val in TXADV_PHY_OPTIONS]}
 
@@ -56,6 +83,20 @@ CONN_PHY_OPTIONS = [
 
 HEAD_CRC_ADD_LEN = 13
 MAX_ADV_PAYLOAD = 229
+
+# Host -> device frames carry no length delimiter on the wire: the firmware
+# splits them with the UART idle gap.  Sending several commands back to back
+# can make the USB bridge merge them into a single DMA read, which the firmware
+# then discards (bad CRC), so keep a minimum gap between frames and warn when a
+# command is never answered.
+TX_INTERFRAME_DELAY_S = 0.004
+# The extended-advertising firmware build answers slowly while the adv set is
+# running (the LL RF interrupt storm starves the main loop; measured ~2.2 s for
+# a TXADV start on V4.0.2.5), so the ACK timeout must be well above that.
+ACK_TIMEOUT_S = 3.0
+
+# data[0] of a CMD_STATUS_ARGS response meaning "frame received with bad CRC"
+CMD_OP_BAD_FRAME = 0xFE
 
 COMMAND_STATUS = {
     0: "OK",
@@ -72,9 +113,29 @@ BOARD_PINS = {
     "RGB blue PC2": 0x22,
     "RGB red PC3": 0x23,
     "RGB green PC4": 0x24,
+    "Free PB6 (ADC)": 0x16,
+    "VBAT pad PB7": 0x17,
+    "Free PD7": 0x37,
+    "Free PA1": 0x01,
+    "Free PD2": 0x32,
+    "Free PD3": 0x33,
+    "Free PD4": 0x34,
+    "Free PC1": 0x21,
+    "Free PC0": 0x20,
+    "UART TX PB1": 0x11,
+    "UART RX PA0": 0x00,
 }
 BOARD_PIN_NAMES = {value: key for key, value in BOARD_PINS.items()}
-BOARD_PIN_MASK_INDEX = {pin_id: index for index, pin_id in enumerate(sorted(BOARD_PIN_NAMES))}
+# Bit positions of the firmware board mask (CMD_ID_GPIO response data[4..5]);
+# the order is the one declared by the ble2uart firmware.
+BOARD_PIN_MASK_INDEX = {
+    0x07: 0,  # KEY_USER PA7
+    0x22: 1,  # RGB blue PC2
+    0x23: 2,  # RGB red PC3
+    0x24: 3,  # RGB green PC4
+    0x14: 4,  # side yellow PB4
+    0x15: 5,  # side white PB5
+}
 
 GPIO_PULLS = {
     "Float": 0,
@@ -114,6 +175,7 @@ COMMAND_NAMES = {
     CMD_ID_CLRM: "CLRM",
     CMD_ID_PRNT: "PRNT",
     CMD_ID_GPIO: "GPIO",
+    CMD_ID_LED: "LED",
     CMD_ID_UART: "UART",
     CMD_ID_RFSDK: "RFSDK",
     CMD_ID_VERSION: "VERSION",
@@ -122,6 +184,7 @@ COMMAND_NAMES = {
     CMD_ID_TXDATA: "TXDATA",
     CMD_ID_RXDATA: "RXDATA",
     CMD_ID_VBAT: "VBAT",
+    CMD_ID_GPIOEVT: "GPIOEVT",
 }
 
 RF_POWER_OPTIONS = (
@@ -257,7 +320,32 @@ def describe_tx_payload(payload: bytes) -> str:
             return f"GPIO PWM {pin_name} duty={payload[3]}% period={period} us"
         if op == 6 and len(payload) >= 3:
             return f"GPIO PWM off {pin_name}"
+        if op == 7 and len(payload) >= 3:
+            return f"GPIO analog read {pin_name}"
+        if op == 8 and len(payload) >= 6:
+            return f"GPIO RGB {pin_name} R={payload[3]} G={payload[4]} B={payload[5]}"
         return f"GPIO op={op}"
+    if command == CMD_ID_TXADV:
+        if len(payload) < 2:
+            return "TXADV request"
+        tx_op = payload[1]
+        tx_names = {0: "stop", 1: "start"}
+        if tx_op == 1 and len(payload) >= 6:
+            return f"TXADV start phy={payload[2]} adv_len={payload[5]}"
+        return f"TXADV {tx_names.get(tx_op, f'op={tx_op}')}"
+    if command == CMD_ID_LED:
+        if len(payload) < 2:
+            return "LED request"
+        if len(payload) >= 3:
+            return f"LED op={payload[1]} mask=0x{payload[2]:02X}"
+        return f"LED op={payload[1]}"
+    if command == CMD_ID_GPIOEVT:
+        if len(payload) < 2:
+            return "GPIOEVT request"
+        op_names = {GPIOEVT_OP_QUERY: "query", GPIOEVT_OP_ENABLE: "arm",
+                    GPIOEVT_OP_DISABLE: "disarm", GPIOEVT_OP_CLEAR: "disarm all"}
+        pin = f" pin=0x{payload[2]:02X}" if len(payload) > 2 else ""
+        return f"GPIOEVT {op_names.get(payload[1], f'op={payload[1]}')}{pin}"
     return command_name(command)
 
 
@@ -492,6 +580,7 @@ class SerialClient:
         self.running = threading.Event()
         self.lock = threading.Lock()
         self.parser = FrameParser()
+        self._last_tx = 0.0
 
     @property
     def is_open(self) -> bool:
@@ -538,6 +627,13 @@ class SerialClient:
             framed = append_crc(payload)
             self.serial.write(framed)
             self.serial.flush()
+            # Keep a minimum inter-frame gap: without it the USB bridge can merge
+            # two commands into one DMA read and the firmware drops both
+            # (see TX_INTERFRAME_DELAY_S).
+            gap = TX_INTERFRAME_DELAY_S - (time.monotonic() - self._last_tx)
+            if gap > 0:
+                time.sleep(gap)
+            self._last_tx = time.monotonic()
         self.event_queue.put(("tx", bytes(payload)))
 
     def command_info(self):
@@ -607,7 +703,30 @@ class SerialClient:
         )
 
     def command_gpio_pwm_off(self, pin_id: int):
-        self.send(bytes((CMD_ID_GPIO, 6, pin_id & 0xFF)))
+        self.send(bytes((CMD_ID_GPIO, GPIO_OP_PWM_OFF, pin_id & 0xFF)))
+
+    def command_gpio_analog(self, pin_id: int = 0x16):
+        """12-bit ADC read (TB-03F-KIT: PB6 is the only free analog pin)."""
+        self.send(bytes((CMD_ID_GPIO, GPIO_OP_ANALOG, pin_id & 0xFF)))
+
+    def command_gpio_rgb(self, pin_id: int, red: int, green: int, blue: int):
+        self.send(bytes((CMD_ID_GPIO, GPIO_OP_RGB, pin_id & 0xFF,
+                         red & 0xFF, green & 0xFF, blue & 0xFF)))
+
+    def command_led(self, op: int = 0, mask: int = 0x1F, value: int = 0):
+        self.send(bytes((CMD_ID_LED, op & 0xFF, mask & 0xFF, value & 0xFF)))
+
+    def command_gpioevt_query(self):
+        self.send(bytes((CMD_ID_GPIOEVT, GPIOEVT_OP_QUERY)))
+
+    def command_gpioevt_enable(self, pin_id: int):
+        self.send(bytes((CMD_ID_GPIOEVT, GPIOEVT_OP_ENABLE, pin_id & 0xFF)))
+
+    def command_gpioevt_disable(self, pin_id: int):
+        self.send(bytes((CMD_ID_GPIOEVT, GPIOEVT_OP_DISABLE, pin_id & 0xFF)))
+
+    def command_gpioevt_clear(self):
+        self.send(bytes((CMD_ID_GPIOEVT, GPIOEVT_OP_CLEAR)))
 
     def command_uart_status(self):
         self.send(bytes((CMD_ID_UART, 0)))
@@ -699,14 +818,18 @@ class SerialClient:
 
 
 class AdvBle2UartGui(tk.Tk):
-    def __init__(self):
+    def __init__(self, port: str | None = None, connect: bool = False, maximize: bool = False):
         super().__init__()
         self.title("ADV_BLE2UART Test Console")
         self.geometry("1220x820")
         self.minsize(980, 680)
+        if maximize:
+            self.state("zoomed")  # Windows; on X11 falls back to the geometry
 
         self.events = queue.Queue()
         self.client = SerialClient(self.events)
+        # command id -> [answers still expected, timestamp of the last send]
+        self.pending_acks = {}
 
         self.white_list = []
         self.black_list = []
@@ -724,6 +847,12 @@ class AdvBle2UartGui(tk.Tk):
         self.apply_long_range_preset()
         self.after(50, self.process_events)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Optional CLI: pre-select the serial port and connect at startup.
+        if port:
+            self.port_var.set(port)
+        if connect:
+            self.after(200, self.connect)
 
     def _build_variables(self):
         self.port_var = tk.StringVar(value="COM4" if sys.platform.startswith("win") else "/dev/ttyUSB0")
@@ -771,6 +900,10 @@ class AdvBle2UartGui(tk.Tk):
         self.gpio_pull_var = tk.StringVar(value="Float")
         self.gpio_pwm_duty_var = tk.IntVar(value=50)    # kept for method compatibility
         self.gpio_pwm_period_var = tk.IntVar(value=1000)
+        self.gpio_rgb_r_var = tk.IntVar(value=0)
+        self.gpio_rgb_g_var = tk.IntVar(value=255)
+        self.gpio_rgb_b_var = tk.IntVar(value=0)
+        self.gpioevt_state_var = tk.StringVar(value="-")
         self.gpio_pin_state_vars = {pin_id: tk.StringVar(value="?") for pin_id in BOARD_PIN_NAMES}
         self.gpio_read_generation = 0
         self.led_blink_count_var = tk.IntVar(value=3)
@@ -994,20 +1127,122 @@ class AdvBle2UartGui(tk.Tk):
         adv_tab = ttk.Frame(notebook)
         stats_tab = ttk.Frame(notebook)
         test_tab = ttk.Frame(notebook)
+        pins_tab = ttk.Frame(notebook)
+        evt_tab = ttk.Frame(notebook)
         txadv_tab = ttk.Frame(notebook)
         conn_tab = ttk.Frame(notebook)
         log_tab = ttk.Frame(notebook)
         notebook.add(adv_tab, text="Advertisements")
         notebook.add(stats_tab, text="MAC Stats")
-        notebook.add(test_tab, text="GPIO / UART / RF")
+        notebook.add(test_tab, text="LEDs / UART / RF")
+        notebook.add(pins_tab, text="GPIO pins")
+        notebook.add(evt_tab, text="GPIO events")
+        notebook.add(txadv_tab, text="Adv TX (TXADV)")
+        notebook.add(conn_tab, text="Connection")
         notebook.add(log_tab, text="Log")
 
         self._build_adv_tab(adv_tab)
         self._build_stats_tab(stats_tab)
         self._build_test_tab(test_tab)
-        self._build_txadv_tab(txadv_tab)  # built but not added to notebook
-        self._build_conn_tab(conn_tab)    # built but not added to notebook
+        self._build_pins_tab(pins_tab)
+        self._build_evt_tab(evt_tab)
+        self._build_txadv_tab(txadv_tab)
+        self._build_conn_tab(conn_tab)
         self._build_log_tab(log_tab)
+
+    def _build_evt_tab(self, tab):
+        """Edge events got their own tab: the button row did not fit in the
+        GPIO pins panel."""
+        tab.columnconfigure(0, weight=1)
+
+        frm = ttk.LabelFrame(tab, text="GPIO edge events (CMD_ID_GPIOEVT)")
+        frm.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+
+        ttk.Label(
+            frm,
+            text=("Arm a pin to get a spontaneous CMD_ID_GPIOEVT frame on every edge. "
+                  "Only port A and B pins can be armed (pin codes 0x00-0x17); the pin "
+                  "is the one selected in the 'GPIO pins' tab."),
+            wraplength=620,
+            justify=tk.LEFT,
+        ).pack(side=tk.TOP, anchor="w", padx=8, pady=(8, 4))
+
+        row1 = ttk.Frame(frm)
+        row1.pack(side=tk.TOP, anchor="w", fill=tk.X)
+        ttk.Button(row1, text="Arm selected pin", command=self.gpioevt_enable_selected).pack(side=tk.LEFT, padx=(8, 0), pady=4)
+        ttk.Button(row1, text="Disarm selected pin", command=self.gpioevt_disable_selected).pack(side=tk.LEFT, padx=(6, 0), pady=4)
+        ttk.Button(row1, text="Disarm all", command=self.gpioevt_clear).pack(side=tk.LEFT, padx=(6, 0), pady=4)
+        ttk.Button(row1, text="Query armed", command=self.gpioevt_query).pack(side=tk.LEFT, padx=(6, 0), pady=4)
+
+        ttk.Label(frm, textvariable=self.gpioevt_state_var).pack(side=tk.TOP, anchor="w", padx=8, pady=(4, 8))
+
+    def _build_pins_tab(self, tab):
+        """All GPIO controls live here: the LED tab keeps just the LED rows, and
+        the pin state grid is no longer squeezed out at the bottom."""
+        tab.columnconfigure(0, weight=1)
+
+        ctrl = ttk.LabelFrame(tab, text="GPIO control")
+        ctrl.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
+        ctrl.columnconfigure(1, weight=1)
+
+        ttk.Label(ctrl, text="GPIO pin").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Combobox(
+            ctrl,
+            textvariable=self.gpio_pin_var,
+            values=tuple(BOARD_PINS.keys()),
+            state="readonly",
+            width=20,
+        ).grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        read_row = ttk.Frame(ctrl)
+        read_row.grid(row=0, column=2, sticky="w", padx=(0, 8), pady=(8, 4))
+        ttk.Button(read_row, text="Read", command=self.gpio_read_selected).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(read_row, text="Read all", command=self.gpio_read_all).pack(side=tk.LEFT)
+
+        ttk.Checkbutton(ctrl, text="Value high", variable=self.gpio_value_var).grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        write_row = ttk.Frame(ctrl)
+        write_row.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=4)
+        ttk.Button(write_row, text="Write pin", command=self.gpio_write_selected).pack(side=tk.LEFT)
+        ttk.Button(write_row, text="Toggle pin", command=self.gpio_toggle_selected).pack(side=tk.LEFT, padx=(6, 0))
+
+        cfg_row = ttk.Frame(ctrl)
+        cfg_row.grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=4)
+        ttk.Checkbutton(cfg_row, text="Input", variable=self.gpio_input_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(cfg_row, text="Output", variable=self.gpio_output_var).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Combobox(cfg_row, textvariable=self.gpio_pull_var, values=tuple(GPIO_PULLS.keys()), state="readonly", width=14).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Button(cfg_row, text="Configure", command=self.gpio_config_selected).pack(side=tk.LEFT, padx=(10, 0))
+
+        an_row = ttk.Frame(ctrl)
+        an_row.grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 8))
+        ttk.Button(an_row, text="Analog read", command=self.gpio_analog_selected).pack(side=tk.LEFT)
+        ttk.Label(an_row, text="R").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Spinbox(an_row, textvariable=self.gpio_rgb_r_var, from_=0, to=255, width=4).pack(side=tk.LEFT)
+        ttk.Label(an_row, text="G").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Spinbox(an_row, textvariable=self.gpio_rgb_g_var, from_=0, to=255, width=4).pack(side=tk.LEFT)
+        ttk.Label(an_row, text="B").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Spinbox(an_row, textvariable=self.gpio_rgb_b_var, from_=0, to=255, width=4).pack(side=tk.LEFT)
+        ttk.Button(an_row, text="Set RGB", command=self.gpio_rgb_selected).pack(side=tk.LEFT, padx=(8, 0))
+
+        status_frame = ttk.Frame(tab)
+        status_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+        ttk.Label(status_frame, text="Key").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_frame, textvariable=self.key_state_var, width=12).grid(row=0, column=1, sticky="w", padx=(4, 14))
+        ttk.Label(status_frame, text="LED mask").grid(row=0, column=2, sticky="w")
+        ttk.Label(status_frame, textvariable=self.led_state_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 14))
+        ttk.Label(status_frame, text="Board mask").grid(row=0, column=4, sticky="w")
+        ttk.Label(status_frame, textvariable=self.board_mask_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 0))
+
+        pin_states_frame = ttk.LabelFrame(tab, text="GPIO pin states (last response)")
+        pin_states_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+        for _idx, (_pin_id, _pin_name) in enumerate(sorted(BOARD_PIN_NAMES.items())):
+            _col = (_idx % 2) * 3
+            _row = _idx // 2
+            ttk.Label(pin_states_frame, text=_pin_name, anchor="w").grid(row=_row, column=_col, sticky="w", padx=(6, 2), pady=1)
+            ttk.Label(pin_states_frame, text="=").grid(row=_row, column=_col + 1, padx=0, pady=1)
+            ttk.Label(pin_states_frame, textvariable=self.gpio_pin_state_vars[_pin_id], width=3).grid(row=_row, column=_col + 2, sticky="w", padx=(0, 12), pady=1)
+        _last_row = len(BOARD_PIN_NAMES) // 2 + 1
+        ttk.Button(pin_states_frame, text="Read all pins", command=self.gpio_read_all).grid(
+            row=_last_row, column=0, columnspan=6, sticky="ew", padx=6, pady=(6, 6))
+
 
     def _build_adv_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -1078,74 +1313,35 @@ class AdvBle2UartGui(tk.Tk):
         tab.columnconfigure(1, weight=1)
         tab.rowconfigure(2, weight=1)
 
-        board_frame = ttk.LabelFrame(tab, text="LED pins via GPIO")
+        board_frame = ttk.LabelFrame(tab, text="TB-03F-KIT LEDs (CMD_ID_GPIO)")
         board_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        board_frame.columnconfigure(1, weight=1)
+        board_frame.columnconfigure(0, weight=1)
 
         direct_leds = ttk.Frame(board_frame)
-        direct_leds.grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(8, 8))
-        direct_leds.columnconfigure(0, weight=1)
+        direct_leds.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
         for row, (name, bit) in enumerate(LED_BITS.items()):
-            ttk.Label(direct_leds, text=name).grid(row=row, column=0, sticky="w", pady=2)
+            # fixed width: the label is what tells which LED the buttons drive,
+            # a stretching label column used to squeeze it out of view
+            ttk.Label(direct_leds, text=name, width=16, anchor="w").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
             ttk.Button(direct_leds, text="On", command=lambda value=bit: self.led_set_mask(value, True)).grid(row=row, column=1, padx=2, pady=2)
             ttk.Button(direct_leds, text="Off", command=lambda value=bit: self.led_set_mask(value, False)).grid(row=row, column=2, padx=2, pady=2)
             ttk.Button(direct_leds, text="Toggle", command=lambda value=bit: self.led_toggle_mask(value)).grid(row=row, column=3, padx=2, pady=2)
             ttk.Button(direct_leds, text="Blink", command=lambda value=bit: self.led_blink_mask(value)).grid(row=row, column=4, padx=2, pady=2)
 
-
         blink_frame = ttk.Frame(board_frame)
-        blink_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
-        ttk.Label(blink_frame, text="Blink count").pack(side=tk.LEFT)
-        ttk.Spinbox(blink_frame, textvariable=self.led_blink_count_var, from_=1, to=5, width=4).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Label(blink_frame, text="delay ms").pack(side=tk.LEFT)
-        ttk.Spinbox(blink_frame, textvariable=self.led_blink_delay_var, from_=10, to=200, increment=10, width=5).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Button(blink_frame, text="RGB blink", command=lambda: self.led_blink_mask(0x07)).pack(side=tk.LEFT)
-        ttk.Button(blink_frame, text="All off", command=self.led_all_off).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(blink_frame, text="Query state", command=self.led_query_state).pack(side=tk.LEFT, padx=(6, 0))
-
-        ttk.Separator(board_frame, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=8)
-
-        ttk.Label(board_frame, text="GPIO pin").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        ttk.Combobox(
-            board_frame,
-            textvariable=self.gpio_pin_var,
-            values=tuple(BOARD_PINS.keys()),
-            state="readonly",
-            width=20,
-        ).grid(row=4, column=1, sticky="ew", padx=8, pady=4)
-        gpio_read_frame = ttk.Frame(board_frame)
-        gpio_read_frame.grid(row=4, column=2, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(gpio_read_frame, text="Read", command=self.gpio_read_selected).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(gpio_read_frame, text="Read all", command=self.gpio_read_all).pack(side=tk.LEFT)
-
-        ttk.Checkbutton(board_frame, text="Value high", variable=self.gpio_value_var).grid(row=5, column=0, sticky="w", padx=8, pady=4)
-        ttk.Button(board_frame, text="Write pin", command=self.gpio_write_selected).grid(row=5, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Button(board_frame, text="Toggle pin", command=self.gpio_toggle_selected).grid(row=5, column=2, sticky="ew", padx=(0, 8), pady=4)
-
-        gpio_cfg = ttk.Frame(board_frame)
-        gpio_cfg.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=4)
-        ttk.Checkbutton(gpio_cfg, text="Input", variable=self.gpio_input_var).pack(side=tk.LEFT)
-        ttk.Checkbutton(gpio_cfg, text="Output", variable=self.gpio_output_var).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Combobox(gpio_cfg, textvariable=self.gpio_pull_var, values=tuple(GPIO_PULLS.keys()), state="readonly", width=14).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Button(gpio_cfg, text="Configure", command=self.gpio_config_selected).pack(side=tk.LEFT, padx=(10, 0))
-
-        status_frame = ttk.Frame(board_frame)
-        status_frame.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(8, 8))
-        ttk.Label(status_frame, text="Key").grid(row=0, column=0, sticky="w")
-        ttk.Label(status_frame, textvariable=self.key_state_var, width=12).grid(row=0, column=1, sticky="w", padx=(4, 14))
-        ttk.Label(status_frame, text="LED mask").grid(row=0, column=2, sticky="w")
-        ttk.Label(status_frame, textvariable=self.led_state_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 14))
-        ttk.Label(status_frame, text="Board mask").grid(row=0, column=4, sticky="w")
-        ttk.Label(status_frame, textvariable=self.board_mask_var, width=8).grid(row=0, column=5, sticky="w", padx=(4, 0))
-
-        pin_states_frame = ttk.LabelFrame(board_frame, text="GPIO pin states")
-        pin_states_frame.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        for _idx, (_pin_id, _pin_name) in enumerate(sorted(BOARD_PIN_NAMES.items())):
-            _col = (_idx % 2) * 3
-            _row = _idx // 2
-            ttk.Label(pin_states_frame, text=_pin_name, anchor="w").grid(row=_row, column=_col, sticky="w", padx=(6, 2), pady=1)
-            ttk.Label(pin_states_frame, text="=").grid(row=_row, column=_col + 1, padx=0, pady=1)
-            ttk.Label(pin_states_frame, textvariable=self.gpio_pin_state_vars[_pin_id], width=3).grid(row=_row, column=_col + 2, sticky="w", padx=(0, 12), pady=1)
+        blink_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        # split over two lines: one wide line would be clipped on the right
+        blink_row1 = ttk.Frame(blink_frame)
+        blink_row1.pack(side=tk.TOP, anchor="w", fill=tk.X)
+        ttk.Label(blink_row1, text="Blink count").pack(side=tk.LEFT)
+        ttk.Spinbox(blink_row1, textvariable=self.led_blink_count_var, from_=1, to=5, width=4).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(blink_row1, text="delay ms").pack(side=tk.LEFT)
+        ttk.Spinbox(blink_row1, textvariable=self.led_blink_delay_var, from_=10, to=200, increment=10, width=5).pack(side=tk.LEFT, padx=(4, 10))
+        blink_row2 = ttk.Frame(blink_frame)
+        blink_row2.pack(side=tk.TOP, anchor="w", fill=tk.X, pady=(4, 0))
+        ttk.Button(blink_row2, text="RGB blink", command=lambda: self.led_blink_mask(0x07)).pack(side=tk.LEFT)
+        ttk.Button(blink_row2, text="All off", command=self.led_all_off).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(blink_row2, text="Query state", command=self.led_query_state).pack(side=tk.LEFT, padx=(6, 0))
 
         uart_frame = ttk.LabelFrame(tab, text="UART CH340C")
         uart_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=6)
@@ -1243,8 +1439,10 @@ class AdvBle2UartGui(tk.Tk):
         # Buttons
         btn_frame = ttk.Frame(frm)
         btn_frame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 4))
-        ttk.Button(btn_frame, text="Start TX Adv", command=self.txadv_start).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Stop TX Adv", command=self.txadv_stop).pack(side=tk.LEFT, padx=(8, 0))
+        self.txadv_start_btn = ttk.Button(btn_frame, text="Start TX Adv", command=self.txadv_start)
+        self.txadv_start_btn.pack(side=tk.LEFT)
+        self.txadv_stop_btn = ttk.Button(btn_frame, text="Stop TX Adv", command=self.txadv_stop)
+        self.txadv_stop_btn.pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(btn_frame, text="Query status", command=self.txadv_query).pack(side=tk.LEFT, padx=(8, 0))
 
         # Quick presets
@@ -1264,6 +1462,16 @@ class AdvBle2UartGui(tk.Tk):
         ttk.Label(frm, text="Status").grid(row=8, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Label(frm, textvariable=self.txadv_status_var, anchor="w").grid(
             row=8, column=1, sticky="ew", padx=8, pady=(0, 8))
+
+        ttk.Label(
+            frm,
+            text="Scanning and TX Adv share the radio and are mutually exclusive: starting a scan\n"
+                 "stops a running advertisement, and starting an advertisement stops the scan.\n"
+                 "CMD_ID_TXADV exists only in firmware built with -DTXADV_ENABLE=1; the default\n"
+                 "build answers 'denied' (CMD_STATUS_DENIED) and keeps the Coded-PHY scan.",
+            justify="left",
+            foreground="gray",
+        ).grid(row=9, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
     def _build_conn_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -1507,6 +1715,44 @@ class AdvBle2UartGui(tk.Tk):
         self.last_started_scan_config = None
         self.safe_command(self.client.command_stop_scan)
 
+    def track_tx(self, payload):
+        """Remember that a command is waiting for its answer."""
+        if not payload:
+            return
+        command = payload[0]
+        entry = self.pending_acks.get(command)
+        if entry is None:
+            self.pending_acks[command] = [1, time.monotonic()]
+        else:
+            entry[0] += 1
+            entry[1] = time.monotonic()
+
+    def track_ack(self, command):
+        """Answer received: one less command pending for this id."""
+        entry = self.pending_acks.get(command)
+        if entry is None:
+            return
+        entry[0] -= 1
+        if entry[0] <= 0:
+            del self.pending_acks[command]
+
+    def check_acks(self):
+        """Report commands the firmware never answered.
+
+        Without this the log only shows the TX line, so a hung firmware, a
+        dropped frame and a dead link all look the same."""
+        now = time.monotonic()
+        for command, entry in list(self.pending_acks.items()):
+            pending, last_tx = entry
+            if now - last_tx < ACK_TIMEOUT_S:
+                continue
+            del self.pending_acks[command]
+            name = COMMAND_NAMES.get(command, f"0x{command:02X}")
+            self.log(
+                f"*** no answer to {name} ({pending} pending) after "
+                f"{int(ACK_TIMEOUT_S * 1000)} ms - firmware hung/busy or UART link down"
+            )
+
     def safe_command(self, callback):
         try:
             callback()
@@ -1646,6 +1892,64 @@ class AdvBle2UartGui(tk.Tk):
     def gpio_pwm_off_selected(self):
         self.safe_command(lambda: self.client.command_gpio_pwm_off(self.selected_gpio_pin_id()))
 
+    def gpio_analog_selected(self):
+        self.safe_command(lambda: self.client.command_gpio_analog(self.selected_gpio_pin_id()))
+
+    def gpio_rgb_selected(self):
+        pin_id = self.selected_gpio_pin_id()
+        red = int(self.gpio_rgb_r_var.get())
+        green = int(self.gpio_rgb_g_var.get())
+        blue = int(self.gpio_rgb_b_var.get())
+        self.safe_command(lambda: self.client.command_gpio_rgb(pin_id, red, green, blue))
+
+    def gpioevt_query(self):
+        self.gpioevt_last_op = GPIOEVT_OP_QUERY
+        self.safe_command(self.client.command_gpioevt_query)
+
+    def gpioevt_enable_selected(self):
+        self.gpioevt_last_op = GPIOEVT_OP_ENABLE
+        self.safe_command(lambda: self.client.command_gpioevt_enable(self.selected_gpio_pin_id()))
+
+    def gpioevt_disable_selected(self):
+        self.gpioevt_last_op = GPIOEVT_OP_DISABLE
+        self.safe_command(lambda: self.client.command_gpioevt_disable(self.selected_gpio_pin_id()))
+
+    def gpioevt_clear(self):
+        self.gpioevt_last_op = GPIOEVT_OP_CLEAR
+        self.safe_command(self.client.command_gpioevt_clear)
+
+    def handle_gpioevt_response(self, response: CommandResponse):
+        # Spontaneous edge event: byte[2] has the high bit set and the low 5 bits
+        # carry the pin id; the payload is [pin, level, timestamp_ms(4)].
+        if response.index & EVENT_FLAG:
+            if response.data_len < 6:
+                self.log(f"EVENT GPIOEVT (short frame) {bytes_to_hex(response.data)}")
+                return
+            pin_id = response.data[0]
+            level = response.data[1]
+            ts_ms = (response.data[2] | (response.data[3] << 8)
+                     | (response.data[4] << 16) | (response.data[5] << 24))
+            pin_name = BOARD_PIN_NAMES.get(pin_id, f"pin 0x{pin_id:02X}")
+            edge = "rising" if level else "falling"
+            self.gpioevt_state_var.set(f"{pin_name} {edge} @ {ts_ms} ms")
+            self.log(f"EVENT GPIOEVT {pin_name} {edge} level={level} t={ts_ms} ms")
+            return
+
+        status = self.status_name(response.index)
+        mask = None
+        if response.data_len >= 5:
+            if getattr(self, "gpioevt_last_op", None) == GPIOEVT_OP_QUERY:
+                mask = (response.data[0] | (response.data[1] << 8)
+                        | (response.data[2] << 16) | (response.data[3] << 24))
+            else:
+                mask = (response.data[1] | (response.data[2] << 8)
+                        | (response.data[3] << 16) | (response.data[4] << 24))
+        if mask is None:
+            self.log(f"RX GPIOEVT {status} data={bytes_to_hex(response.data)}")
+        else:
+            self.gpioevt_state_var.set(f"armed=0x{mask:08X}")
+            self.log(f"RX GPIOEVT {status} armed=0x{mask:08X}")
+
     def uart_status(self):
         self.safe_command(self.client.command_uart_status)
 
@@ -1730,11 +2034,14 @@ class AdvBle2UartGui(tk.Tk):
                 self.handle_rx(payload)
             elif event_type == "tx":
                 self.log(format_tx_log(payload))
+                self.track_tx(payload)
             elif event_type == "log":
                 self.log(payload)
             elif event_type == "error":
                 self.status_var.set("Serial error")
                 self.log(payload)
+        if self.client.is_open:
+            self.check_acks()
         self.after(50, self.process_events)
 
     def handle_rx(self, event):
@@ -1746,6 +2053,14 @@ class AdvBle2UartGui(tk.Tk):
             self.log(f"RX CRC/resync discard 0x{event[1]:02X}")
 
     def handle_response(self, response: CommandResponse):
+        self.track_ack(response.command)
+        if response.data_len >= 1 and response.data[0] == CMD_OP_BAD_FRAME:
+            received = response.data[1] if response.data_len > 1 else 0
+            self.log(
+                f"*** firmware rejected a corrupt frame for cmd 0x{response.command:02X} "
+                f"({received} bytes, bad CRC): merged commands or noisy UART link"
+            )
+            return
         if response.command == CMD_ID_INFO:
             self.version_var.set(firmware_version_label(response.index))
             if response.data_len == 6:
@@ -1774,6 +2089,10 @@ class AdvBle2UartGui(tk.Tk):
             self.log(f"RX debug: {response.data.decode(errors='replace')}")
         elif response.command == CMD_ID_GPIO:
             self.handle_gpio_response(response)
+        elif response.command == CMD_ID_LED:
+            self.log(f"RX LED {self.status_name(response.index)} data={bytes_to_hex(response.data)}")
+        elif response.command == CMD_ID_GPIOEVT:
+            self.handle_gpioevt_response(response)
         elif response.command == CMD_ID_UART:
             self.handle_uart_response(response)
         elif response.command == CMD_ID_RFSDK:
@@ -2158,6 +2477,12 @@ class AdvBle2UartGui(tk.Tk):
 
     # ---- TX Adv actions ------------------------------------------------
 
+    # V4.0.2.5 library quirk: calling setExtAdvEnable() (enable OR disable)
+    # twice within ~2 s wedges the RF interrupt handler (watchdog reset).  The
+    # GUI therefore enforces a cooldown between TXADV start/stop commands so
+    # the user cannot trigger the wedge by switching flavour quickly.
+    TXADV_COOLDOWN_S = 2.5
+
     def _txadv_parse_data(self) -> bytes | None:
         """Parse hex string from txadv_data_var; return bytes or None on error."""
         raw = self.txadv_data_var.get().replace(" ", "").replace(":", "").strip()
@@ -2176,6 +2501,16 @@ class AdvBle2UartGui(tk.Tk):
                 return val
         return 0
 
+    def _txadv_cooldown(self):
+        """Disable the TXADV buttons for TXADV_COOLDOWN_S, then re-enable."""
+        for btn in (self.txadv_start_btn, self.txadv_stop_btn):
+            btn.state(["disabled"])
+        self.after(int(self.TXADV_COOLDOWN_S * 1000), self._txadv_cooldown_done)
+
+    def _txadv_cooldown_done(self):
+        for btn in (self.txadv_start_btn, self.txadv_stop_btn):
+            btn.state(["!disabled"])
+
     def txadv_start(self):
         data = self._txadv_parse_data()
         if data is None:
@@ -2187,9 +2522,11 @@ class AdvBle2UartGui(tk.Tk):
         interval_ms = float(self.txadv_interval_ms_var.get())
         interval_units = max(32, int(round(interval_ms / 0.625)))
         self.safe_command(lambda: self.client.command_txadv_start(phy, interval_units, data))
+        self._txadv_cooldown()
 
     def txadv_stop(self):
         self.safe_command(self.client.command_txadv_stop)
+        self._txadv_cooldown()
 
     def txadv_query(self):
         self.safe_command(self.client.command_txadv_status)
@@ -2278,7 +2615,28 @@ class AdvBle2UartGui(tk.Tk):
 
 
 def main():
-    app = AdvBle2UartGui()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="adv2uart_gui.py",
+        description="ADV_BLE2UART test console (TLSR825x scanner firmware).",
+    )
+    parser.add_argument(
+        "-p", "--port", metavar="PORT",
+        help="serial port to pre-select (e.g. COM6 or /dev/ttyUSB0); "
+             "the GUI still lets you change it before connecting",
+    )
+    parser.add_argument(
+        "-c", "--connect", action="store_true",
+        help="connect to the selected serial port as soon as the GUI opens",
+    )
+    parser.add_argument(
+        "-m", "--maximize", action="store_true",
+        help="start the window maximized (zoomed)",
+    )
+    args = parser.parse_args()
+
+    app = AdvBle2UartGui(port=args.port, connect=args.connect, maximize=args.maximize)
     try:
         app.mainloop()
     except KeyboardInterrupt:

@@ -19,10 +19,16 @@ void user_init_normal(void) {
 
 //----------------------- main_loop()
 void main_loop(void) {
+	sched_timer_guard();    /* before the SDK runs: keep the System Timer alive */
+	bb_checkpoint(BB_PHASE_SDK);
 	blc_sdk_main_loop();
+	bb_alive();
+	bb_report_task();
+	wd_clear();     /* feed the watchdog: 3 s of stall -> reset + report */
 	while(clock_time() -  utc_time_sec_tick > utc_time_tick_step) {
 		utc_time_sec_tick += utc_time_tick_step;
 		utc_time_sec++; // + 1 sec
 	}
+	bb_checkpoint(BB_PHASE_SCAN);
 	scan_task();
 }

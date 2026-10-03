@@ -59,6 +59,10 @@ GCC_FLAGS := \
 -fshort-wchar \
 -fms-extensions
 
+# Build-time switches can be overridden from the command line, e.g.
+#   make EXTRA_FLAGS="-DTXADV_EXT_ADV=1 -DCENTRAL_ROLE_ENABLE=0"
+GCC_FLAGS += $(EXTRA_FLAGS)
+
 INCLUDE_PATHS := -I$(PROJECT_PATH) -I$(TEL_PATH) -I$(TEL_PATH)/drivers/B85 -I$(TEL_PATH)/drivers/B85/lib/include -I$(TEL_PATH)/common
 
 GCC_FLAGS += $(TEL_CHIP)

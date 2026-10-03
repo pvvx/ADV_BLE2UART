@@ -4,6 +4,7 @@
 #include "drivers.h"
 #include "stack/ble/ble.h"
 #include "app.h"
+#include "scanning.h"
 
 /**
  * @brief      This function servers to initialization all gpio.
@@ -143,7 +144,13 @@ _attribute_ram_code_ void irq_handler(void)
 {
     DBG_CHN15_HIGH;
 
+	// CMD_ID_GPIOEVT: service the GPIO edge interrupt (if any) before the BLE
+	// SDK handler, so that the GPIO IRQ status bits are still visible here.
+	scanning_gpio_irq_handler();
+
+	bb_isr_enter();
 	blc_sdk_irq_handler ();
+	bb_isr_exit();
 
 	DBG_CHN15_LOW;
 }
@@ -155,6 +162,9 @@ _attribute_ram_code_ void irq_handler(void)
  */
 _attribute_ram_code_ int main (void) {    //must run in ramcode
 	blc_pm_select_internal_32k_crystal();
+
+	/* Black box must be initialised before anything else touches the RAM. */
+	bb_init();
 
 	#if(MCU_CORE_TYPE == MCU_CORE_825x)
 		cpu_wakeup_init();
@@ -175,11 +185,47 @@ _attribute_ram_code_ int main (void) {    //must run in ramcode
 
 	user_init_normal();
 
+	/* Report what the black box kept from the previous run (if anything) and arm
+	   the watchdog: a stall now resets the chip instead of wedging it for good. */
+	bb_report();
+	wd_set_interval_ms(3000, CLOCK_SYS_CLOCK_HZ / 1000);
+	wd_start();     /* wd_set_interval_ms() only programs the capture value: the
+			   watchdog stays disabled until wd_start() enables it. */
+
 	/* load customized freq_offset cap value.
 	 */
 	blc_app_loadCustomizedParameters();
 
-    irq_enable();
+	/* Do NOT call irq_enable() and do not touch reg_irq_en at all.
+	   reg_irq_en (0x643) is the TOP BYTE of reg_irq_mask (0x640, 32-bit), i.e. the
+	   group-enable bits 24..31.  irq_enable() writes 1 there, so it sets bit 24 and
+	   CLEARS bits 25/26/27 - the groups that gate the mask containing the RF IRQ
+	   (bit 13) and the System Timer (bit 20); every frozen scanner run reported
+	   Bm=01002010, exactly that state.  Measured in the ext_adv_test bed: adding
+	   irq_enable() alone makes the firmware wedge on the first RF interrupt after
+	   the extended advertising is enabled, while the same build without it runs for
+	   minutes.  Setting all groups instead (irq_enable_type(FLD_IRQ_EN)) is also
+	   wrong: the firmware then dies right after boot (reset loop, 0 answers).
+	   The SDK's own initialisation leaves the right value in place - its examples
+	   never touch this register - so leave it alone.
+
+	   MEASURED (fw 0.18, without this call): reg_irq_en stays 0, Bm=0x00002010,
+	   Bn=0 - not a single interrupt ever fires, the UART keeps working only because
+	   its RX is polled and its TX is DMA.  The radio is dead: no scanning, no
+	   advertising.  So irq_enable() (reg_irq_en = 1) IS the master enable the SDK
+	   needs; the "no wedge" of that build was an artefact of the interrupts being
+	   off, exactly like the ext_adv_test ladder, which never had them either. */
+	irq_enable();
+
+	/* The DMA (bit 4) and USB_RST (bit 17) sources are pending at every ISR
+	   entry in the extended-advertising build (Bq=00020010) and the SDK handler
+	   never clears them, so the CPU re-enters the ISR immediately after every
+	   return: an interrupt storm that starves the main loop (Bn=42493 in 1.2 s
+	   during op 4).  The UART RX is polled (not interrupt driven) and USB is
+	   unused, so mask both sources off. */
+	irq_clr_sel_src(FLD_IRQ_DMA_EN | FLD_IRQ_USB_RST_EN);
+	irq_disable_type(FLD_IRQ_DMA_EN | FLD_IRQ_USB_RST_EN);
+
 	while(1) {
 		main_loop();
 	}
