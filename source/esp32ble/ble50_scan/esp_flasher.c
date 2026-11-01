@@ -1,9 +1,30 @@
 /*
+ * esp-flasher -- flash an ESP32 family SoC from Linux.
+ *
  * SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
+ *
+ * Why this wrapper exists: esp-serial-flasher (v2.x) only knows the classic
+ * auto-reset circuit -- DTR->BOOT and RTS->RESET through two transistors, as on
+ * boards with a CP2102/CH340/FT232 bridge. Boards whose ESP32-C3/C6/H2/S3 is
+ * wired through its *built-in* USB Serial/JTAG peripheral (/dev/ttyACM*) have no
+ * such circuit: the ROM reads the DTR/RTS bits of the USB CDC interface and
+ * needs the dedicated sequence esptool calls USBJTAGSerialReset. Without it the
+ * chip never enters download mode on its own and has to be put in boot mode by
+ * hand (BOOT+RESET), and after the flash it stays in download mode until the
+ * RESET button is pressed again.
+ *
+ * The sequences below replicate esptool's "before" (ClassicReset /
+ * USBJTAGSerialReset) and "after" (HardReset) strategies and are driven here,
+ * on our own tty file descriptor, so the tool works with any esp-serial-flasher
+ * version. The library is asked not to touch the lines (-m auto ->
+ * LINUX_GPIO_NONE) which also avoids a second, wrong pulse in the middle of the
+ * handshake.
  */
 
+#include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -11,6 +32,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,9 +54,249 @@
 #define ESP32C3_EFUSE_BLOCK1_ADDR (ESP32XX_EFUSE_BASE + 0x44)
 #define ESP32C2_EFUSE_BLOCK2_ADDR (ESP32XX_EFUSE_BASE + 0x40)
 
+/* esptool timings for the reset sequences. */
+#define RESET_HOLD_MS 100
+#define BOOT_HOLD_MS 100
+/* A USB JTAG Serial board re-enumerates after a reset: give it time to come
+ * back and to settle before the library opens the port. */
+#define REENUMERATION_TIMEOUT_MS 8000
+#define REENUMERATION_POLL_MS 50
+#define REENUMERATION_SETTLE_MS 300
+
+/* ------------------------------------------------------------------------- */
+/* Reset strategies                                                          */
+/* ------------------------------------------------------------------------- */
+
+/* Defined below, next to the connection retry helpers. */
+static double now_seconds(void);
+
+typedef enum {
+    BEFORE_DEFAULT,   /* auto: USBJTAGSerialReset on ttyACM, ClassicReset otherwise */
+    BEFORE_USB_JTAG,  /* force esptool USBJTAGSerialReset */
+    BEFORE_CLASSIC,   /* force esptool ClassicReset (external auto-reset circuit) */
+    BEFORE_NONE,      /* the target is already in download mode */
+} before_strategy_t;
+
+typedef enum {
+    AFTER_HARD_RESET, /* esptool HardReset: restart into the new application */
+    AFTER_NONE,       /* leave the target in download mode */
+} after_strategy_t;
+
+static bool read_sysfs_hex(const char *path, unsigned int *out)
+{
+    FILE *f = fopen(path, "r");
+    int rc;
+
+    if (!f) {
+        return false;
+    }
+    rc = fscanf(f, "%x", out);
+    fclose(f);
+    return rc == 1;
+}
+
+/*
+ * True when the serial device is an Espressif USB JTAG Serial interface
+ * (VID 0x303A, PID 0x1001), detected through sysfs. Anything that cannot be
+ * classified falls back to the /dev/ttyACM* heuristic used by earlier versions.
+ */
 static bool is_usb_jtag_serial_device(const char *device)
 {
+    const char *name = strrchr(device, '/');
+    char path[256];
+    unsigned int vid = 0;
+    unsigned int pid = 0;
+
+    name = name ? name + 1 : device;
+
+    snprintf(path, sizeof(path), "/sys/class/tty/%s/device/../idVendor", name);
+    if (read_sysfs_hex(path, &vid)) {
+        snprintf(path, sizeof(path), "/sys/class/tty/%s/device/../idProduct", name);
+        if (read_sysfs_hex(path, &pid)) {
+            return vid == 0x303A && pid == 0x1001;
+        }
+    }
     return strncmp(device, "/dev/ttyACM", strlen("/dev/ttyACM")) == 0;
+}
+
+static void sleep_ms(uint32_t ms)
+{
+    usleep((useconds_t)ms * 1000u);
+}
+
+/* Open the tty raw and without line discipline side effects. The kernel may
+ * assert DTR/RTS when the port is opened; every sequence below starts with an
+ * explicit (0,0) so the state is known. */
+static int tty_open(const char *device)
+{
+    struct termios options;
+    int fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
+
+    if (fd < 0) {
+        return -1;
+    }
+    if (tcgetattr(fd, &options) == 0) {
+        cfmakeraw(&options);
+        options.c_cflag |= (CLOCAL | CREAD);
+        cfsetispeed(&options, B115200);
+        cfsetospeed(&options, B115200);
+        options.c_cc[VMIN] = 0;
+        options.c_cc[VTIME] = 0;
+        tcsetattr(fd, TCSANOW, &options);
+    }
+    return fd;
+}
+
+/* Both modem-control lines are written with a single TIOCMSET: toggling them
+ * with two separate ioctl() calls can produce a glitch that makes the ROM miss
+ * the download-mode request. */
+static void tty_set_lines(int fd, bool dtr, bool rts)
+{
+    int status;
+
+    if (ioctl(fd, TIOCMGET, &status) != 0) {
+        return;
+    }
+    if (dtr) {
+        status |= TIOCM_DTR;
+    } else {
+        status &= ~TIOCM_DTR;
+    }
+    if (rts) {
+        status |= TIOCM_RTS;
+    } else {
+        status &= ~TIOCM_RTS;
+    }
+    ioctl(fd, TIOCMSET, &status);
+}
+
+/*
+ * esptool "USBJTAGSerialReset" (hold_boot = true) / "HardReset" (false) for a
+ * target connected through its built-in USB Serial/JTAG: the ROM watches the
+ * CDC control bits, so the order of the transitions is what selects download
+ * mode versus a normal restart.
+ */
+static bool tty_reset_usb_jtag(const char *device, bool hold_boot)
+{
+    int fd = tty_open(device);
+
+    if (fd < 0) {
+        fprintf(stderr, "Cannot open %s to reset the target: %s\n", device, strerror(errno));
+        return false;
+    }
+
+    tty_set_lines(fd, false, false);            /* idle */
+    if (hold_boot) {
+        tty_set_lines(fd, true, false);         /* BOOT asserted */
+        sleep_ms(RESET_HOLD_MS);
+        tty_set_lines(fd, true, true);          /* RESET asserted, BOOT still low */
+        tty_set_lines(fd, false, true);         /* BOOT released through (1,1) */
+        sleep_ms(RESET_HOLD_MS);
+        tty_set_lines(fd, false, false);        /* RESET released -> ROM loader */
+    } else {
+        tty_set_lines(fd, false, true);         /* RESET asserted, BOOT high */
+        sleep_ms(RESET_HOLD_MS);
+        tty_set_lines(fd, false, false);        /* RESET released -> application */
+    }
+    close(fd);
+    return true;
+}
+
+/*
+ * esptool "UnixTightReset" (hold_boot = true) / "HardReset" (false) for boards
+ * with an external USB-to-UART bridge and the two-transistor auto-reset
+ * circuit.
+ */
+static bool tty_reset_classic(const char *device, bool hold_boot)
+{
+    int fd = tty_open(device);
+
+    if (fd < 0) {
+        fprintf(stderr, "Cannot open %s to reset the target: %s\n", device, strerror(errno));
+        return false;
+    }
+
+    tty_set_lines(fd, false, false);
+    if (hold_boot) {
+        tty_set_lines(fd, true, true);          /* pass through (1,1), never (0,0) */
+        tty_set_lines(fd, false, true);         /* RESET low, BOOT high */
+        sleep_ms(RESET_HOLD_MS);
+        tty_set_lines(fd, true, false);         /* RESET high with BOOT low */
+        sleep_ms(BOOT_HOLD_MS);
+        tty_set_lines(fd, false, false);        /* BOOT high -> ROM loader */
+    } else {
+        tty_set_lines(fd, false, true);         /* RESET low */
+        sleep_ms(RESET_HOLD_MS);
+        tty_set_lines(fd, false, false);        /* RESET high -> application */
+    }
+    close(fd);
+    return true;
+}
+
+/*
+ * After a reset of a USB JTAG Serial target the /dev/ttyACM* node disappears
+ * and comes back. Wait for it without opening it (opening would assert DTR/RTS
+ * again), then let it settle.
+ */
+static bool wait_for_reenumeration(const char *device, uint32_t timeout_ms)
+{
+    double deadline = now_seconds() + (double)timeout_ms / 1000.0;
+    struct stat info;
+
+    while (now_seconds() < deadline) {
+        if (stat(device, &info) == 0) {
+            sleep_ms(REENUMERATION_SETTLE_MS);
+            return true;
+        }
+        sleep_ms(REENUMERATION_POLL_MS);
+    }
+    fprintf(stderr, "Warning: %s did not come back within %u ms\n", device, timeout_ms);
+    return false;
+}
+
+/* Put the target in download mode before the library opens the port. */
+static bool reset_into_download_mode(const char *device, before_strategy_t strategy)
+{
+    bool usb_jtag;
+
+    if (strategy == BEFORE_NONE) {
+        return true;
+    }
+    usb_jtag = strategy == BEFORE_USB_JTAG ||
+               (strategy == BEFORE_DEFAULT && is_usb_jtag_serial_device(device));
+
+    printf("Reset         : %s\n", usb_jtag ? "usb-jtag (esptool USBJTAGSerialReset)"
+                                           : "classic (esptool UnixTightReset)");
+    if (!(usb_jtag ? tty_reset_usb_jtag(device, true)
+                   : tty_reset_classic(device, true))) {
+        return false;
+    }
+    if (usb_jtag && !wait_for_reenumeration(device, REENUMERATION_TIMEOUT_MS)) {
+        return false;
+    }
+    return true;
+}
+
+/* Restart the target into the freshly written application. */
+static void reset_into_application(const char *device, after_strategy_t strategy)
+{
+    bool usb_jtag;
+
+    if (strategy == AFTER_NONE) {
+        printf("Target left in download mode (--after no-reset)\n");
+        return;
+    }
+    usb_jtag = is_usb_jtag_serial_device(device);
+    printf("Restarting the target (%s reset)\n", usb_jtag ? "usb-jtag" : "classic");
+    if (usb_jtag ? tty_reset_usb_jtag(device, false)
+                 : tty_reset_classic(device, false)) {
+        if (usb_jtag) {
+            wait_for_reenumeration(device, REENUMERATION_TIMEOUT_MS);
+        }
+        printf("Target running the new firmware\n");
+    } else {
+        fprintf(stderr, "Warning: could not reset the target; press RESET or replug it\n");
+    }
 }
 
 static const char *loader_err_to_string(esp_loader_error_t err)
@@ -404,12 +668,20 @@ static void print_usage(const char *prog)
             "  -p, --port <device>   Serial device (default: %s)\n"
             "  -b, --baud <rate>     Baud rate     (default: %d)\n"
             "  -c, --chip <name>     Expected chip (esp32c3, esp32s3, ...)\n"
-            "  -m, --mode <mode>     GPIO mode: dtr-rts | gpio | none (default: dtr-rts)\n"
+            "  -m, --mode <mode>     Who drives RESET/BOOT:\n"
+            "                          auto     the flasher does it, esptool sequences (default)\n"
+            "                          dtr-rts  esp-serial-flasher does it (classic circuit only)\n"
+            "                          gpio     esp-serial-flasher via libgpiod lines\n"
+            "                          none     nobody: the target must already be in download mode\n"
+            "      --before <how>    How to enter download mode: auto | usb-jtag | classic | no-reset\n"
+            "                          auto picks usb-jtag on /dev/ttyACM* (ESP32-C3/C6/H2/S3 USB),\n"
+            "                          classic with an external USB-to-UART bridge\n"
+            "      --after <how>     After flashing: hard-reset (default) | no-reset\n"
             "  -n, --no-stub         Use ROM bootloader instead of stub (stub is default)\n"
             "  -h, --help\n"
             "\n"
             "Examples:\n"
-            "  %s 0x1000 bootloader.bin 0x8000 partition-table.bin 0x10000 app.bin\n"
+            "  %s 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 app.bin\n"
             "  %s -p /dev/ttyACM0 -c esp32c3 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 app.bin\n",
             prog, DEFAULT_SERIAL_DEVICE, DEFAULT_BAUD_RATE, prog, prog);
 }
@@ -577,17 +849,27 @@ int main(int argc, char *argv[])
 {
     const char *device = DEFAULT_SERIAL_DEVICE;
     uint32_t baud_rate = DEFAULT_BAUD_RATE;
-    linux_gpio_mode_t gpio_mode = LINUX_GPIO_DTR_RTS;
+    linux_gpio_mode_t gpio_mode = LINUX_GPIO_NONE;
+    bool flasher_reset = true;   /* this tool drives DTR/RTS itself */
+    before_strategy_t before = BEFORE_DEFAULT;
+    after_strategy_t after = AFTER_HARD_RESET;
     bool use_stub = true;
     uint32_t effective_baud = DEFAULT_BAUD_RATE;
     bool expected_chip_set = false;
     target_chip_t expected_chip = ESP_UNKNOWN_CHIP;
+
+    enum {
+        OPT_BEFORE = 1000,
+        OPT_AFTER,
+    };
 
     static const struct option long_opts[] = {
         { "port", required_argument, NULL, 'p' },
         { "baud", required_argument, NULL, 'b' },
         { "chip", required_argument, NULL, 'c' },
         { "mode", required_argument, NULL, 'm' },
+        { "before", required_argument, NULL, OPT_BEFORE },
+        { "after", required_argument, NULL, OPT_AFTER },
         { "no-stub", no_argument, NULL, 'n' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 }
@@ -614,14 +896,46 @@ int main(int argc, char *argv[])
             expected_chip_set = true;
             break;
         case 'm':
-            if (strcmp(optarg, "dtr-rts") == 0) {
+            if (strcmp(optarg, "auto") == 0) {
+                /* Default: the flasher owns the reset lines and the library is
+                 * told not to touch them (LINUX_GPIO_NONE). */
+                gpio_mode = LINUX_GPIO_NONE;
+                flasher_reset = true;
+            } else if (strcmp(optarg, "dtr-rts") == 0) {
                 gpio_mode = LINUX_GPIO_DTR_RTS;
+                flasher_reset = false;
             } else if (strcmp(optarg, "gpio") == 0) {
                 gpio_mode = LINUX_GPIO_GPIOD;
+                flasher_reset = false;
             } else if (strcmp(optarg, "none") == 0) {
                 gpio_mode = LINUX_GPIO_NONE;
+                flasher_reset = false;
             } else {
-                fprintf(stderr, "Unknown mode '%s'. Use: dtr-rts | gpio | none\n", optarg);
+                fprintf(stderr, "Unknown mode '%s'. Use: auto | dtr-rts | gpio | none\n", optarg);
+                return 1;
+            }
+            break;
+        case OPT_BEFORE:
+            if (strcmp(optarg, "auto") == 0 || strcmp(optarg, "default") == 0) {
+                before = BEFORE_DEFAULT;
+            } else if (strcmp(optarg, "usb-jtag") == 0) {
+                before = BEFORE_USB_JTAG;
+            } else if (strcmp(optarg, "classic") == 0) {
+                before = BEFORE_CLASSIC;
+            } else if (strcmp(optarg, "no-reset") == 0 || strcmp(optarg, "none") == 0) {
+                before = BEFORE_NONE;
+            } else {
+                fprintf(stderr, "Unknown --before '%s'. Use: auto | usb-jtag | classic | no-reset\n", optarg);
+                return 1;
+            }
+            break;
+        case OPT_AFTER:
+            if (strcmp(optarg, "hard-reset") == 0 || strcmp(optarg, "default") == 0) {
+                after = AFTER_HARD_RESET;
+            } else if (strcmp(optarg, "no-reset") == 0 || strcmp(optarg, "none") == 0) {
+                after = AFTER_NONE;
+            } else {
+                fprintf(stderr, "Unknown --after '%s'. Use: hard-reset | no-reset\n", optarg);
                 return 1;
             }
             break;
@@ -656,6 +970,12 @@ int main(int argc, char *argv[])
         use_stub = false;
     }
 
+    if (!flasher_reset) {
+        printf("Reset         : handled by esp-serial-flasher (%s)\n",
+               gpio_mode == LINUX_GPIO_GPIOD ? "gpiod lines" :
+               gpio_mode == LINUX_GPIO_DTR_RTS ? "dtr-rts" : "disabled");
+    }
+
     printf("== Connection ==\n");
     printf("Port          : %s\n", device);
     printf("Baud requested: %" PRIu32 "\n", baud_rate);
@@ -684,6 +1004,10 @@ int main(int argc, char *argv[])
             port.gpio_chip_path = "/dev/gpiochip0";
             port.reset_pin = 2;
             port.boot_pin = 3;
+        }
+
+        if (flasher_reset && !reset_into_download_mode(device, before)) {
+            return 1;
         }
 
         if (esp_loader_init_uart(&loader, &port.port) != ESP_LOADER_SUCCESS) {
@@ -827,7 +1151,7 @@ int main(int argc, char *argv[])
                 if (is_usb_jtag_serial_device(device) && !use_stub) {
                     err = flash_file_raw(&loader, file_path, buf, size, addr, true);
                 } else {
-                    err = flash_binary(&loader, buf, (uint32_t)size, addr);
+                    err = flash_file_raw(&loader, file_path, buf, size, addr, false);
                 }
                 t1 = now_seconds();
                 free(buf);
@@ -865,9 +1189,15 @@ int main(int argc, char *argv[])
                    ((((double)total_written * 8.0) / 1000.0) / total_time));
         }
 
-        printf("\nAll done! Resetting target...\n");
-        esp_loader_reset_target(&loader);
-        esp_loader_deinit(&loader);
+        if (flasher_reset) {
+            esp_loader_deinit(&loader);
+            printf("\nAll done!\n");
+            reset_into_application(device, after);
+        } else {
+            printf("\nAll done! Resetting target...\n");
+            esp_loader_reset_target(&loader);
+            esp_loader_deinit(&loader);
+        }
     }
 
     return 0;

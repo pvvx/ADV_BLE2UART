@@ -47,6 +47,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.descriptor import BleakGATTDescriptor
 from bleak.backends.service import BleakGATTService, BleakGATTServiceCollection
 from bleak.exc import BleakError, BleakDeviceNotFoundError
+from bleak.uuids import normalize_uuid_str
 
 logger = logging.getLogger(__name__)
 
@@ -83,12 +84,14 @@ CONN_OP_WRITE_DESCR= 9
 CONN_OP_MTU_EXCH   = 10
 CONN_OP_PAIR       = 11
 CONN_OP_UNPAIR     = 12
+CONN_OP_SUBSCRIBE  = 13
 
 CONN_EVENT_FLAG = 0x80
 CONN_DISCOV_SERVICE  = 0
 CONN_DISCOV_CHAR     = 1
 CONN_DISCOV_DESCR    = 2
 CONN_DISCOV_COMPLETE = 3
+CONN_EVENT_OPERATION = 4
 
 CMD_STATUS_OK    = 0
 CMD_STATUS_ARGS  = 1
@@ -466,8 +469,14 @@ class BleakClientAdv2Uart(BaseBleakClient):
         self._connected = False
         self._mtu = 23
         self._notify_callbacks: dict[int, NotifyCallback] = {}
-        self._read_queue: asyncio.Queue = asyncio.Queue()
-        self._discovery_done = asyncio.Event()
+        self._operation_lock = asyncio.Lock()
+        self._pending: Optional[asyncio.Future] = None
+        self._pending_key: Optional[tuple[int, int]] = None
+        self._open_result: Optional[asyncio.Future] = None
+        self._closed = asyncio.Event()
+        self._closing = False
+        self._address_type = kwargs.get("address_type", 0)
+        self._phy = kwargs.get("phy", "1m")
         self._discovery_results: list = []
         self._read_task: Optional[asyncio.Task] = None
         # GATT service collection (populated by service discovery)
@@ -499,44 +508,57 @@ class BleakClientAdv2Uart(BaseBleakClient):
     async def connect(self, pair: bool = False, **kwargs) -> None:
         if self._connected:
             return
-        self._transport = _SerialTransport(self._port, self._baud)
-        await self._transport.connect()
-        # Resolve address (strip colons, convert to LE on-wire bytes)
         addr = self.address.replace(":", "").upper()
-        if len(addr) != 12:
+        if not re.fullmatch(r"[0-9A-F]{12}", addr):
             raise BleakError(f"Invalid MAC address: {self.address}")
-        addr_bytes = bytes.fromhex(addr)[::-1]  # LE on-wire
-        # Send connect command (1M PHY)
-        frame = _build_cmd_frame(CMD_ID_CONN, bytes([CONN_OP_OPEN_1M, 0]) + addr_bytes)
-        await self._transport.write(frame)
-        # Wait for CONN response (success/failure)
-        # Start reader task
-        self._read_task = asyncio.create_task(self._reader_loop())
-        # Wait for connection ack
-        timeout = kwargs.get("timeout", 10.0)
+        if self._address_type not in (0, 1) or self._phy not in ("1m", "coded"):
+            raise BleakError("address_type must be 0/1 and phy must be '1m'/'coded'")
+        if pair:
+            raise BleakError("Automatic pairing is not supported by this backend")
+        self.services = None
+        self._closing = False
+        self._closed.clear()
+        self._open_result = asyncio.get_running_loop().create_future()
+        self._transport = _SerialTransport(self._port, self._baud)
         try:
-            result = await asyncio.wait_for(self._wait_for_conn_ack(), timeout=timeout)
-            if result != CMD_STATUS_OK:
-                raise BleakError(f"Connection failed with status {result}")
-            self._connected = True
-            # Automatically discover services, like other Bleak backends do.
+            await self._transport.connect()
+            self._read_task = asyncio.create_task(self._reader_loop())
+            op = CONN_OP_OPEN_CODED if self._phy == "coded" else CONN_OP_OPEN_1M
+            # Flag 1 selects host-managed GATT, without the legacy FF01 auto-subscription.
+            await self._transport.write(_build_cmd_frame(
+                CMD_ID_CONN, bytes([op, self._address_type]) + bytes.fromhex(addr)[::-1] + b"\x01"))
+            await asyncio.wait_for(asyncio.shield(self._open_result), timeout=self._timeout)
             await self.get_services()
-        except asyncio.TimeoutError:
-            raise BleakError("Connection timed out")
+        except (Exception, asyncio.CancelledError):
+            if not self._open_result.done():
+                self._open_result.cancel()
+            try:
+                await self.disconnect()
+            except (BleakError, OSError, asyncio.TimeoutError):
+                logger.exception("Failed to clean up BLE connection after connect error")
+            raise
 
     async def disconnect(self) -> None:
-        if not self._connected:
+        if self._transport is None:
             return
-        cmd = bytes([CMD_ID_CONN, CONN_OP_DISCONNECT])
-        frame = _build_cmd_frame(CMD_ID_CONN, bytes([CONN_OP_DISCONNECT]))
-        await self._transport.write(frame)
-        self._connected = False
-        if self._read_task:
-            self._read_task.cancel()
-            self._read_task = None
-        if self._transport:
+        self._closing = True
+        try:
+            if not self._closed.is_set():
+                op = CONN_OP_DISCONNECT if self._connected else CONN_OP_CANCEL
+                await self._transport.write(_build_cmd_frame(CMD_ID_CONN, bytes([op])))
+                await asyncio.wait_for(self._closed.wait(), timeout=self._timeout)
+        finally:
+            self._connected = False
+            if self._read_task:
+                self._read_task.cancel()
+                await self._read_task
+                self._read_task = None
             self._transport.close()
             self._transport = None
+            self.services = None
+            self._notify_callbacks.clear()
+            if self._open_result and not self._open_result.done():
+                self._open_result.cancel()
 
     async def pair(self, **kwargs) -> None:
         if not self._connected:
@@ -556,14 +578,7 @@ class BleakClientAdv2Uart(BaseBleakClient):
         """Discover all services, characteristics and descriptors."""
         if self.services is not None:
             return self.services
-        self._discovery_done.clear()
-        self._discovery_results: list = []
-        frame = _build_cmd_frame(CMD_ID_CONN, bytes([CONN_OP_DISCOVER]))
-        await self._transport.write(frame)
-        try:
-            await asyncio.wait_for(self._discovery_done.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
-            raise BleakError("Service discovery timed out")
+        await self._operation(CONN_OP_DISCOVER)
         # Build the service collection from _discovery_results
         self.services = BleakGATTServiceCollection()
         current_service: Optional[BleakGATTService] = None
@@ -574,25 +589,29 @@ class BleakClientAdv2Uart(BaseBleakClient):
                 uuid = _uuid_to_str(item["uuid"])
                 current_service = BleakGATTService(
                     None, item["start_handle"], uuid)
+                current_char = None
                 self.services.add_service(current_service)
             elif item["type"] == CONN_DISCOV_CHAR:
                 uuid = _uuid_to_str(item["uuid"])
                 handle = item["handle"]
                 props = item["properties"]
+                if current_service is None:
+                    raise BleakError("Characteristic received before its service")
                 current_char = BleakGATTCharacteristic(
                     None, handle, uuid,
                     _props_from_int(props),
-                    lambda: 23,
+                    lambda: min(58, self._mtu - 3),
                     current_service)
-                if current_service:
-                    current_service.add_characteristic(current_char)
+                self.services.add_characteristic(current_char)
             elif item["type"] == CONN_DISCOV_DESCR:
                 uuid = _uuid_to_str(item["uuid"])
                 handle = item["handle"]
                 if current_char:
                     descr = BleakGATTDescriptor(
                         None, handle, uuid, current_char)
-                    current_char.add_descriptor(descr)
+                    self.services.add_descriptor(descr)
+                else:
+                    raise BleakError("Descriptor received before its characteristic")
             elif item["type"] == CONN_DISCOV_COMPLETE:
                 pass
         return self.services
@@ -605,16 +624,7 @@ class BleakClientAdv2Uart(BaseBleakClient):
         **kwargs,
     ) -> bytearray:
         handle = characteristic.handle
-        frame = _build_cmd_frame(CMD_ID_CONN,
-                                  bytes([CONN_OP_READ_CHAR, 0,
-                                         handle & 0xFF, handle >> 8]))
-        await self._transport.write(frame)
-        # Wait for the read response (async)
-        result = await asyncio.wait_for(self._read_queue.get(), timeout=10.0)
-        status, data = result
-        if status != CMD_STATUS_OK:
-            raise BleakError(f"Read failed with status {status}")
-        return bytearray(data)
+        return bytearray(await self._operation(CONN_OP_READ_CHAR, handle))
 
     async def write_gatt_char(
         self,
@@ -623,18 +633,13 @@ class BleakClientAdv2Uart(BaseBleakClient):
         response: bool = False,
     ) -> None:
         handle = characteristic.handle
+        limit = 56 if response else min(58, self._mtu - 3)
+        if len(data) > limit:
+            raise BleakError(f"Write exceeds gateway limit ({limit} bytes)")
         if response:
-            op = CONN_OP_WRITE_RSP
+            await self._operation(CONN_OP_WRITE_RSP, handle, bytes([len(data)]) + data)
         else:
-            op = CONN_OP_WRITE_RSP  # TXDATA uses CONN_OP_WRITE_RSP too
-            # For write-without-response, we use the existing TXDATA command path
-            frame = _build_cmd_frame(CMD_ID_TXDATA,
-                                      bytes([handle & 0xFF, handle >> 8, len(data)]) + data)
-            await self._transport.write(frame)
-            return
-        frame = _build_cmd_frame(CMD_ID_CONN,
-                                  bytes([op, 0, handle & 0xFF, handle >> 8, len(data)]) + data)
-        await self._transport.write(frame)
+            await self._operation(-1, handle, bytes([len(data)]) + data)
 
     async def start_notify(
         self,
@@ -642,39 +647,29 @@ class BleakClientAdv2Uart(BaseBleakClient):
         callback: NotifyCallback,
         **kwargs,
     ) -> None:
-        # Enable notifications by writing the CCCD (0x2902) descriptor.
         handle = characteristic.handle
-        cccd_handle = None
-        # Find the CCCD descriptor from the characteristic's descriptors.
-        for desc in characteristic.descriptors:
-            if desc.uuid == "00002902-0000-1000-8000-00805F9B34FB":
-                cccd_handle = desc.handle
-                break
-        if cccd_handle is None:
-            # Fallback: CCCD is typically at char_handle + 1.
-            cccd_handle = handle + 1
-        # Write 0x0001 (enable notification) to the CCCD.
-        frame = _build_cmd_frame(CMD_ID_CONN,
-            bytes([CONN_OP_WRITE_DESCR, 0,
-                   cccd_handle & 0xFF, cccd_handle >> 8, 2, 0x01, 0x00]))
-        await self._transport.write(frame)
+        if "notify" in characteristic.properties:
+            mode = 1
+        elif "indicate" in characteristic.properties:
+            mode = 2
+        else:
+            raise BleakError("Characteristic does not support notifications or indications")
+        if handle in self._notify_callbacks:
+            raise BleakError("Characteristic is already subscribed")
+        # Install the callback before enabling the CCCD: a peripheral can notify immediately.
         self._notify_callbacks[handle] = callback
+        try:
+            await self._operation(CONN_OP_SUBSCRIBE, handle, bytes([mode]))
+        except (Exception, asyncio.CancelledError):
+            self._notify_callbacks.pop(handle, None)
+            raise
 
     async def stop_notify(
         self,
         characteristic: BleakGATTCharacteristic,
     ) -> None:
         handle = characteristic.handle
-        # Write 0x0000 (disable notification) to the CCCD.
-        cccd_handle = handle + 1  # fallback
-        for desc in characteristic.descriptors:
-            if desc.uuid == "00002902-0000-1000-8000-00805F9B34FB":
-                cccd_handle = desc.handle
-                break
-        frame = _build_cmd_frame(CMD_ID_CONN,
-            bytes([CONN_OP_WRITE_DESCR, 0,
-                   cccd_handle & 0xFF, cccd_handle >> 8, 2, 0x00, 0x00]))
-        await self._transport.write(frame)
+        await self._operation(CONN_OP_SUBSCRIBE, handle, b"\x00")
         self._notify_callbacks.pop(handle, None)
 
     # ── Descriptor I/O ─────────────────────────────────────────────────────
@@ -685,15 +680,7 @@ class BleakClientAdv2Uart(BaseBleakClient):
         **kwargs,
     ) -> bytearray:
         handle = descriptor.handle
-        frame = _build_cmd_frame(CMD_ID_CONN,
-                                  bytes([CONN_OP_READ_DESCR, 0,
-                                         handle & 0xFF, handle >> 8]))
-        await self._transport.write(frame)
-        result = await asyncio.wait_for(self._read_queue.get(), timeout=10.0)
-        status, data = result
-        if status != CMD_STATUS_OK:
-            raise BleakError(f"Descriptor read failed with status {status}")
-        return bytearray(data)
+        return bytearray(await self._operation(CONN_OP_READ_DESCR, handle))
 
     async def write_gatt_descriptor(
         self,
@@ -701,17 +688,50 @@ class BleakClientAdv2Uart(BaseBleakClient):
         data: bytes,
     ) -> None:
         handle = descriptor.handle
-        frame = _build_cmd_frame(CMD_ID_CONN,
-                                  bytes([CONN_OP_WRITE_DESCR, 0,
-                                         handle & 0xFF, handle >> 8, len(data)]) + data)
-        await self._transport.write(frame)
+        if len(data) > 56:
+            raise BleakError("Descriptor write exceeds gateway limit (56 bytes)")
+        await self._operation(CONN_OP_WRITE_DESCR, handle, bytes([len(data)]) + data)
 
     # ── Internal ───────────────────────────────────────────────────────────
+
+    async def _operation(self, op: int, handle: int = 0, payload: bytes = b"") -> bytes:
+        async with self._operation_lock:
+            if not self._connected:
+                raise BleakError("Not connected")
+            self._pending = asyncio.get_running_loop().create_future()
+            self._pending_key = (op, handle)
+            if op == CONN_OP_DISCOVER:
+                self._discovery_results = []
+                frame = _build_cmd_frame(CMD_ID_CONN, bytes([op]))
+            elif op == -1:
+                frame = _build_cmd_frame(CMD_ID_TXDATA, struct.pack("<H", handle) + payload)
+            else:
+                frame = _build_cmd_frame(CMD_ID_CONN, bytes([op, 0]) + struct.pack("<H", handle) + payload)
+            try:
+                await self._transport.write(frame)
+                return await asyncio.wait_for(asyncio.shield(self._pending), self._timeout)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # No transaction IDs on the wire: close before another operation can reuse this key.
+                self._pending.cancel()
+                await self.disconnect()
+                raise
+            finally:
+                if not self._pending.done():
+                    self._pending.cancel()
+                self._pending = None
+                self._pending_key = None
+
+    def _complete_operation(self, status: int, value: bytes = b"") -> None:
+        if self._pending is not None and not self._pending.done():
+            if status:
+                self._pending.set_exception(BleakError(f"GATT operation failed: 0x{status:02x}"))
+            else:
+                self._pending.set_result(value)
 
     async def _reader_loop(self):
         """Background task that reads frames from serial and dispatches them."""
         try:
-            while self._connected:
+            while self._transport is not None:
                 result = await self._transport.read_frame()
                 if result is None:
                     continue
@@ -719,9 +739,11 @@ class BleakClientAdv2Uart(BaseBleakClient):
                 if not crc_ok:
                     continue
                 if cmd == CMD_ID_CONN:
-                    await self._handle_conn_frame(byte2, data_field, extra)
+                    await self._handle_conn_frame(byte2, data_field, extra, byte3)
                 elif cmd == CMD_ID_RXDATA:
                     await self._handle_rxdata_frame(byte2, data_field, extra)
+                elif cmd == CMD_ID_TXDATA and self._pending_key and self._pending_key[0] == -1:
+                    self._complete_operation(byte2)
                 elif cmd == CMD_ID_SCAN:
                     # Advertisement while connected (ESP32 continues scanning)
                     pass
@@ -730,25 +752,52 @@ class BleakClientAdv2Uart(BaseBleakClient):
         except Exception:
             logger.exception("Error in client reader loop")
             self._connected = False
+            self._complete_operation(CMD_STATUS_DENIED)
+            if self._open_result and not self._open_result.done():
+                self._open_result.set_exception(BleakError("Serial reader failed"))
 
-    async def _handle_conn_frame(self, status: int, data_field: bytes, extra: bytes):
+    async def _handle_conn_frame(self, status: int, data_field: bytes, extra: bytes, data_len: int):
         """Handle a CMD_ID_CONN response or spontaneous event."""
         if status & CONN_EVENT_FLAG:
-            # Spontaneous discovery event
             sub_type = status & 0x7F
-            await self._handle_discovery_event(sub_type, data_field, extra)
+            data = (data_field + extra)[:data_len]
+            if sub_type == CONN_EVENT_OPERATION:
+                if len(data) < 4:
+                    raise BleakError("Malformed operation completion")
+                op, handle, result = data[0], int.from_bytes(data[1:3], "little"), data[3]
+                if op == CONN_OP_MTU_EXCH and result == 0 and len(data) == 6:
+                    self._mtu = int.from_bytes(data[4:6], "little")
+                if self._pending_key == (op, handle):
+                    self._complete_operation(result, data[4:])
+            else:
+                await self._handle_discovery_event(sub_type, data, b"")
             return
-        # Regular CONN response — check status
-        if status == CMD_STATUS_OK:
-            # MTU response: first 2 bytes of data_field = MTU value
-            if len(data_field) >= 2:
-                mtu = data_field[0] | (data_field[1] << 8)
-                if mtu > 23:
-                    self._mtu = mtu
-            # Connection ack
-            await self._read_queue.put((CMD_STATUS_OK, data_field))
-        else:
-            await self._read_queue.put((status, data_field))
+        if status:
+            self._complete_operation(status)
+            if data_len == 6 and data_field[0] == 0 and not self._connected:
+                self._closed.set()
+            if self._open_result and not self._open_result.done():
+                self._open_result.set_exception(BleakError(f"Connection failed: {status}"))
+            return
+        if data_len != 6:
+            return
+        state = data_field[0]
+        if state == 2:
+            was_connected = self._connected
+            self._connected = True
+            if self._open_result and not self._open_result.done():
+                self._open_result.set_result(None)
+            if self._closing and not was_connected:
+                await self._transport.write(_build_cmd_frame(CMD_ID_CONN, bytes([CONN_OP_DISCONNECT])))
+        elif state == 0:
+            was_connected = self._connected
+            self._connected = False
+            self._closed.set()
+            self._complete_operation(CMD_STATUS_DENIED)
+            if self._open_result and not self._open_result.done():
+                self._open_result.set_exception(BleakError("Connection closed before opening"))
+            if was_connected and not self._closing and self._disconnected_callback:
+                self._disconnected_callback()
 
     async def _handle_discovery_event(self, sub_type: int, data_field: bytes, extra: bytes):
         if sub_type == CONN_DISCOV_SERVICE:
@@ -785,7 +834,10 @@ class BleakClientAdv2Uart(BaseBleakClient):
                 "handle": handle,
             })
         elif sub_type == CONN_DISCOV_COMPLETE:
-            self._discovery_done.set()
+            if not data_field:
+                raise BleakError("Discovery completion is missing its status")
+            if self._pending_key == (CONN_OP_DISCOVER, 0):
+                self._complete_operation(data_field[0])
 
     async def _handle_rxdata_frame(self, opcode: int, data_field: bytes, extra: bytes):
         """Handle a CMD_ID_RXDATA notification frame."""
@@ -794,27 +846,12 @@ class BleakClientAdv2Uart(BaseBleakClient):
             return
         handle = data_field[0] | (data_field[1] << 8)
         value_len = data_field[2]
-        value = bytes(data_field[3:3 + value_len]) if value_len else b""
-        if not value:
-            value = extra[:value_len] if value_len else b""
+        value = (data_field + extra)[3:3 + value_len]
+        if len(value) != value_len:
+            raise BleakError("Truncated GATT notification")
         cb = self._notify_callbacks.get(handle)
         if cb:
-            if asyncio.iscoroutinefunction(cb):
-                await cb(handle, bytearray(value))
-            else:
-                cb(handle, bytearray(value))
-
-    async def _wait_for_conn_ack(self) -> int:
-        """Wait for the first CONN response after an open request."""
-        while True:
-            result = await self._transport.read_frame()
-            if result is None:
-                continue
-            payload_len, cmd, byte2, byte3, byte4, data_field, extra, crc_ok = result
-            if not crc_ok:
-                continue
-            if cmd == CMD_ID_CONN and not (byte2 & CONN_EVENT_FLAG):
-                return byte2  # status byte
+            asyncio.get_running_loop().call_soon(cb, bytearray(value))
 
 
 # ── Helper utilities ───────────────────────────────────────────────────────
@@ -822,14 +859,12 @@ class BleakClientAdv2Uart(BaseBleakClient):
 def _uuid_to_str(uuid_bytes: bytes) -> str:
     """Convert UUID bytes to a string representation."""
     if len(uuid_bytes) == 2:
-        return f"{uuid_bytes[0] | (uuid_bytes[1] << 8):04X}"
+        return normalize_uuid_str(f"{int.from_bytes(uuid_bytes, 'little'):04x}")
     elif len(uuid_bytes) == 16:
-        return str(uuid.UUID(bytes=uuid_bytes))
+        return str(uuid.UUID(bytes=uuid_bytes[::-1]))
     elif len(uuid_bytes) == 4:
-        return f"{struct.unpack('<I', uuid_bytes)[0]:08X}"
-    elif len(uuid_bytes) == 6:
-        return f"{uuid_bytes[0] | (uuid_bytes[1] << 8) | (uuid_bytes[2] << 16) | (uuid_bytes[3] << 24):08X}-{uuid_bytes[4:6].hex()}"
-    return uuid_bytes.hex()
+        return normalize_uuid_str(f"{int.from_bytes(uuid_bytes, 'little'):08x}")
+    raise BleakError(f"Invalid UUID length: {len(uuid_bytes)}")
 
 
 def _mac_to_wire(text: str) -> bytes:

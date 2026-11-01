@@ -39,6 +39,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
+#include <stdatomic.h>
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/usb_serial_jtag.h"
@@ -76,7 +77,7 @@
 #define HEAD_CRC_ADD_LEN        13
 #define FRAME_DATA_LEN          6
 #define CMD_BUFFER_SIZE         64
-#define DEBUG_PAYLOAD_MAX_LEN   96
+#define DEBUG_PAYLOAD_MAX_LEN   200
 
 #define EXTADV_RPT_DATA_LEN_MAX 229 // //253 - 24 = 229
 
@@ -110,6 +111,7 @@
 #define TXADV_INSTANCE          0
 #define TXADV_DATA_MAX_LEN      31
 #define GAP_SYNC_TIMEOUT_MS     1000
+#define SCAN_TRANSITION_TIMEOUT_MS    1500
 
 #define GPIO_EVENT_QUEUE_LEN    16
 
@@ -155,6 +157,7 @@ enum {
     CONN_OP_MTU_EXCH   = 10, // exchange MTU
     CONN_OP_PAIR       = 11, // pair (send security request)
     CONN_OP_UNPAIR     = 12, // unpair / remove bond
+    CONN_OP_SUBSCRIBE  = 13, // register arbitrary characteristic and configure its CCCD
 };
 
 // Sub-flags for CMD_ID_CONN spontaneous discovery events (byte[2] high bit).
@@ -166,6 +169,7 @@ enum {
     CONN_DISCOV_CHAR           = 1,
     CONN_DISCOV_DESCR          = 2,
     CONN_DISCOV_COMPLETE       = 3,
+    CONN_EVENT_OPERATION       = 4,
 };
 
 enum {
@@ -197,8 +201,8 @@ typedef struct {
     uint8_t scan_channels[3];
     uint16_t scan_window_1m_units;
     uint16_t scan_window_coded_units;
-    uint8_t scan_mode;
-    bool scan_running;
+    atomic_uchar scan_mode;
+    atomic_bool scan_running;
 } scanner_state_t;
 
 typedef struct {
@@ -216,11 +220,12 @@ enum {
 };
 
 typedef struct {
-    uint8_t state;
+    atomic_uchar state;
     uint8_t peer_addr_type;
     uint8_t requested_phy;
     uint16_t interval_units;
     esp_bd_addr_t peer_addr;
+    bool host_managed;
 } conn_runtime_t;
 
 static const uint32_t s_uart_baud_rates[UART_BAUD_RATE_COUNT] = {
@@ -255,9 +260,21 @@ static SemaphoreHandle_t s_rgb_mutex = NULL;  // protects rgb_led_set/off from c
 static adc_oneshot_unit_handle_t s_adc1_handle = NULL;
 static SemaphoreHandle_t s_gap_sync_sem = NULL;
 static volatile esp_bt_status_t s_gap_sync_status = ESP_BT_STATUS_SUCCESS;
+static SemaphoreHandle_t s_scan_sync_sem = NULL;
 static SemaphoreHandle_t s_conn_sem = NULL;       // synchronises connection operations
 static uint16_t s_pending_read_handle = 0;         // handle for pending read
 static bool s_discovery_running = false;           // service discovery in progress
+static esp_gatt_status_t s_discovery_status = ESP_GATT_OK;
+static atomic_bool s_scan_params_pending;
+static atomic_bool s_scan_start_pending;
+static atomic_bool s_scan_stop_pending;
+static atomic_bool s_scan_transition_failed;
+static atomic_bool s_resume_scan_pending;
+static struct {
+    uint16_t handle;
+    uint16_t cccd;
+    uint8_t mode;
+} s_subscription;
 
 #define USE_TXT_OUT 0
 #define USE_CONNECT 1
@@ -276,7 +293,9 @@ static esp_gattc_descr_elem_t *descr_elem_result = NULL;
 ///Declare static functions
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
-static void stop_scan_if_running(void);
+static bool stop_scan_if_running(void);
+static bool wait_for_scan_idle(int64_t deadline);
+static void resume_scan_if_idle(void);
 #if USE_CONNECT
 static void esp_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param);
 static void clear_conn_runtime(void);
@@ -285,7 +304,11 @@ static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint
 static void send_cmd_response_bytes(uint8_t cmd, uint8_t id, const uint8_t *data, uint8_t len);
 static void send_discovery_event(uint8_t sub_type, const uint8_t *data, uint8_t data_len);
 static void send_read_char_response(uint8_t status, uint16_t handle, const uint8_t *value, uint16_t value_len);
-static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr);
+static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr, bool host_managed);
+static void send_operation_event(uint8_t op, uint16_t handle, esp_gatt_status_t status,
+                                 const uint8_t *value, uint16_t value_len);
+static void finish_subscription(esp_gatt_status_t status);
+static void enumerate_service(esp_gatt_if_t gattc_if, uint16_t start, uint16_t end);
 
 static esp_bt_uuid_t remote_filter_service_uuid = {
     .len = ESP_UUID_LEN_16,
@@ -467,6 +490,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             ESP_LOGE(GATTC_TAG, "open failed, error status = %x", p_data->open.status);
             clear_conn_runtime();
             send_conn_response(CMD_STATUS_DENIED);
+            resume_scan_if_idle();
             break;
         }
         ESP_LOGI(GATTC_TAG, "open success");
@@ -480,7 +504,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         ESP_LOG_BUFFER_HEX(GATTC_TAG, gl_profile_tab[PROFILE_A_APP_ID].remote_bda, sizeof(esp_bd_addr_t));
         send_conn_response(CMD_STATUS_OK);
         esp_err_t mtu_ret = esp_ble_gattc_send_mtu_req (gattc_if, p_data->open.conn_id);
-        if (mtu_ret){
+        if (mtu_ret && !s_conn.host_managed){
             ESP_LOGE(GATTC_TAG, "config MTU error, error code = %x", mtu_ret);
             esp_err_t search_ret = esp_ble_gattc_search_service(gattc_if, p_data->open.conn_id, &remote_filter_service_uuid);
             if (search_ret != ESP_OK) {
@@ -492,6 +516,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         uint8_t mtu_resp[2];
         if (param->cfg_mtu.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG,"config mtu failed, error status = %x", param->cfg_mtu.status);
+            send_operation_event(CONN_OP_MTU_EXCH, 0, param->cfg_mtu.status, NULL, 0);
             send_conn_response(CMD_STATUS_OK);
             break;
         }
@@ -500,6 +525,10 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         mtu_resp[0] = param->cfg_mtu.mtu & 0xFF;
         mtu_resp[1] = param->cfg_mtu.mtu >> 8;
         send_cmd_response_bytes(CMD_ID_CONN, CMD_STATUS_OK, mtu_resp, 2);
+        send_operation_event(CONN_OP_MTU_EXCH, 0, ESP_GATT_OK, mtu_resp, 2);
+        if (s_conn.host_managed) {
+            break;
+        }
         esp_err_t search_ret = esp_ble_gattc_search_service(gattc_if, param->cfg_mtu.conn_id, &remote_filter_service_uuid);
         if (search_ret != ESP_OK) {
             ESP_LOGE(GATTC_TAG, "search service request failed, error code = %x", search_ret);
@@ -518,17 +547,16 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         ESP_LOGI(GATTC_TAG, "start handle %d end handle %d current handle value %d", p_data->search_res.start_handle, p_data->search_res.end_handle, p_data->search_res.srvc_id.inst_id);
         // Report discovered service to host (if discovery was host-triggered).
         if (s_discovery_running) {
-            uint8_t buf[12] = {0};
+            uint8_t buf[21] = {0};
             buf[0] = p_data->search_res.is_primary ? 1 : 0;
             buf[1] = p_data->search_res.start_handle & 0xFF;
             buf[2] = p_data->search_res.start_handle >> 8;
             buf[3] = p_data->search_res.end_handle & 0xFF;
             buf[4] = p_data->search_res.end_handle >> 8;
-            // Copy UUID (up to 6 bytes: 2 for 16-bit, 6 for 128-bit).
             uint8_t uuid_len = p_data->search_res.srvc_id.uuid.len;
-            if (uuid_len > 6) uuid_len = 6;
-            memcpy(&buf[5], &p_data->search_res.srvc_id.uuid.uuid.uuid16, uuid_len);
+            memcpy(&buf[5], &p_data->search_res.srvc_id.uuid.uuid, uuid_len);
             send_discovery_event(CONN_DISCOV_SERVICE, buf, 5 + uuid_len);
+            enumerate_service(gattc_if, p_data->search_res.start_handle, p_data->search_res.end_handle);
         }
         if (p_data->search_res.srvc_id.uuid.len == ESP_UUID_LEN_16 && p_data->search_res.srvc_id.uuid.uuid.uuid16 == REMOTE_SERVICE_UUID) {
             ESP_LOGI(GATTC_TAG, "UUID16: %x", p_data->search_res.srvc_id.uuid.uuid.uuid16);
@@ -543,7 +571,8 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             ESP_LOGE(GATTC_TAG, "search service failed, error status = %x", p_data->search_cmpl.status);
             if (s_discovery_running) {
                 s_discovery_running = false;
-                send_discovery_event(CONN_DISCOV_COMPLETE, NULL, 1);
+                uint8_t status = p_data->search_cmpl.status;
+                send_discovery_event(CONN_DISCOV_COMPLETE, &status, 1);
             }
             break;
         }
@@ -554,71 +583,12 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         } else {
             ESP_LOGI(GATTC_TAG, "unknown service source");
         }
-        // Enumerate characteristics & descriptors for discovered services.
-        // We stored service start/end handles during SEARCH_RES_EVT; now
-        // iterate through all handles in the discovered range.
         if (s_discovery_running) {
-            // The search callback provides each service via SEARCH_RES_EVT
-            // which we already report to the host.  Here we enumerate
-            // characteristics for the full range using get_attr_count +
-            // get_all_char per service.
-            // For simplicity, scan the whole 0x0001..0xFFFF handle range.
-            uint16_t start = 0x0001;
-            uint16_t end   = 0xFFFF;
-            uint16_t svc_count = 0;
-            if (esp_ble_gattc_get_attr_count(gattc_if,
-                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                    ESP_GATT_DB_CHARACTERISTIC, start, end,
-                    INVALID_HANDLE, &svc_count) == ESP_GATT_OK && svc_count > 0) {
-                esp_gattc_char_elem_t *chr_list = malloc(sizeof(esp_gattc_char_elem_t) * svc_count);
-                if (chr_list) {
-                    uint16_t out_chr = svc_count;
-                    if (esp_ble_gattc_get_all_char(gattc_if,
-                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                            start, end, chr_list, &out_chr, 0) == ESP_GATT_OK) {
-                        for (uint16_t ci = 0; ci < out_chr; ci++) {
-                            uint8_t chr_buf[10] = {0};
-                            chr_buf[0] = chr_list[ci].char_handle & 0xFF;
-                            chr_buf[1] = chr_list[ci].char_handle >> 8;
-                            chr_buf[2] = chr_list[ci].properties;
-                            uint8_t cu_len = chr_list[ci].uuid.len;
-                            if (cu_len > 6) cu_len = 6;
-                            memcpy(&chr_buf[3], &chr_list[ci].uuid.uuid.uuid16, cu_len);
-                            send_discovery_event(CONN_DISCOV_CHAR, chr_buf, 3 + cu_len);
-                            // Enumerate descriptors for this characteristic.
-                            uint16_t desc_count = 0;
-                            if (esp_ble_gattc_get_attr_count(gattc_if,
-                                    gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                                    ESP_GATT_DB_DESCRIPTOR, start, end,
-                                    chr_list[ci].char_handle, &desc_count) == ESP_GATT_OK && desc_count > 0) {
-                                esp_gattc_descr_elem_t *desc_list = malloc(sizeof(esp_gattc_descr_elem_t) * desc_count);
-                                if (desc_list) {
-                                    uint16_t out_desc = desc_count;
-                                    if (esp_ble_gattc_get_all_descr(gattc_if,
-                                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                                            chr_list[ci].char_handle, desc_list, &out_desc, 0) == ESP_GATT_OK) {
-                                        for (uint16_t di = 0; di < out_desc; di++) {
-                                            uint8_t d_buf[8] = {0};
-                                            d_buf[0] = desc_list[di].handle & 0xFF;
-                                            d_buf[1] = desc_list[di].handle >> 8;
-                                            uint8_t du_len = desc_list[di].uuid.len;
-                                            if (du_len > 6) du_len = 6;
-                                            memcpy(&d_buf[2], &desc_list[di].uuid.uuid.uuid16, du_len);
-                                            send_discovery_event(CONN_DISCOV_DESCR, d_buf, 2 + du_len);
-                                        }
-                                    }
-                                    free(desc_list);
-                                }
-                            }
-                        }
-                    }
-                    free(chr_list);
-                }
-            }
             s_discovery_running = false;
-            send_discovery_event(CONN_DISCOV_COMPLETE, NULL, 1);
+            uint8_t status = s_discovery_status;
+            send_discovery_event(CONN_DISCOV_COMPLETE, &status, 1);
         }
-        if (get_service){
+        if (get_service && !s_conn.host_managed){
             uint16_t count  = 0;
             uint16_t offset = 0;
             esp_gatt_status_t ret_status = esp_ble_gattc_get_attr_count(gattc_if,
@@ -676,6 +646,20 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
 
         break;
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
+        if (s_subscription.handle == p_data->reg_for_notify.handle) {
+            if (p_data->reg_for_notify.status != ESP_GATT_OK) {
+                finish_subscription(p_data->reg_for_notify.status);
+            } else {
+                uint8_t value[2] = {s_subscription.mode, 0};
+                if (esp_ble_gattc_write_char_descr(gattc_if,
+                        gl_profile_tab[PROFILE_A_APP_ID].conn_id, s_subscription.cccd,
+                        sizeof(value), value, ESP_GATT_WRITE_TYPE_RSP,
+                        ESP_GATT_AUTH_REQ_NONE) != ESP_OK) {
+                    finish_subscription(ESP_GATT_ERROR);
+                }
+            }
+            break;
+        }
         if (p_data->reg_for_notify.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "reg for notify failed, error status = %x", p_data->reg_for_notify.status);
             send_conn_response(CMD_STATUS_DENIED);
@@ -746,32 +730,55 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         break;
     case ESP_GATTC_READ_CHAR_EVT:
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_READ_CHAR_EVT, status=%d", p_data->read.status);
-        if (p_data->read.status == ESP_GATT_OK) {
-            send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
-                                    p_data->read.value, p_data->read.value_len);
-        } else {
-            send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+        if (!s_conn.host_managed) {
+            if (p_data->read.status == ESP_GATT_OK) {
+                send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
+                                        p_data->read.value, p_data->read.value_len);
+            } else {
+                send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+            }
         }
         s_pending_read_handle = 0;
+        send_operation_event(CONN_OP_READ_CHAR, p_data->read.handle, p_data->read.status,
+                             p_data->read.value, p_data->read.status == ESP_GATT_OK ? p_data->read.value_len : 0);
         if (s_conn_sem) xSemaphoreGive(s_conn_sem);
         break;
     case ESP_GATTC_READ_DESCR_EVT:
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_READ_DESCR_EVT, status=%d", p_data->read.status);
-        if (p_data->read.status == ESP_GATT_OK) {
-            send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
-                                    p_data->read.value, p_data->read.value_len);
-        } else {
-            send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+        if (!s_conn.host_managed) {
+            if (p_data->read.status == ESP_GATT_OK) {
+                send_read_char_response(CMD_STATUS_OK, s_pending_read_handle,
+                                        p_data->read.value, p_data->read.value_len);
+            } else {
+                send_read_char_response(CMD_STATUS_DENIED, s_pending_read_handle, NULL, 0);
+            }
         }
         s_pending_read_handle = 0;
+        send_operation_event(CONN_OP_READ_DESCR, p_data->read.handle, p_data->read.status,
+                             p_data->read.value, p_data->read.status == ESP_GATT_OK ? p_data->read.value_len : 0);
         if (s_conn_sem) xSemaphoreGive(s_conn_sem);
         break;
     case ESP_GATTC_WRITE_DESCR_EVT:
+        if (s_subscription.handle && p_data->write.handle == s_subscription.cccd) {
+            if (p_data->write.status != ESP_GATT_OK || s_subscription.mode != 0) {
+                finish_subscription(p_data->write.status);
+            } else if (esp_ble_gattc_unregister_for_notify(gattc_if,
+                    gl_profile_tab[PROFILE_A_APP_ID].remote_bda, s_subscription.handle) != ESP_OK) {
+                finish_subscription(ESP_GATT_ERROR);
+            }
+            break;
+        }
+        send_operation_event(CONN_OP_WRITE_DESCR, p_data->write.handle, p_data->write.status, NULL, 0);
         if (p_data->write.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "write descr failed, error status = %x", p_data->write.status);
             break;
         }
         ESP_LOGI(GATTC_TAG, "write descr success");
+        break;
+    case ESP_GATTC_UNREG_FOR_NOTIFY_EVT:
+        if (s_subscription.handle == p_data->unreg_for_notify.handle) {
+            finish_subscription(p_data->unreg_for_notify.status);
+        }
         break;
     case ESP_GATTC_SRVC_CHG_EVT: {
         esp_bd_addr_t bda;
@@ -781,6 +788,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         break;
     }
     case ESP_GATTC_WRITE_CHAR_EVT:
+        send_operation_event(CONN_OP_WRITE_RSP, p_data->write.handle, p_data->write.status, NULL, 0);
         if (p_data->write.status != ESP_GATT_OK){
             ESP_LOGE(GATTC_TAG, "write char failed, error status = %x", p_data->write.status);
             break;
@@ -791,6 +799,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         if (p_data->cancel_open.status == ESP_GATT_OK) {
             clear_conn_runtime();
             send_conn_response(CMD_STATUS_OK);
+            resume_scan_if_idle();
         } else {
             ESP_LOGE(GATTC_TAG, "cancel open failed, error status = %x", p_data->cancel_open.status);
             send_conn_response(CMD_STATUS_DENIED);
@@ -800,6 +809,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
         ESP_LOGI(GATTC_TAG, "ESP_GATTC_DISCONNECT_EVT, reason = 0x%x", p_data->disconnect.reason);
         clear_conn_runtime();
         send_conn_response(CMD_STATUS_OK);
+        resume_scan_if_idle();
         break;
 #endif
     default:
@@ -812,7 +822,13 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
 //MYFIFO_INIT(ad_fifo, MYFIFO_BLK_SIZE, 4); 	// (229+12)*4 = 964 bytes + sizeof(my_fifo_t)
 static void flush_serial_frame(const uint8_t *frame, size_t len)
 {
-    usb_serial_jtag_write_bytes(frame, len, 5 / portTICK_PERIOD_MS);
+    TickType_t timeout = pdMS_TO_TICKS(100);
+    if (timeout == 0) timeout = 1;
+    int written = usb_serial_jtag_write_bytes(frame, len, timeout);
+    if (written != (int)len) {
+        ESP_LOGE(GATTC_TAG, "serial frame write failed: %d of %u bytes", written, (unsigned)len);
+        return;
+    }
     usb_serial_jtag_ll_txfifo_flush();
 }
 
@@ -1055,10 +1071,17 @@ static bool start_txadv(uint8_t phy, uint16_t interval_units, const uint8_t *adv
 
 static void clear_conn_runtime(void)
 {
-    memset(&s_conn, 0, sizeof(s_conn));
+    s_conn.peer_addr_type = 0;
+    s_conn.requested_phy = 0;
+    s_conn.interval_units = 0;
+    memset(s_conn.peer_addr, 0, sizeof(s_conn.peer_addr));
+    s_conn.host_managed = false;
     s_conn.state = CONN_STATE_IDLE;
     connect = false;
     get_service = false;
+    s_discovery_running = false;
+    s_pending_read_handle = 0;
+    memset(&s_subscription, 0, sizeof(s_subscription));
     gl_profile_tab[PROFILE_A_APP_ID].conn_id = 0;
     gl_profile_tab[PROFILE_A_APP_ID].service_start_handle = INVALID_HANDLE;
     gl_profile_tab[PROFILE_A_APP_ID].service_end_handle = INVALID_HANDLE;
@@ -1111,18 +1134,77 @@ static void send_rxdata_response(bool is_notify, uint16_t att_handle, const uint
 
 static void send_discovery_event(uint8_t sub_type, const uint8_t *data, uint8_t data_len)
 {
-    // Spontaneous discovery event: byte[2] has CONN_EVENT_FLAG set.
-    uint8_t resp[FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN] = {0};
-    uint8_t truncated = data_len;
+    send_cmd_response_bytes(CMD_ID_CONN, CONN_EVENT_FLAG | sub_type, data, data_len);
+}
 
-    if (truncated > FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN) {
-        truncated = FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN;
+static void send_operation_event(uint8_t op, uint16_t handle, esp_gatt_status_t status,
+                                 const uint8_t *value, uint16_t value_len)
+{
+    uint8_t resp[FRAME_DATA_LEN + DEBUG_PAYLOAD_MAX_LEN] = {op, handle & 0xFF, handle >> 8, status};
+    if (value_len > sizeof(resp) - 4) {
+        ESP_LOGE(GATTC_TAG, "GATT result too large: %u", value_len);
+        resp[3] = ESP_GATT_INVALID_ATTR_LEN;
+        value_len = 0;
     }
-    resp[0] = sub_type;
-    if (truncated > 1) {
-        memcpy(&resp[1], data, truncated - 1);
+    if (value_len && value) {
+        memcpy(&resp[4], value, value_len);
     }
-    send_cmd_response_bytes(CMD_ID_CONN, CONN_EVENT_FLAG | sub_type, resp, truncated);
+    send_discovery_event(CONN_EVENT_OPERATION, resp, 4 + value_len);
+}
+
+static void finish_subscription(esp_gatt_status_t status)
+{
+    uint16_t handle = s_subscription.handle;
+    uint8_t mode = s_subscription.mode;
+    memset(&s_subscription, 0, sizeof(s_subscription));
+    if (status != ESP_GATT_OK) {
+        ESP_LOGE(GATTC_TAG, "subscription failed for handle %u: %u", handle, status);
+        if (mode && esp_ble_gattc_unregister_for_notify(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+                gl_profile_tab[PROFILE_A_APP_ID].remote_bda, handle) != ESP_OK) {
+            ESP_LOGE(GATTC_TAG, "subscription rollback failed for handle %u", handle);
+        }
+    }
+    send_operation_event(CONN_OP_SUBSCRIBE, handle, status, &mode, 1);
+}
+
+static void enumerate_service(esp_gatt_if_t gattc_if, uint16_t start, uint16_t end)
+{
+    uint16_t conn_id = gl_profile_tab[PROFILE_A_APP_ID].conn_id;
+    uint16_t chars = 0;
+    esp_gatt_status_t status = esp_ble_gattc_get_attr_count(gattc_if, conn_id,
+            ESP_GATT_DB_CHARACTERISTIC, start, end, INVALID_HANDLE, &chars);
+    for (uint16_t ci = 0; status == ESP_GATT_OK && ci < chars; ++ci) {
+        esp_gattc_char_elem_t chr;
+        uint16_t count = 1;
+        status = esp_ble_gattc_get_all_char(gattc_if, conn_id, start, end, &chr, &count, ci);
+        /* ESP-IDF can return the total available count rather than the number copied. */
+        if (status != ESP_GATT_OK || count == 0) {
+            status = status == ESP_GATT_OK ? ESP_GATT_ERROR : status;
+            break;
+        }
+        uint8_t buf[19] = {chr.char_handle & 0xFF, chr.char_handle >> 8, chr.properties};
+        memcpy(&buf[3], &chr.uuid.uuid, chr.uuid.len);
+        send_discovery_event(CONN_DISCOV_CHAR, buf, 3 + chr.uuid.len);
+        uint16_t descriptors = 0;
+        status = esp_ble_gattc_get_attr_count(gattc_if, conn_id, ESP_GATT_DB_DESCRIPTOR,
+                                            start, end, chr.char_handle, &descriptors);
+        for (uint16_t di = 0; status == ESP_GATT_OK && di < descriptors; ++di) {
+            esp_gattc_descr_elem_t desc;
+            count = 1;
+            status = esp_ble_gattc_get_all_descr(gattc_if, conn_id, chr.char_handle, &desc, &count, di);
+            if (status != ESP_GATT_OK || count == 0) {
+                status = status == ESP_GATT_OK ? ESP_GATT_ERROR : status;
+                break;
+            }
+            uint8_t dbuf[18] = {desc.handle & 0xFF, desc.handle >> 8};
+            memcpy(&dbuf[2], &desc.uuid.uuid, desc.uuid.len);
+            send_discovery_event(CONN_DISCOV_DESCR, dbuf, 2 + desc.uuid.len);
+        }
+    }
+    if (status != ESP_GATT_OK) {
+        ESP_LOGE(GATTC_TAG, "enumeration failed for service %u: %u", start, status);
+        s_discovery_status = status;
+    }
 }
 
 static void send_read_char_response(uint8_t status, uint16_t handle, const uint8_t *value, uint16_t value_len)
@@ -1142,12 +1224,12 @@ static void send_read_char_response(uint8_t status, uint16_t handle, const uint8
     send_cmd_response_bytes(CMD_ID_CONN, status, resp, 3 + truncated);
 }
 
-static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr)
+static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_t *peer_addr, bool host_managed)
 {
     esp_ble_gatt_creat_conn_params_t create_conn = {
         .remote_addr_type = (esp_ble_addr_type_t)peer_addr_type,
         .is_direct = true,
-        .is_aux = phy != 0,
+        .is_aux = true, // Use BLE 5 extended initiation for both PHYs.
         .own_addr_type = (esp_ble_addr_type_t)0xFF,
         .phy_mask = phy != 0 ? ESP_BLE_GAP_PHY_CODED_PREF_MASK : ESP_BLE_GAP_PHY_1M_PREF_MASK,
         .phy_1m_conn_params = &phy_1m_conn_params,
@@ -1163,12 +1245,19 @@ static bool start_conn_request(uint8_t phy, uint8_t peer_addr_type, const uint8_
     s_conn.state = CONN_STATE_CONNECTING;
     s_conn.peer_addr_type = peer_addr_type;
     s_conn.requested_phy = phy;
+    s_conn.host_managed = host_managed;
     s_conn.interval_units = phy != 0 ? phy_coded_conn_params.interval_max : phy_1m_conn_params.interval_max;
-    memcpy(s_conn.peer_addr, peer_addr, sizeof(esp_bd_addr_t));
-    memcpy(create_conn.remote_bda, peer_addr, sizeof(esp_bd_addr_t));
+    // The host protocol uses little-endian addresses; ESP-IDF uses display order.
+    for (size_t i = 0; i < sizeof(esp_bd_addr_t); ++i) {
+        create_conn.remote_bda[i] = peer_addr[sizeof(esp_bd_addr_t) - 1 - i];
+    }
+    memcpy(s_conn.peer_addr, create_conn.remote_bda, sizeof(esp_bd_addr_t));
     connect = true;
 
-    stop_scan_if_running();
+    s_scan_transition_failed = false;
+    if (!wait_for_scan_idle(esp_timer_get_time() + (int64_t)SCAN_TRANSITION_TIMEOUT_MS * 1000)) {
+        return false;
+    }
     return esp_ble_gattc_enh_open(gl_profile_tab[PROFILE_A_APP_ID].gattc_if, &create_conn) == ESP_OK;
 }
 
@@ -1687,14 +1776,106 @@ static void refresh_scan_params(void)
     s_state.addr_filter_mask = (flg >> 4) & 0x03;
 }
 
-static void stop_scan_if_running(void)
+static void notify_scan_change(void)
 {
-    if (s_state.scan_running) {
-        esp_ble_gap_stop_ext_scan();
-        s_state.scan_running = false;
+    if (s_scan_sync_sem != NULL) {
+        xSemaphoreGive(s_scan_sync_sem);
     }
 }
 
+static bool stop_scan_if_running(void)
+{
+    bool expected = false;
+    if (s_state.scan_running &&
+        atomic_compare_exchange_strong(&s_scan_stop_pending, &expected, true)) {
+        esp_err_t ret = esp_ble_gap_stop_ext_scan();
+        if (ret != ESP_OK) {
+            ESP_LOGE(GATTC_TAG, "scan stop request failed: %x", ret);
+            s_scan_transition_failed = true;
+            s_scan_stop_pending = false;
+            notify_scan_change();
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool wait_for_scan_idle(int64_t deadline)
+{
+    for (;;) {
+        if (s_scan_transition_failed || !stop_scan_if_running()) {
+            return false;
+        }
+        if (!s_scan_params_pending && !s_scan_start_pending &&
+            !s_scan_stop_pending && !s_state.scan_running) {
+            return true;
+        }
+        int64_t remaining_us = deadline - esp_timer_get_time();
+        if (remaining_us <= 0 || s_scan_sync_sem == NULL) {
+            return false;
+        }
+        TickType_t ticks = pdMS_TO_TICKS((remaining_us + 999) / 1000);
+        if (ticks == 0) ticks = 1;
+        if (xSemaphoreTake(s_scan_sync_sem, ticks) != pdTRUE) {
+            return false;
+        }
+    }
+}
+
+static bool wait_for_scan_running(int64_t deadline)
+{
+    for (;;) {
+        if (s_scan_transition_failed) {
+            return false;
+        }
+        if (!s_scan_params_pending && !s_scan_start_pending && !s_scan_stop_pending) {
+            return s_state.scan_running;
+        }
+        int64_t remaining_us = deadline - esp_timer_get_time();
+        if (remaining_us <= 0 || s_scan_sync_sem == NULL) {
+            return false;
+        }
+        TickType_t ticks = pdMS_TO_TICKS((remaining_us + 999) / 1000);
+        if (ticks == 0) ticks = 1;
+        if (xSemaphoreTake(s_scan_sync_sem, ticks) != pdTRUE) {
+            return false;
+        }
+    }
+}
+
+static bool request_scan_params(void)
+{
+    s_scan_params_pending = true;
+    if (!(s_state.scan_mode & 3) || s_conn.state != CONN_STATE_IDLE) {
+        s_scan_params_pending = false;
+        notify_scan_change();
+        return false;
+    }
+    esp_err_t ret = esp_ble_gap_set_ext_scan_params(&ext_scan_params);
+    if (ret != ESP_OK) {
+        s_scan_transition_failed = true;
+        s_scan_params_pending = false;
+        notify_scan_change();
+        return false;
+    }
+    return true;
+}
+
+static void resume_scan_if_idle(void)
+{
+    if (s_conn.state != CONN_STATE_IDLE || !(s_state.scan_mode & 3)) {
+        return;
+    }
+    if (s_scan_stop_pending) {
+        s_resume_scan_pending = true;
+        return;
+    }
+    s_resume_scan_pending = false;
+    if (!s_state.scan_running && !s_scan_params_pending && !s_scan_start_pending &&
+        !request_scan_params()) {
+        send_debug_print("SCAN: cannot resume scanning");
+    }
+}
 
 static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
@@ -1713,19 +1894,41 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     case ESP_GAP_BLE_SET_EXT_SCAN_PARAMS_COMPLETE_EVT: {
         if (param->set_ext_scan_params.status != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(GATTC_TAG, "extend scan parameters set failed, error status = %x", param->set_ext_scan_params.status);
+            send_debug_print("SCAN: setting scan parameters failed (%d)", param->set_ext_scan_params.status);
+            s_scan_transition_failed = true;
+            s_scan_params_pending = false;
+            notify_scan_change();
             break;
         }
-        if ((s_state.scan_mode & 0x03) != 0) {
-            esp_ble_gap_start_ext_scan(EXT_SCAN_DURATION, EXT_SCAN_PERIOD);
+        if ((s_state.scan_mode & 0x03) != 0 && s_conn.state == CONN_STATE_IDLE) {
+            s_scan_start_pending = true;
+            esp_err_t ret = esp_ble_gap_start_ext_scan(EXT_SCAN_DURATION, EXT_SCAN_PERIOD);
+            if (ret != ESP_OK) {
+                ESP_LOGE(GATTC_TAG, "scan start request failed: %x", ret);
+                s_scan_transition_failed = true;
+                s_scan_start_pending = false;
+                send_debug_print("SCAN: cannot start scanning");
+            }
         }
+        s_scan_params_pending = false;
+        notify_scan_change();
         break;
     }
     case ESP_GAP_BLE_EXT_SCAN_START_COMPLETE_EVT:
         if (param->ext_scan_start.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(GATTC_TAG, "scan start failed, error status = %x", param->scan_start_cmpl.status);
+            ESP_LOGE(GATTC_TAG, "scan start failed, error status = %x", param->ext_scan_start.status);
+            send_debug_print("SCAN: scan start failed (%d)", param->ext_scan_start.status);
+            s_scan_transition_failed = true;
+            s_scan_start_pending = false;
+            notify_scan_change();
             break;
         }
         s_state.scan_running = true;
+        s_scan_start_pending = false;
+        if (!(s_state.scan_mode & 3) || s_conn.state != CONN_STATE_IDLE) {
+            stop_scan_if_running();
+        }
+        notify_scan_change();
         ESP_LOGI(GATTC_TAG, "Scan start success");
         break;
     case ESP_GAP_BLE_EXT_ADV_SET_PARAMS_COMPLETE_EVT:
@@ -1888,10 +2091,19 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     case ESP_GAP_BLE_EXT_SCAN_STOP_COMPLETE_EVT:
         if (param->ext_scan_stop.status != ESP_BT_STATUS_SUCCESS){
             ESP_LOGE(GATTC_TAG, "extend Scan stop failed, error status = %x", param->ext_scan_stop.status);
+            send_debug_print("SCAN: scan stop failed (%d)", param->ext_scan_stop.status);
+            s_scan_transition_failed = true;
+            s_scan_stop_pending = false;
+            notify_scan_change();
             break;
         }
         s_state.scan_running = false;
+        s_scan_stop_pending = false;
+        notify_scan_change();
         ESP_LOGI(GATTC_TAG, "Stop extend scan successfully");
+        if (s_resume_scan_pending) {
+            resume_scan_if_idle();
+        }
         break;
 
     default:
@@ -2025,7 +2237,15 @@ static void handle_scan_command(const uint8_t *cmd_buf, int len)
 
     flags = cmd_buf[1];
     memcpy(echo, &cmd_buf[1], data_len > FRAME_DATA_LEN ? FRAME_DATA_LEN : data_len);
-    stop_scan_if_running();
+    const int64_t deadline = esp_timer_get_time() + (int64_t)SCAN_TRANSITION_TIMEOUT_MS * 1000;
+    s_state.scan_mode = 0;
+    s_resume_scan_pending = false;
+    s_scan_transition_failed = false;
+    if (!wait_for_scan_idle(deadline)) {
+        send_debug_print("SCAN: cannot confirm scanner stopped");
+        send_cmd_response(CMD_ID_SCAN, total_filter_count(), NULL, 0);
+        return;
+    }
     s_state.scan_mode = flags;
 
     if ((flags & 0x03) != 0) {
@@ -2038,13 +2258,13 @@ static void handle_scan_command(const uint8_t *cmd_buf, int len)
         }
 
         refresh_scan_params();
-        esp_err_t scan_ret = esp_ble_gap_set_ext_scan_params(&ext_scan_params);
-        if (scan_ret != ESP_OK) {
-            ESP_LOGE(GATTC_TAG, "set extend scan params error, error code = %x", scan_ret);
-            send_debug_print("scan params error: 0x%x", scan_ret);
+        if (!request_scan_params() || !wait_for_scan_running(deadline)) {
+            s_state.scan_mode = 0;
+            stop_scan_if_running();
+            send_debug_print("SCAN: cannot confirm scanner started");
+            send_cmd_response(CMD_ID_SCAN, total_filter_count(), NULL, 0);
+            return;
         }
-    } else {
-        s_state.scan_running = false;
     }
 
     send_cmd_response(CMD_ID_SCAN, total_filter_count(), echo, data_len);
@@ -2445,7 +2665,8 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
 
     case CONN_OP_OPEN_1M:
     case CONN_OP_OPEN_CODED:
-        if (len < 11) {
+        if ((len != 11 && len != 12) || cmd_buf[2] > BLE_ADDR_TYPE_RANDOM ||
+            (len == 12 && cmd_buf[9] > 1)) {
             status = CMD_STATUS_ARGS;
             break;
         }
@@ -2454,9 +2675,10 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             break;
         }
         if (!start_conn_request(op == CONN_OP_OPEN_CODED ? 1 : 0,
-                                cmd_buf[2], &cmd_buf[3])) {
+                                cmd_buf[2], &cmd_buf[3], len == 12 && cmd_buf[9] == 1)) {
             clear_conn_runtime();
             status = CMD_STATUS_DENIED;
+            resume_scan_if_idle();
         }
         break;
 
@@ -2490,16 +2712,20 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
 
     case CONN_OP_DISCOVER:
         if (s_conn.state != CONN_STATE_CONNECTED ||
-            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE || s_discovery_running) {
             status = CMD_STATUS_DENIED;
             break;
         }
         s_discovery_running = true;
+        s_discovery_status = ESP_GATT_OK;
         {
             // Search for all services (no UUID filter).
-            esp_ble_gattc_search_service(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
+            if (esp_ble_gattc_search_service(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
                                          gl_profile_tab[PROFILE_A_APP_ID].conn_id,
-                                         NULL);
+                                         NULL) != ESP_OK) {
+                s_discovery_running = false;
+                status = CMD_STATUS_DENIED;
+            }
         }
         break;
 
@@ -2509,12 +2735,12 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
             break;
         }
-        if (len < 6) {
+        if (len != 7 || cmd_buf[2] != 0) {
             status = CMD_STATUS_ARGS;
             break;
         }
         {
-            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            uint16_t handle = (uint16_t)cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
             s_pending_read_handle = handle;
             esp_err_t ret = esp_ble_gattc_read_char(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
                                                      gl_profile_tab[PROFILE_A_APP_ID].conn_id,
@@ -2533,17 +2759,17 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
             break;
         }
-        if (len < 6 || len < 6 + cmd_buf[3]) {
+        if (len < 8 || cmd_buf[2] != 0 || len != 8 + cmd_buf[5]) {
             status = CMD_STATUS_ARGS;
             break;
         }
         {
-            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            uint16_t handle = (uint16_t)cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
             esp_err_t ret = esp_ble_gattc_write_char(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
                                                      gl_profile_tab[PROFILE_A_APP_ID].conn_id,
                                                      handle,
-                                                     cmd_buf[4],
-                                                     (uint8_t *)(len > 5 ? &cmd_buf[5] : NULL),
+                                                     cmd_buf[5],
+                                                     (uint8_t *)&cmd_buf[6],
                                                      ESP_GATT_WRITE_TYPE_RSP,
                                                      ESP_GATT_AUTH_REQ_NONE);
             if (ret != ESP_OK) {
@@ -2558,12 +2784,12 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
             break;
         }
-        if (len < 6) {
+        if (len != 7 || cmd_buf[2] != 0) {
             status = CMD_STATUS_ARGS;
             break;
         }
         {
-            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            uint16_t handle = (uint16_t)cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
             s_pending_read_handle = handle;
             esp_err_t ret = esp_ble_gattc_read_char_descr(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
                                                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
@@ -2582,17 +2808,17 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             status = CMD_STATUS_DENIED;
             break;
         }
-        if (len < 6 || len < 6 + cmd_buf[3]) {
+        if (len < 8 || cmd_buf[2] != 0 || len != 8 + cmd_buf[5] || s_subscription.handle) {
             status = CMD_STATUS_ARGS;
             break;
         }
         {
-            uint16_t handle = (uint16_t)cmd_buf[2] | ((uint16_t)cmd_buf[3] << 8);
+            uint16_t handle = (uint16_t)cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
             esp_err_t ret = esp_ble_gattc_write_char_descr(gl_profile_tab[PROFILE_A_APP_ID].gattc_if,
                                                            gl_profile_tab[PROFILE_A_APP_ID].conn_id,
                                                            handle,
-                                                           cmd_buf[4],
-                                                           (uint8_t *)(len > 5 ? &cmd_buf[5] : NULL),
+                                                           cmd_buf[5],
+                                                           (uint8_t *)&cmd_buf[6],
                                                            ESP_GATT_WRITE_TYPE_RSP,
                                                            ESP_GATT_AUTH_REQ_NONE);
             if (ret != ESP_OK) {
@@ -2600,6 +2826,48 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
             }
         }
         break;
+
+    case CONN_OP_SUBSCRIBE: {
+        if (len != 8 || cmd_buf[2] != 0 || cmd_buf[5] > 2 ||
+            (cmd_buf[3] == 0 && cmd_buf[4] == 0)) {
+            status = CMD_STATUS_ARGS;
+            break;
+        }
+        if (s_conn.state != CONN_STATE_CONNECTED || s_subscription.handle ||
+            gl_profile_tab[PROFILE_A_APP_ID].gattc_if == ESP_GATT_IF_NONE) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        esp_gatt_if_t gattc_if = gl_profile_tab[PROFILE_A_APP_ID].gattc_if;
+        uint16_t handle = cmd_buf[3] | ((uint16_t)cmd_buf[4] << 8);
+        esp_bt_uuid_t uuid = {.len = ESP_UUID_LEN_16,
+                             .uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG};
+        esp_gattc_descr_elem_t cccd;
+        uint16_t count = 1;
+        esp_gatt_status_t ret = esp_ble_gattc_get_descr_by_char_handle(gattc_if,
+                gl_profile_tab[PROFILE_A_APP_ID].conn_id, handle, uuid, &cccd, &count);
+        if (ret != ESP_GATT_OK || count != 1) {
+            status = CMD_STATUS_DENIED;
+            break;
+        }
+        s_subscription.handle = handle;
+        s_subscription.cccd = cccd.handle;
+        s_subscription.mode = cmd_buf[5];
+        esp_err_t err;
+        if (s_subscription.mode) {
+            err = esp_ble_gattc_register_for_notify(gattc_if,
+                    gl_profile_tab[PROFILE_A_APP_ID].remote_bda, handle);
+        } else {
+            uint8_t value[2] = {0, 0};
+            err = esp_ble_gattc_write_char_descr(gattc_if, gl_profile_tab[PROFILE_A_APP_ID].conn_id,
+                    cccd.handle, sizeof(value), value, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+        }
+        if (err != ESP_OK) {
+            memset(&s_subscription, 0, sizeof(s_subscription));
+            status = CMD_STATUS_DENIED;
+        }
+        break;
+    }
 
     case CONN_OP_MTU_EXCH:
         if (s_conn.state != CONN_STATE_CONNECTED ||
@@ -2641,7 +2909,6 @@ static void handle_conn_command(const uint8_t *cmd_buf, int len)
                                     gl_profile_tab[PROFILE_A_APP_ID].conn_id);
             }
             esp_ble_remove_bond_device(gl_profile_tab[PROFILE_A_APP_ID].remote_bda);
-            clear_conn_runtime();
         }
         break;
 
@@ -2909,6 +3176,7 @@ void app_main(void)
     refresh_scan_params();
     current_power_index();
     s_gap_sync_sem = xSemaphoreCreateBinary();
+    s_scan_sync_sem = xSemaphoreCreateBinary();
     s_conn_sem = xSemaphoreCreateBinary();
 
     // ── Initialize LEDs ─────────────────────────────────────────────────
@@ -2979,4 +3247,3 @@ void app_main(void)
 //	              2 | portPRIVILEGE_BIT, NULL);
 
 }
-

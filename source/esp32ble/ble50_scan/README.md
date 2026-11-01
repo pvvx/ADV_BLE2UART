@@ -424,34 +424,61 @@ mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart.c -o adv2uart.mips
 mipsel-linux-musl-gcc -Wall -Wextra -O2 adv2uart_tui.c -o adv2uart_tui.mips -lncurses
 ```
 
-### Build `linux_flasher.c` on Linux
+### Build `esp_flasher.c` on Linux
 
-`linux_flasher.c` uses Espressif's `esp-serial-flasher` headers/libraries
-(`esp_loader.h`, `linux_port.h`, `example_common.h`, `md5_hash.h`).
+`esp_flasher.c` (binary: `esp-flasher`) uses Espressif's
+`esp-serial-flasher` headers/libraries (`esp_loader.h`, `linux_port.h`,
+`example_common.h`, `md5_hash.h`).
+
+Unlike the Windows `flash.cmd`, it does not need the BOOT/RESET buttons: it
+drives the standard esptool reset sequences itself (see
+`--before` / `--after` below).
 
 Tested workflow:
 
 ```bash
 # from source/esp32ble/ble50_scan
 git clone --depth 1 https://github.com/espressif/esp-serial-flasher.git .tooling/esp-serial-flasher
-cp linux_flasher.c .tooling/esp-serial-flasher/examples/linux_example/main.c
+cp esp_flasher.c .tooling/esp-serial-flasher/examples/linux_example/main.c
 
 cd .tooling/esp-serial-flasher/examples/linux_example
 mkdir -p build && cd build
 cmake -DCMAKE_C_FLAGS='-I../../../private_include' ..
 cmake --build .
+cp linux_flasher ../../../../../esp-flasher      # the library fixes the output name
 ```
 
 Output binary:
 
 ```text
-.tooling/esp-serial-flasher/examples/linux_example/build/linux_flasher
+source/esp32ble/ble50_scan/esp-flasher
 ```
 
 Run help:
 
 ```bash
-.tooling/esp-serial-flasher/examples/linux_example/build/linux_flasher --help
+./esp-flasher --help
+```
+
+Reset handling (defaults work on both the Super Mini USB-C3 and the
+USB-to-UART boards):
+
+```text
+-m auto          the flasher drives DTR/RTS itself (default)
+-m dtr-rts       let esp-serial-flasher drive them (classic circuit only)
+-m gpio          esp-serial-flasher via libgpiod lines (SBC wiring)
+-m none          nobody: the target must already be in download mode
+--before auto|usb-jtag|classic|no-reset
+--after  hard-reset|no-reset
+```
+
+Example (ESP32-C3 Super Mini on native USB, no buttons):
+
+```bash
+./esp-flasher -p /dev/ttyACM0 -c esp32c3 \
+  0x0 build/bootloader/bootloader.bin \
+  0x8000 build/partition_table/partition-table.bin \
+  0x10000 build/ble50_scan.bin
 ```
 
 Use `./adv2uart_tui --help` to list all keys and options.
@@ -532,8 +559,11 @@ bit 0     SCAN_PHY_1M
 Both PHYs `False` ⇒ stop scanning. Window units = 0xFFFF disables either PHY
 without altering the other one.
 
-Response: status echo; `data[5..]` = re-encoded current scan config (used by
-the host to confirm what the firmware actually committed).
+The response status byte reports the filter count. Its data field echoes the
+requested parameters only after the controller confirms the requested stop or
+start; an empty data field means the request was invalid or the transition
+could not be confirmed. A transition has a bounded 1.5-second budget. The
+firmware emits a `PRNT` diagnostic on transition failures.
 
 ### 0x02 / 0x03 — `WMAC` / `BMAC`
 
@@ -651,8 +681,8 @@ outcome, and the `ESP_GATTC_DISCONNECT_EVT` cleanup.
 | `op` | Action                  | Parameters                              | Notes                              |
 |------|-------------------------|-----------------------------------------|------------------------------------|
 | 0    | status query            | —                                       | returns current state              |
-| 1    | open (1M PHY)           | `[addr_type, peer_addr[6]]`             |                                    |
-| 2    | open (Coded PHY)        | `[addr_type, peer_addr[6]]`             |                                    |
+| 1    | open (1M PHY)           | `[addr_type, peer_addr[6], flags?]`     | optional host-managed GATT mode     |
+| 2    | open (Coded PHY)        | `[addr_type, peer_addr[6], flags?]`     | optional host-managed GATT mode     |
 | 3    | disconnect              | —                                       |                                    |
 | 4    | cancel pending open     | —                                       |                                    |
 | 5    | discover all services   | —                                       | triggers full enumeration (async)  |
@@ -663,13 +693,36 @@ outcome, and the `ESP_GATTC_DISCONNECT_EVT` cleanup.
 | 10   | exchange MTU            | `[0, mtu_lo, mtu_hi]`                   | re-negotiates ATT MTU              |
 | 11   | pair                    | —                                       | initiates pairing                  |
 | 12   | unpair                  | —                                       | removes bond + disconnects         |
+| 13   | subscribe / unsubscribe | `[0, handle_lo, handle_hi, mode]`       | 0 = disable, 1 = notify, 2 = indicate |
 
 `addr_type`: 0 = PUBLIC, 1 = RANDOM. `peer_addr` is LE on-wire.
+The firmware converts it to ESP-IDF address order for open and cancellation.
+Both 1M and Coded opens use BLE 5 extended initiation, with the selected PHY.
+For open, omit `flags` or use 0 to retain the legacy automatic
+`0x00FF` / `0xFF01` subscription. Use `flags = 1` for a host-managed session:
+no UUID filter or automatic subscription is applied. The host then uses
+discovery and op 13 for any characteristic, including ATC `0x1F1F`.
+Existing open commands retain their original behavior.
+
+Op 13 finds the characteristic's actual CCCD (`0x2902`) in the GATT cache;
+it never assumes `characteristic_handle + 1`. Enabling first registers
+notification delivery with the ESP-IDF client, then writes `01 00` or
+`02 00` to the CCCD with response. Disabling writes `00 00`, then
+unregisters local delivery. Wait for the operation-completion event before
+sending the application command. Only one subscription change may be pending.
+Missing CCCDs, registration failures and ATT errors are reported to the host.
+
+The scan is suspended when opening a connection. After disconnect,
+successful cancellation, or failed open, scanning resumes using the current
+scan configuration, including PHY mask, windows and filters. An explicitly
+disabled scan stays disabled. GATT operation errors do not implicitly close
+the connection: the host must close it in `finally` (or use a context manager).
 
 **Response payload** (ops 0–4, synchronous):
 - `data[0]` — current `conn_state` (0 = Idle, 1 = Connecting, 2 = Connected)
 - `data[1]` — `peer_addr_type`
-- `data[2..3]` — discovered notify-characteristic handle (LE)
+- `data[2..3]` — legacy auto-selected notify-characteristic handle (LE);
+  host-managed subscriptions use their explicit handle instead
 - `data[4..5]` — connection interval in 1.25 ms units (LE)
 
 **Spontaneous discovery events** (triggered by op 5):
@@ -682,27 +735,59 @@ identifies the sub-type:
 | 0        | Service       | `[is_primary, start_handle_lo, start_handle_hi, end_handle_lo, end_handle_hi, uuid...]` |
 | 1        | Characteristic| `[handle_lo, handle_hi, properties, uuid...]`   |
 | 2        | Descriptor    | `[handle_lo, handle_hi, uuid...]`               |
-| 3        | Complete      | empty (marks end of discovery)                  |
+| 3        | Complete      | `[gatt_status]` (0 = successful enumeration)    |
+
+UUIDs are complete 2-, 4- or 16-byte values in BLE little-endian order.
+Events are ordered service, its characteristics and each characteristic's
+descriptors, followed by the next service. This preserves parent relationships.
+The sub-type is only in `byte[2]`, not prepended to `data[]`.
 
 **Spontaneous read responses** (ops 6, 8):
 The result is delivered asynchronously in a frame with `CMD_ID_CONN` and
 `byte[2]` = status code (0 = OK, 3 = Denied). The payload contains:
 `[handle_lo, handle_hi, value_len, value...]`.
 
+**Operation-completion events** (`byte[2] = 0x84`):
+
+```text
+data[] = [op, handle_lo, handle_hi, gatt_status, result...]
+```
+
+These report the asynchronous outcome of characteristic/descriptor reads
+(ops 6/8, `result` is the value), characteristic/descriptor writes (ops 7/9,
+no result), MTU exchange (op 10, handle 0, result is MTU LE), and subscription
+changes (op 13, result is the requested mode). Status is the raw
+`esp_gatt_status_t`, zero on success. The regular synchronous `CONN` response
+only acknowledges that a request was queued; it is **not** ATT completion.
+The older read-result frames remain available in legacy mode for compatibility;
+host-managed mode emits only typed read completions to avoid confusing reads
+with connection-state responses.
+
+Even a successful ATT write completion is **not** the peripheral's application
+response. For ATC, that response arrives separately as `RXDATA`.
+Serialize GATT operations and use timeouts; this protocol has no transaction
+IDs. If an operation times out, close/cancel the session before reusing it.
+With the 64-byte host command buffer, writes with response and descriptor
+writes carry at most 56 value bytes per command. Larger application messages
+need protocol-aware fragmentation in the host; do not split them blindly.
+
 ### 0x0D — `TXDATA`
 
 `ATT Write Without Response` on the active connection.
 Payload: `[att_handle_lo, att_handle_hi, data_len, data[]]`. Maximum
-`data_len` is 20 bytes (default ATT MTU minus 3). Response includes
-`data[3]` = `esp_gatt_status_t` returned by the stack.
+`data_len` is `min(58, negotiated ATT MTU - 3)` bytes (20 before MTU
+exchange). Response includes `data[3]` = local stack acceptance status;
+there is no remote ATT Write Response for this operation.
 
 ### 0x0E — `RXDATA`
 
 Spontaneous device→host frame carrying received `ATT Notification` or
 `Indication` payloads. The `byte[2]` field encodes opcode (`0x1B` = Notify,
 `0x1D` = Indication). `data[0..1]` = ATT handle, `data[2]` = value length,
-`data[3..]` = value bytes (up to 96 extra payload bytes for indications
-larger than the 6-byte fixed data field).
+`data[3..]` = value bytes. Concatenate the fixed six-byte data field and
+the extra payload before extracting the value; values are not confined to
+the fixed field. The local ATT MTU is 200, allowing complete notifications
+or indications up to 197 bytes.
 
 A host-issued `0x0E` request is `Denied` — there is nothing to "request",
 the frame only flows device→host.
@@ -764,7 +849,7 @@ ble50_scan/
 
 ## Bleak backend (`bleak_adv2uart.py`)
 
-A complete `BleakScanner` / `BleakClient` backend for the [Bleak](https://github.com/hbldh/bleak)
+A `BleakScanner` / `BleakClient` backend for the [Bleak](https://github.com/hbldh/bleak)
 library is provided in [`bleak_adv2uart.py`](bleak_adv2uart.py). It lets
 existing Bleak-based code work transparently over the ESP32's USB serial
 link instead of a local BLE adapter.
@@ -788,9 +873,13 @@ async with client:
 **Capabilities:**
 - **Scanner** (full): receives BLE advertisements forwarded by the ESP32 and
   reconstructs `AdvertisementData` with MAC, RSSI, PHY, AD fields.
-- **Client** (full): connect/disconnect, service discovery (services +
+- **Client**: connect/disconnect, service discovery (services +
   characteristics + descriptors), read/write characteristic, read/write
-  descriptor, MTU exchange, pair/unpair, notification reception.
+  descriptor, automatic MTU exchange, generic notifications and indications.
+  GATT operations are serialized and await typed completion events, not
+  command acknowledgements. Timeouts close/cancel the connection. Automatic
+  pairing (`BleakClient(..., pair=True)`) is not supported; security/pairing
+  commands are separate firmware primitives.
 
 Requires `pyserial`:
 
@@ -800,6 +889,112 @@ pip install pyserial bleak
 
 The serial port defaults to `/dev/ttyACM0` (override via `ADV2UART_PORT`
 environment variable or `port=` kwarg).
+
+Use the firmware from this revision with the client backend. It opens in
+host-managed mode and requires op 13 and completion events. The backend was
+regression-tested with Bleak 3.0.2 and pySerial 3.5.
+Pass `address_type=1` for a random peripheral address and `phy="coded"` to
+connect to a peripheral already advertising connectably on Coded PHY.
+The connection PHY choice does not configure the thermometer's advertising PHY.
+Only one scanner or client may own the serial port at a time; stop the
+scanner before connecting, and disconnect before restarting it.
+
+### ATC thermometer configuration over GATT
+
+The firmware previously forwarded `RXDATA`, but its fixed automatic
+subscription did not suffice for ATC. Host-managed GATT now supplies the
+generic primitives required by the
+[ATC firmware](https://github.com/pvvx/ATC_MiThermometer) and
+[Python interface](https://github.com/Ircama/ATC_MiThermometer/tree/ircama-SJWS01LM/python-interface/atc_mi_interface):
+connect, discover, subscribe, write, await notifications, disconnect and
+resume scanning. No ATC commands or configuration fields are encoded in
+the ESP32 firmware.
+
+Example read-only configuration request, run from this directory:
+
+```python
+import asyncio
+from bleak import BleakClient, BleakScanner
+from bleak_adv2uart import BleakClientAdv2Uart, BleakScannerAdv2Uart
+
+ADDRESS = "A4:C1:38:12:34:56"  # replace with the thermometer's address
+PORT = "/dev/ttyACM0"
+ATC_CHAR = "00001f1f-0000-1000-8000-00805f9b34fb"
+
+async def main():
+    replies = asyncio.Queue()
+    async with BleakClient(
+        ADDRESS, backend=BleakClientAdv2Uart, port=PORT, timeout=15,
+        address_type=0, phy="1m",
+    ) as client:
+        char = client.services.get_characteristic(ATC_CHAR)
+        if char is None:
+            raise RuntimeError("ATC configuration characteristic not found")
+        await client.start_notify(char, lambda sender, data: replies.put_nowait(bytes(data)))
+        await client.write_gatt_char(char, b"\x55", response=True)
+
+        async def configuration_reply():
+            while True:
+                value = await replies.get()
+                if value[:1] == b"\x55":
+                    return value
+
+        config = await asyncio.wait_for(configuration_reply(), timeout=10)
+        print("ATC configuration response:", config.hex())
+        await client.stop_notify(char)
+
+    # The context manager disconnects even on application errors; firmware
+    # resumes a previously enabled scan. A new scanner can now own the port.
+    def advertisement(device, adv):
+        if device.address.upper() == ADDRESS.upper():
+            _, event_type, primary_phy, secondary_phy, _ = adv.platform_data
+            print(device.address, "primary PHY:", primary_phy,
+                  "secondary PHY:", secondary_phy)
+
+    async with BleakScanner(
+        backend=BleakScannerAdv2Uart, port=PORT, detection_callback=advertisement,
+    ):
+        await asyncio.sleep(20)
+
+asyncio.run(main())
+```
+
+For a configuration change, keep the same connection and subscription,
+decode the returned configuration using the layout for the installed ATC
+version, preserve unrelated fields, then write `0x55 + updated_parameters`
+and await the matching application notification again. Changes to
+`bt5phy` / `longrange`, persistence and any required reboot belong entirely
+in that host script; use the version-specific ATC definitions or the
+[Telink flasher](https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html)
+as the reference. This example deliberately does not guess byte offsets
+or overwrite a thermometer's configuration.
+
+After the session, verify **received advertisements**, not the ATT response
+or connection PHY: PHY values are 1 = 1M, 2 = 2M, 3 = Coded. Check both
+primary and secondary PHY and use a scan mask that includes Coded
+(`SCAN` flags `0x03` selects 1M + Coded). A configuration reply confirms
+the application exchange, not actual radio reception on Coded PHY.
+
+### Regression checks and hardware validation
+
+```bash
+pip install bleak==3.0.2 pyserial==3.5
+python -m unittest discover -s tests -v
+```
+
+The tests exercise the real firmware command/helper and subscription
+callback code against a fake ESP-IDF API compiled with a native C compiler,
+and the public Bleak client against a simulated serial peripheral. They
+cover full UUIDs and parent relationships, a non-adjacent CCCD, registration
+before CCCD writes, ATT failures, long notification values, `0x55`
+request/reply in one connection, timeout cleanup and scan-recovery paths.
+They do not replace an ESP32-C3 + LYWSD03MMC radio test.
+
+Hardware acceptance: read configuration, update only the desired ATC fields,
+verify the application response, disconnect, and capture that device's
+advertisements showing the effective primary/secondary PHY. Repeat with an
+application timeout, failed open, cancelled open and unexpected disconnect;
+confirm that scanning resumes, and that an explicitly disabled scan stays off.
 
 ## Scan client (`scan_bleak.py`)
 

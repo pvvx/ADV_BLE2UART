@@ -10,6 +10,7 @@
 #include "rgb_led.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_encoder.h"
 #include "driver/gpio.h"
@@ -219,7 +220,7 @@ esp_err_t rgb_led_set(uint8_t red, uint8_t green, uint8_t blue)
     // Ensure the RMT signal is connected to the GPIO pad. Digital writes
     // (gpio_set_level) may have reconfigured the GPIO matrix; without this,
     // rmt_transmit would send data into the void instead of the pad.
-    gpio_matrix_out(s_rgb_gpio, RMT_SIG_OUT0_IDX, 0, 0);
+    esp_rom_gpio_connect_out_signal(s_rgb_gpio, RMT_SIG_OUT0_IDX, false, false);
     esp_err_t err = rmt_transmit(s_led_chan, s_led_encoder, s_pixel_data, sizeof(s_pixel_data), &tx_config);
     if (err != ESP_OK) {
         return err;

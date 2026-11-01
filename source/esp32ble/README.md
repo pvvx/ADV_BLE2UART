@@ -41,3 +41,9 @@ popd
 
 See [`ble50_scan/README.md`](ble50_scan/README.md) for detailed documentation:
 firmware characteristics, board configurations, host tools, and protocol details.
+
+The firmware also supports host-managed GATT sessions for arbitrary
+characteristics, including ATC thermometer configuration through `0x1F1F`.
+See [ATC configuration over GATT](ble50_scan/README.md#atc-thermometer-configuration-over-gatt)
+for the generic subscription protocol, a Python example, timeout cleanup and
+post-session advertising PHY verification.
