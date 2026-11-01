@@ -479,6 +479,8 @@ Example (ESP32-C3 Super Mini on native USB, no buttons):
   0x0 build/bootloader/bootloader.bin \
   0x8000 build/partition_table/partition-table.bin \
   0x10000 build/ble50_scan.bin
+
+./esp-flasher -p /dev/ttyACM0 -c esp32c3 0x10000 build/ble50_scan.bin
 ```
 
 Use `./adv2uart_tui --help` to list all keys and options.
